@@ -5,12 +5,13 @@ from megamind.config import Settings
 from megamind.main import create_app
 
 
-@pytest.fixture
-async def client(tmp_path):
+@pytest.fixture(params=["memory", "lancedb"])
+async def client(request, tmp_path):
     settings = Settings(
         thumb_dir=tmp_path / "thumbs",
         audio_dir=tmp_path / "audio",
-        store_backend="memory",
+        store_backend=request.param,
+        lancedb_path=tmp_path / "lancedb",
         embed_provider="mock",
         filter_min_gap_s=0.0,
         _env_file=None,
