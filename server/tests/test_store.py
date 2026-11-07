@@ -2,6 +2,7 @@ import pytest
 
 from megamind.models import MemoryToken, Pose
 from megamind.store.lancedb_store import LanceDBStore
+from megamind.store.memory_store import InMemoryStore
 
 DIM = 8
 
@@ -32,8 +33,15 @@ def _token(i: int, *, device="dev1", caption=None, ocr="", entities=(), tmp_path
     )
 
 
+@pytest.fixture(params=["memory", "lancedb"])
+def store(request, tmp_path):
+    if request.param == "memory":
+        return InMemoryStore()
+    return LanceDBStore(tmp_path / "lancedb", vector_index_min_rows=10_000)
+
+
 @pytest.fixture
-def store(tmp_path):
+def lance(tmp_path):
     return LanceDBStore(tmp_path / "lancedb", vector_index_min_rows=10_000)
 
 
@@ -68,12 +76,12 @@ async def test_persistence_across_reopen(tmp_path):
     assert (await s2.get("tok0001")).image_vec is None
 
 
-async def test_dim_mismatch_is_rejected(store):
-    await store.add(_token(0))
+async def test_dim_mismatch_is_rejected(lance):
+    await lance.add(_token(0))
     bad = _token(1)
     bad.text_vec = [1.0] * (DIM + 1)
     with pytest.raises(ValueError, match="dims"):
-        await store.add(bad)
+        await lance.add(bad)
 
 
 async def test_recent_hashes_filters_device_and_time(store):
@@ -158,9 +166,19 @@ async def test_purge(store, tmp_path):
     assert await store.purge() == 0
 
 
-async def test_fts_index_sees_rows_added_after_build(store):
-    await store.add(_token(0, caption="first row builds the index"))
-    assert any(idx.columns == ["search_text"] for idx in store._table.list_indices())
-    await store.add(_token(1, caption="banana smoothie on the counter"))
-    hits = await store.keyword_search("banana", 5)
+async def test_fts_index_sees_rows_added_after_build(lance):
+    await lance.add(_token(0, caption="first row builds the index"))
+    assert any(idx.columns == ["search_text"] for idx in lance._table.list_indices())
+    await lance.add(_token(1, caption="banana smoothie on the counter"))
+    hits = await lance.keyword_search("banana", 5)
     assert [t.id for t, _ in hits] == ["tok0001"]
+
+
+async def test_add_many_and_kinds_filter(store):
+    toks = [_token(i, caption=f"scene {i}") for i in range(4)]
+    await store.add_many(toks)
+    assert await store.count() == 4
+    assert [t.id for t in await store.range(None, None, kinds=("frame",))] == [t.id for t in toks]
+    assert await store.range(None, None, kinds=("episode",)) == []
+    assert await store.vector_search(_vec(1), 3, kinds=("episode",)) == []
+    assert sorted(t.id for t, _ in await store.keyword_search("scene", 10, kinds=("frame",))) == [t.id for t in toks]

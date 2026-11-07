@@ -21,14 +21,14 @@ import re
 import threading
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import lancedb
 import pyarrow as pa
 from lancedb.index import FTS
 
 from megamind.models import MemoryHit, MemoryToken, Pose, SearchMode
-from megamind.store.base import MemoryStore
+from megamind.store.base import MemoryStore, Scored, VectorField
 from megamind.store.rrf import rrf
 
 log = logging.getLogger(__name__)
@@ -36,7 +36,6 @@ log = logging.getLogger(__name__)
 TABLE_NAME = "memory_tokens"
 DEFAULT_TEXT_DIM = 1024
 DEFAULT_IMAGE_DIM = 768
-VectorField = Literal["text_vec", "image_vec"]
 
 _WORD = re.compile(r"[\w]+", re.UNICODE)
 _SCALAR_COLUMNS = [
@@ -320,12 +319,15 @@ class LanceDBStore(MemoryStore):
         window = rows[max(0, idx - before) : idx + after + 1]
         return await self.get_many([r["id"] for r in window])
 
-    def _vector_search_sync(
-        self, vec: list[float], k: int, field: str, where: str | None
-    ) -> list[tuple[MemoryToken, float]]:
+    def _vector_search_sync(self, vec: list[float], k: int, field: str, where: str | None) -> list[Scored]:
         if self._table is None or k <= 0:
             return []
-        q = self._table.search(vec, vector_column_name=field).metric("cosine").limit(k).select(_INDEXED_COLUMNS)
+        q = (
+            self._table.search(vec, vector_column_name=field)
+            .metric("cosine")
+            .limit(k)
+            .select([*_INDEXED_COLUMNS, "_distance"])
+        )
         if where:
             q = q.where(where, prefilter=True)
         return [(self._token(r), 1.0 - float(r["_distance"])) for r in q.to_list()]
@@ -340,7 +342,7 @@ class LanceDBStore(MemoryStore):
         time_to: float | None = None,
         device_id: str | None = None,
         kinds: Sequence[str] | None = None,
-    ) -> list[tuple[MemoryToken, float]]:
+    ) -> list[Scored]:
         if field not in ("text_vec", "image_vec"):
             raise ValueError(f"unknown vector field {field!r}")
         where = self._where(
@@ -353,10 +355,14 @@ class LanceDBStore(MemoryStore):
         )
         return await asyncio.to_thread(self._vector_search_sync, list(vec), k, field, where)
 
-    def _keyword_search_sync(self, query: str, k: int, where: str | None) -> list[tuple[MemoryToken, float]]:
+    def _keyword_search_sync(self, query: str, k: int, where: str | None) -> list[Scored]:
         if self._table is None or k <= 0:
             return []
-        q = self._table.search(query, query_type="fts", fts_columns="search_text").limit(k).select(_INDEXED_COLUMNS)
+        q = (
+            self._table.search(query, query_type="fts", fts_columns="search_text")
+            .limit(k)
+            .select([*_INDEXED_COLUMNS, "_score"])
+        )
         if where:
             q = q.where(where, prefilter=True)
         return [(self._token(r), float(r["_score"])) for r in q.to_list()]
@@ -370,7 +376,7 @@ class LanceDBStore(MemoryStore):
         time_to: float | None = None,
         device_id: str | None = None,
         kinds: Sequence[str] | None = None,
-    ) -> list[tuple[MemoryToken, float]]:
+    ) -> list[Scored]:
         terms = _WORD.findall(query.lower())
         if not terms:
             return []
