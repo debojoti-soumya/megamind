@@ -63,7 +63,7 @@ class RecallMemory:
         device_id: str | None = None,
     ) -> RecallResult:
         k = max(1, min(k, 24))
-        qvec = await self.text_embedder.embed(query)
+        qvec = await self.text_embedder.embed_query(query)
         ivec = await self.image_embedder.embed_text(query) if self.image_embedder else None
         hits = await self.store.search(
             qvec,

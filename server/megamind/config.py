@@ -16,8 +16,13 @@ class Settings(BaseSettings):
     enrich_base_url: str = ""
     enrich_model: str = ""
 
-    embed_provider: str = "mock"
+    enrich_provider: str = "auto"  # auto (vlm if ENRICH_BASE_URL set) | vlm | mock
+    embed_provider: str = "mock"  # text: mock | openai | voyage | local
     embed_model: str = "text-embedding-3-small"
+    local_text_model: str = "BAAI/bge-small-en-v1.5"
+    image_embed_provider: str = "none"  # none | mock | siglip
+    image_embed_model: str = "ViT-B-16-SigLIP"
+    image_embed_pretrained: str = "webli"
     openai_api_key: str = ""
     voyage_api_key: str = ""
 

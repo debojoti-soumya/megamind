@@ -1,19 +1,28 @@
 """Turn an accepted keyframe into caption / OCR / entities + embeddings.
 
-TODO(stream-1):
-  - VLMEnricher: call the OpenAI-compatible Qwen-VL endpoint (settings.enrich_url) with the
-    JPEG as an image_url data URI and ENRICH_PROMPT; parse the JSON output.
-  - Embedders: openai / voyage / local (bge-m3 + SigLIP via open_clip) per settings.embed_provider.
+Enricher: any OpenAI-compatible VLM (vLLM Qwen2.5-VL, OpenRouter, OpenAI) via ENRICH_* settings.
+Text embedders: openai | voyage | local (sentence-transformers) | mock.
+Image embedders: siglip (open_clip, also provides the text tower for visual queries) | mock | none.
+All vectors are L2-normalised so cosine == dot product in every store.
 """
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import hashlib
+import io
+import json
+import logging
 import math
+import re
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from megamind.config import Settings
+
+log = logging.getLogger(__name__)
 
 ENRICH_PROMPT = """You are describing a single first-person snapshot that will later be searched
 to answer questions like "where did I leave my keys" or "what did the sign say".
@@ -48,6 +57,10 @@ class TextEmbedder(ABC):
     @abstractmethod
     async def embed(self, text: str) -> list[float]: ...
 
+    async def embed_query(self, text: str) -> list[float]:
+        """Query-side embedding; asymmetric models (bge) override this with their query prefix."""
+        return await self.embed(text)
+
 
 class ImageEmbedder(ABC):
     dim: int
@@ -73,16 +86,190 @@ class MockTextEmbedder(TextEmbedder):
         return [x / n for x in v]
 
 
+def _normalise(v) -> list[float]:
+    v = [float(x) for x in v]
+    n = math.sqrt(sum(x * x for x in v)) or 1.0
+    return [x / n for x in v]
+
+
+_JSON = re.compile(r"\{.*\}", re.S)
+
+
+def parse_enrichment(text: str) -> Enrichment:
+    m = _JSON.search(text or "")
+    if not m:
+        return Enrichment(caption=(text or "").strip()[:500])
+    try:
+        d = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return Enrichment(caption=(text or "").strip()[:500])
+    ents = d.get("entities") or []
+    return Enrichment(
+        caption=str(d.get("caption") or "").strip(),
+        ocr_text=str(d.get("ocr_text") or "").strip(),
+        entities=[str(e).strip() for e in ents if str(e).strip()][:15] if isinstance(ents, list) else [],
+    )
+
+
+class VLMEnricher(Enricher):
+    """OpenAI-compatible chat.completions with the JPEG as a data URI."""
+
+    def __init__(self, settings: Settings) -> None:
+        from openai import AsyncOpenAI
+
+        self.model = settings.enrich_model_name
+        self.client = AsyncOpenAI(base_url=settings.enrich_url, api_key=settings.reader_api_key or "none")
+
+    async def enrich(self, jpeg: bytes) -> Enrichment:
+        uri = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+        r = await self.client.chat.completions.create(
+            model=self.model,
+            temperature=0,
+            max_tokens=400,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": ENRICH_PROMPT},
+                        {"type": "image_url", "image_url": {"url": uri}},
+                    ],
+                }
+            ],
+        )
+        return parse_enrichment(r.choices[0].message.content or "")
+
+
+class OpenAITextEmbedder(TextEmbedder):
+    _DIMS = {"text-embedding-3-small": 1536, "text-embedding-3-large": 3072, "text-embedding-ada-002": 1536}
+
+    def __init__(self, settings: Settings) -> None:
+        from openai import AsyncOpenAI
+
+        self.model = settings.embed_model
+        self.dim = self._DIMS.get(self.model, 1536)
+        self.client = AsyncOpenAI(api_key=settings.openai_api_key or None)
+
+    async def embed(self, text: str) -> list[float]:
+        r = await self.client.embeddings.create(model=self.model, input=text[:8000] or " ")
+        return _normalise(r.data[0].embedding)
+
+
+class VoyageTextEmbedder(TextEmbedder):
+    def __init__(self, settings: Settings) -> None:
+        import httpx
+
+        self.model = settings.embed_model if settings.embed_model.startswith("voyage") else "voyage-3"
+        self.dim = 1024
+        self.http = httpx.AsyncClient(
+            base_url="https://api.voyageai.com/v1",
+            headers={"Authorization": f"Bearer {settings.voyage_api_key}"},
+            timeout=30,
+        )
+
+    async def embed(self, text: str) -> list[float]:
+        r = await self.http.post("/embeddings", json={"model": self.model, "input": [text[:8000] or " "]})
+        r.raise_for_status()
+        return _normalise(r.json()["data"][0]["embedding"])
+
+
+class LocalTextEmbedder(TextEmbedder):
+    def __init__(self, settings: Settings) -> None:
+        from sentence_transformers import SentenceTransformer
+
+        self.model = SentenceTransformer(settings.local_text_model, device="cpu")
+        get_dim = getattr(self.model, "get_embedding_dimension", None) or self.model.get_sentence_embedding_dimension
+        self.dim = int(get_dim())
+        self.query_prefix = (
+            "Represent this sentence for searching relevant passages: " if "bge" in settings.local_text_model else ""
+        )
+        self._lock = threading.Lock()
+
+    def _embed(self, text: str) -> list[float]:
+        with self._lock:
+            return _normalise(self.model.encode(text or " ", normalize_embeddings=True))
+
+    async def embed(self, text: str) -> list[float]:
+        return await asyncio.to_thread(self._embed, text)
+
+    async def embed_query(self, text: str) -> list[float]:
+        return await asyncio.to_thread(self._embed, self.query_prefix + text)
+
+
+class SigLIPImageEmbedder(ImageEmbedder):
+    def __init__(self, settings: Settings) -> None:
+        import open_clip
+        import torch
+
+        self.torch = torch
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            settings.image_embed_model, pretrained=settings.image_embed_pretrained
+        )
+        self.model = model.eval()
+        self.preprocess = preprocess
+        self.tokenizer = open_clip.get_tokenizer(settings.image_embed_model)
+        with torch.no_grad():
+            self.dim = int(self.model.encode_text(self.tokenizer(["x"])).shape[-1])
+        self._lock = threading.Lock()
+
+    def _image(self, jpeg: bytes) -> list[float]:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+        with self._lock, self.torch.no_grad():
+            return _normalise(self.model.encode_image(self.preprocess(img).unsqueeze(0))[0].tolist())
+
+    def _text(self, text: str) -> list[float]:
+        with self._lock, self.torch.no_grad():
+            return _normalise(self.model.encode_text(self.tokenizer([text]))[0].tolist())
+
+    async def embed_image(self, jpeg: bytes) -> list[float]:
+        return await asyncio.to_thread(self._image, jpeg)
+
+    async def embed_text(self, text: str) -> list[float]:
+        return await asyncio.to_thread(self._text, text)
+
+
+class MockImageEmbedder(ImageEmbedder):
+    """Coarse colour layout (4x4 grid x RGB); text tower maps colour words. For offline tests only."""
+
+    dim = 48
+    _COLOURS = {"red": (255, 0, 0), "green": (0, 160, 0), "blue": (0, 0, 255), "white": (255, 255, 255)}
+
+    async def embed_image(self, jpeg: bytes) -> list[float]:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(jpeg)).convert("RGB").resize((4, 4))
+        return _normalise([c / 255.0 for px in img.getdata() for c in px])
+
+    async def embed_text(self, text: str) -> list[float]:
+        for word, rgb in self._COLOURS.items():
+            if word in text.lower():
+                return _normalise([c / 255.0 for c in rgb] * 16)
+        return _normalise([1.0] * self.dim)
+
+
 def build_enricher(settings: Settings) -> Enricher:
-    # TODO(stream-1): return VLMEnricher(settings) when settings.enrich_url is reachable
+    p = settings.enrich_provider
+    if p == "vlm" or (p == "auto" and settings.enrich_base_url):
+        return VLMEnricher(settings)
     return MockEnricher()
 
 
 def build_text_embedder(settings: Settings) -> TextEmbedder:
-    # TODO(stream-1): openai / voyage / local
+    p = settings.embed_provider
+    if p == "openai":
+        return OpenAITextEmbedder(settings)
+    if p == "voyage":
+        return VoyageTextEmbedder(settings)
+    if p == "local":
+        return LocalTextEmbedder(settings)
     return MockTextEmbedder()
 
 
 def build_image_embedder(settings: Settings) -> ImageEmbedder | None:
-    # TODO(stream-1): SigLIP via open_clip when embed_provider == "local"
+    p = settings.image_embed_provider
+    if p == "siglip":
+        return SigLIPImageEmbedder(settings)
+    if p == "mock":
+        return MockImageEmbedder()
     return None

@@ -69,7 +69,7 @@ async def search_memories(
 ):
     app = request.app.state
     params = request.query_params
-    qvec = await app.text_embedder.embed(q)
+    qvec = await app.text_embedder.embed_query(q)
     ivec = await app.image_embedder.embed_text(q) if app.image_embedder else None
     hits = await app.store.search(
         qvec,
