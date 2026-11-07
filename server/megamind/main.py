@@ -33,7 +33,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.settings = settings
         st.store = build_store(settings)
         st.keyframe_filter = KeyframeFilter(settings)
-        st.pending_hashes = {}
         st.text_embedder = build_text_embedder(settings)
         st.image_embedder = build_image_embedder(settings)
         st.worker = EnrichmentWorker(st.store, build_enricher(settings), st.text_embedder, st.image_embedder)

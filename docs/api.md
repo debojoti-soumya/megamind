@@ -15,13 +15,16 @@ and the C# DTOs in `headset/` must match it.
 - `meta`: JSON string
   ```json
   { "device_id": "quest3-abc", "ts": 1731000000.123,
-    "pose": { "x": 0.0, "y": 1.6, "z": 0.0, "yaw": 90.0 } }
+    "pose": { "x": 0.0, "y": 1.6, "z": 0.0, "yaw": 90.0 },
+    "force": false, "source": "quest" }
   ```
+  `force` (optional) bypasses blur/gap/novelty/budget, e.g. at push-to-talk start.
+  `source` (optional) labels the sensor (`quest`, `feeder`, `phone`).
 Response `202 Accepted`:
 ```json
 { "frame_id": "01J...", "accepted": true, "reason": null }
 ```
-`accepted=false` with `reason` in `{"duplicate","too_soon","dark"}` means the frame was
+`accepted=false` with `reason` in `{"duplicate","too_soon","dark","blurry","budget"}` means the frame was
 dropped by the filter. Enrichment (caption/embedding) is asynchronous; a token appears
 in search a few seconds later.
 

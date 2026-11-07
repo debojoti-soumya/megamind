@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     filter_dhash_max_distance: int = 6
     filter_dhash_window_s: float = 30.0
     filter_min_luma: int = 20
+    filter_min_sharpness: float = 15.0
+    filter_heartbeat_s: float = 30.0
+    filter_pose_yaw_deg: float = 25.0
+    filter_pose_move_m: float = 0.75
+    filter_budget_per_min: float = 6.0
+    filter_budget_burst: int = 6
 
     @property
     def enrich_url(self) -> str:

@@ -34,16 +34,12 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
         raise HTTPException(400, "image is not a decodable JPEG") from exc
 
     frame_id = str(ULID())
-    recent = await app.store.recent_hashes(fm.device_id, fm.ts - app.settings.filter_dhash_window_s)
-    recent += app.pending_hashes.get(fm.device_id, [])
-    decision = app.keyframe_filter.decide(img, fm.ts, recent)
+    filt = app.keyframe_filter
+    if not filt.has_state(fm.device_id):
+        filt.seed(fm.device_id, await app.store.recent_hashes(fm.device_id, fm.ts - app.settings.filter_dhash_window_s))
+    decision = filt.decide(img, fm)
     if not decision.accepted:
         return FrameAccepted(frame_id=frame_id, accepted=False, reason=decision.reason)
-
-    app.pending_hashes.setdefault(fm.device_id, []).append((fm.ts, decision.frame_hash))
-    app.pending_hashes[fm.device_id] = [
-        (t, h) for t, h in app.pending_hashes[fm.device_id] if fm.ts - t <= app.settings.filter_dhash_window_s
-    ]
 
     thumb_path = app.settings.thumb_dir / f"{frame_id}.jpg"
     thumb_path.write_bytes(jpeg)
@@ -55,6 +51,9 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
         pose=fm.pose,
         thumb_path=str(thumb_path),
         frame_hash=decision.frame_hash,
+        source=fm.source or "quest",
+        trigger=decision.trigger,
+        sharpness=decision.sharpness,
     )
     await app.worker.submit(token, jpeg)
     return FrameAccepted(frame_id=frame_id, accepted=True)
@@ -88,6 +87,7 @@ async def search_memories(
 @router.delete("/memories")
 async def purge_memories(request: Request, device_id: str | None = None):
     n = await request.app.state.store.purge(device_id)
+    request.app.state.keyframe_filter.reset(device_id)
     return {"deleted": n}
 
 

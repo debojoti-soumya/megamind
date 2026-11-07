@@ -8,6 +8,9 @@ from pydantic import BaseModel, Field
 
 Confidence = Literal["high", "medium", "low", "not_found"]
 SearchMode = Literal["semantic", "visual", "hybrid"]
+RejectReason = Literal["duplicate", "too_soon", "dark", "blurry", "budget"]
+Trigger = Literal["novel", "pose", "heartbeat", "forced"]
+Tier = Literal["hot", "cold", "text"]
 
 
 class Pose(BaseModel):
@@ -21,12 +24,14 @@ class FrameMeta(BaseModel):
     device_id: str
     ts: float
     pose: Pose | None = None
+    force: bool = False
+    source: str | None = None
 
 
 class FrameAccepted(BaseModel):
     frame_id: str
     accepted: bool
-    reason: Literal["duplicate", "too_soon", "dark"] | None = None
+    reason: RejectReason | None = None
 
 
 class MemoryToken(BaseModel):
@@ -42,6 +47,17 @@ class MemoryToken(BaseModel):
     thumb_path: str
     frame_hash: str
     episode_id: str | None = None
+    transcript: str = ""
+    source: str = "quest"
+    trigger: Trigger | None = None
+    sharpness: float = 0.0
+    enriched: bool = False
+    tier: Tier = "hot"
+    chunk_id: str | None = None
+    chunk_offset: int | None = None
+
+    def search_text(self) -> str:
+        return "\n".join(p for p in (self.caption, self.ocr_text, " ".join(self.entities), self.transcript) if p)
 
     @property
     def thumb_url(self) -> str:
@@ -56,6 +72,9 @@ class MemoryHit(BaseModel):
     entities: list[str] = Field(default_factory=list)
     thumb_url: str
     score: float
+    transcript: str = ""
+    episode_id: str | None = None
+    tier: Tier = "hot"
 
     @classmethod
     def from_token(cls, t: MemoryToken, score: float) -> MemoryHit:
@@ -67,6 +86,9 @@ class MemoryHit(BaseModel):
             entities=t.entities,
             thumb_url=t.thumb_url,
             score=score,
+            transcript=t.transcript,
+            episode_id=t.episode_id,
+            tier=t.tier,
         )
 
 
