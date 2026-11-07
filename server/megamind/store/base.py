@@ -5,9 +5,9 @@ from collections.abc import Sequence
 from typing import Literal
 
 from megamind.models import MemoryHit, MemoryToken, SearchMode
+from megamind.store.rrf import Scored
 
 VectorField = Literal["text_vec", "image_vec"]
-Scored = tuple[MemoryToken, float]
 
 
 class MemoryStore(ABC):

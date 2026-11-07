@@ -9,7 +9,7 @@ from pathlib import Path
 
 from megamind.models import MemoryHit, MemoryToken, SearchMode
 from megamind.store.base import MemoryStore, Scored, VectorField
-from megamind.store.rrf import rrf
+from megamind.store.rrf import fuse_hits
 
 _WORD = re.compile(r"[a-z0-9]+")
 
@@ -170,13 +170,7 @@ class InMemoryStore(MemoryStore):
         if mode in ("visual", "hybrid") and query_image_vec is not None:
             rankings.append(await self.vector_search(query_image_vec, n, field="image_vec", **filters))
 
-        tokens: dict[str, MemoryToken] = {}
-        for ranking in rankings:
-            for t, _ in ranking:
-                tokens.setdefault(t.id, t)
-        fused = rrf([[t.id for t, _ in ranking] for ranking in rankings])
-        ordered = sorted(fused.items(), key=lambda kv: (kv[1], tokens[kv[0]].ts), reverse=True)
-        return [MemoryHit.from_token(tokens[i], s) for i, s in ordered[:k]]
+        return fuse_hits(rankings, k)
 
     async def purge(
         self, device_id: str | None = None, *, since_ts: float | None = None, delete_thumbs: bool = True

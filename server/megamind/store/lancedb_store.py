@@ -29,7 +29,7 @@ from lancedb.index import FTS
 
 from megamind.models import MemoryHit, MemoryToken, Pose, SearchMode
 from megamind.store.base import MemoryStore, Scored, VectorField
-from megamind.store.rrf import rrf
+from megamind.store.rrf import fuse_hits
 
 log = logging.getLogger(__name__)
 
@@ -407,13 +407,7 @@ class LanceDBStore(MemoryStore):
         if mode in ("visual", "hybrid") and query_image_vec is not None and len(query_image_vec) == self._image_dim:
             rankings.append(await self.vector_search(query_image_vec, n, field="image_vec", **filters))
 
-        tokens: dict[str, MemoryToken] = {}
-        for ranking in rankings:
-            for t, _ in ranking:
-                tokens.setdefault(t.id, t)
-        fused = rrf([[t.id for t, _ in ranking] for ranking in rankings])
-        ordered = sorted(fused.items(), key=lambda kv: (kv[1], tokens[kv[0]].ts), reverse=True)
-        return [MemoryHit.from_token(tokens[i], s) for i, s in ordered[:k]]
+        return fuse_hits(rankings, k)
 
     # ------------------------------------------------------------------ deletes
 

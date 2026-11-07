@@ -182,3 +182,9 @@ async def test_add_many_and_kinds_filter(store):
     assert await store.range(None, None, kinds=("episode",)) == []
     assert await store.vector_search(_vec(1), 3, kinds=("episode",)) == []
     assert sorted(t.id for t, _ in await store.keyword_search("scene", 10, kinds=("frame",))) == [t.id for t in toks]
+
+
+async def test_search_unrelated_query_returns_nothing(store):
+    await store.add_many([_token(i, caption=f"coffee mug on desk {i}") for i in range(3)])
+    hits = await store.search(_vec(99), None, "zebra", k=5)
+    assert hits == []
