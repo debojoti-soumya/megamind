@@ -38,7 +38,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.image_embedder = build_image_embedder(settings)
         st.worker = EnrichmentWorker(st.store, build_enricher(settings), st.text_embedder, st.image_embedder)
         st.reader = build_reader(settings)
-        st.recall = RecallMemory(st.store, st.text_embedder, st.image_embedder, st.reader)
+        st.recall = RecallMemory(st.store, st.text_embedder, st.image_embedder, st.reader, tz=settings.wearer_tz)
         st.agent = ClaudeAgent(settings, st.recall)
         st.stt = build_stt(settings)
         st.tts = build_tts(settings)
