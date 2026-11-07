@@ -38,6 +38,18 @@ class Settings(BaseSettings):
     filter_dhash_max_distance: int = 6
     filter_dhash_window_s: float = 30.0
     filter_min_luma: int = 20
+    filter_min_sharpness: float = 40.0  # ingest.filter.sharpness() at 320 px; calibrate on real passthrough frames
+    filter_heartbeat_s: float = 30.0  # always keep a frame after this long without one (0 = off)
+    filter_pose_yaw_deg: float = 20.0  # keep when the head turned this much since the last kept frame (0 = off)
+    filter_pose_move_m: float = 0.5  # keep when the head moved this far since the last kept frame (0 = off)
+    filter_pose_still_yaw_deg: float = 5.0  # pose-assisted dedupe: head barely moved ...
+    filter_pose_still_move_m: float = 0.15
+    filter_pose_still_distance: int = 10  # ... and the hash is this close -> duplicate
+    filter_settle_max_distance: int = 4  # settled-frame rule: hamming to the previous (rejected) frame
+    filter_settle_min_gap_s: float = 0.5
+    filter_dhash_long_distance: int = 3  # near-identical to a frame kept within the long window -> duplicate
+    filter_dhash_long_window_s: float = 600.0
+    filter_max_per_min: int = 20  # per-device cap on kept frames (token bucket; heartbeat/pose exempt)
 
     episode_gap_s: float = 120.0
     episode_split_sim: float = 0.80
