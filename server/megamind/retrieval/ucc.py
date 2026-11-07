@@ -206,7 +206,8 @@ def token_document(t: MemoryToken, tz: ZoneInfo | None = None) -> Json:
 
 class UCCIndexer:
     """Store -> corpus sync. `sync_once()` pushes enriched tokens not yet in the corpus; `start()` runs it every
-    `interval_s`. Re-scans `lookback_s` before the newest pushed token so late enrichments are not missed."""
+    `interval_s`. Re-scans `lookback_s` before the newest pushed token so late enrichments are not missed.
+    While UCC is unreachable the wait doubles per consecutive failure, capped at `max_backoff_s`."""
 
     def __init__(
         self,
@@ -217,6 +218,7 @@ class UCCIndexer:
         interval_s: float = 30.0,
         lookback_s: float = 900.0,
         scan_limit: int = 50_000,
+        max_backoff_s: float = 300.0,
     ) -> None:
         self.client = client
         self.store = store
@@ -224,6 +226,8 @@ class UCCIndexer:
         self.interval_s = interval_s
         self.lookback_s = lookback_s
         self.scan_limit = scan_limit
+        self.max_backoff_s = max_backoff_s
+        self.failures = 0
         self.pushed: set[str] | None = None
         self.cursor: float | None = None
         self._task: asyncio.Task | None = None
@@ -249,11 +253,18 @@ class UCCIndexer:
         while True:
             try:
                 await self.sync_once()
+                self.failures = 0
             except asyncio.CancelledError:
                 raise
-            except Exception as e:  # keep syncing through transient API errors
-                log.warning("ucc sync failed: %s", e)
-            await asyncio.sleep(self.interval_s)
+            except Exception as e:  # keep syncing through transient API errors, backing off
+                self.failures += 1
+                log.warning("ucc sync failed (%d in a row): %s", self.failures, e)
+            await asyncio.sleep(self.next_delay())
+
+    def next_delay(self) -> float:
+        if not self.failures:
+            return self.interval_s
+        return min(self.interval_s * 2 ** min(self.failures, 30), max(self.max_backoff_s, self.interval_s))
 
     async def start(self) -> None:
         if self._task is None:
