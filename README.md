@@ -14,6 +14,7 @@ hears it and sees the remembered frame on a world-locked AR panel.
 - Design document: [`docs/megamind-design.pdf`](docs/megamind-design.pdf) (read this first)
 - API contract (headset ⇄ server): [`docs/api.md`](docs/api.md)
 - Prior art & what's different: [`docs/prior-art.md`](docs/prior-art.md)
+- Hackathon credits/hardware → model choices: [`docs/resources.md`](docs/resources.md)
 
 ## How it works
 
@@ -49,7 +50,7 @@ zero-infra storage; voice-first UI.
 ## Repository layout
 
 ```
-docs/       design doc (LaTeX + PDF), api.md, prior-art.md
+docs/       design doc (LaTeX + PDF), api.md, prior-art.md, resources.md
 server/     FastAPI backend — ingest, memory store, agent (Python 3.11+)
 tools/      feeder.py (webcam/video → /v1/frames), ask.py (CLI chat)
 headset/    Unity project for Quest 3 — setup README + C# scripts
@@ -77,9 +78,9 @@ curl -s "localhost:8000/v1/memories?q=keys&k=5"
 
 With no API keys configured the server runs entirely on deterministic mocks (mock captions,
 hashing embeddings, caption-only reader, no STT/TTS), so the whole loop is exercisable on a
-laptop. Set `ANTHROPIC_API_KEY`, `READER_BASE_URL` (any OpenAI-compatible Qwen-VL endpoint:
-vLLM, Together, OpenRouter, DashScope), `EMBED_PROVIDER`, `STT_PROVIDER`, `TTS_PROVIDER` to
-turn on the real thing — see `server/.env.example`.
+laptop. Set `ANTHROPIC_API_KEY`, `READER_API_KEY` (Sail Research serving `Qwen/Qwen3.6-35B-A3B`, or any
+OpenAI-compatible endpoint: vLLM on Modal, Together, OpenRouter), `EMBED_PROVIDER`, `STT_PROVIDER`,
+`TTS_PROVIDER` to turn on the real thing — see `server/.env.example` and `docs/resources.md`.
 
 ### Headset
 
