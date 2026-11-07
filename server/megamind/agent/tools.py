@@ -81,6 +81,7 @@ class RecallMemory:
         k: int = 12,
         mode: SearchMode = "hybrid",
         device_id: str | None = None,
+        now: float | None = None,
     ) -> RecallResult:
         k = max(1, min(k, 24))
         # --- retrieval (stream-3): plan the query (relative times, type-dependent weights, rewrite),
@@ -94,7 +95,7 @@ class RecallMemory:
         if not tokens:
             return RecallResult(evidence="No memories match.", confidence="not_found", cited=[], all_retrieved=[])
         # --- reader + result mapping (stream-4) ---
-        out = await self.reader.read(query, tokens)
+        out = await self.reader.read(query, tokens, now=now)
         by_id = {h.id: h for h in hits}
         evidence = out.evidence
         if out.degraded:
