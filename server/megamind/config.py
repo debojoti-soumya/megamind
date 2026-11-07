@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""
 
     store_backend: str = "memory"
+    retriever_backend: str = "hybrid"  # "hybrid" (ours) | "ucc" (Universal Constructor; falls back to hybrid on error)
+    ucc_api_key: str = ""
+    ucc_base_url: str = "https://api.universalconstructor.co/v1"
+    ucc_corpus: str = "megamind"
+    ucc_timeout_s: float = 4.0  # per recall; past it the hybrid answers
+    ucc_candidates: int = 0  # >0: UCC reranks the hybrid's top-N instead of the whole time window
+    ucc_sync_interval_s: float = 30.0
+    ucc_keep_alive_s: int | None = None  # corpus retention; None keeps it until deleted
     wearer_tz: str = "America/Los_Angeles"  # IANA zone used to resolve "this morning" in recall_memory
     lancedb_path: Path = Path("./data/lancedb")
     thumb_dir: Path = Path("./data/thumbs")
