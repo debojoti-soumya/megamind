@@ -17,7 +17,7 @@ Source: [2026 Neo Hackathon](https://neo-community.notion.site/2026-Neo-Hackatho
 ## Recommended default configuration
 
 ```
-CLAUDE_MODEL=claude-sonnet-4-5                      # Anthropic credits
+CLAUDE_MODEL=claude-sonnet-4-6                      # Anthropic credits
 ENRICH_BASE_URL=https://api.sailresearch.com/v1     # Sail credits
 ENRICH_MODEL=google/gemma-4-31B-it                  # vision; balanced window (X-Sail-Completion-Window: balanced)
 READER_BASE_URL=https://api.sailresearch.com/v1
