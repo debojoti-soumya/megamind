@@ -109,7 +109,7 @@ class StoreAdapter:
             rows = await self.store.vector_search(
                 vec, k, field=field, time_from=time_from, time_to=time_to, device_id=device_id
             )
-            return self._rank(rows)
+            return [(i, s) for i, s in self._rank(rows) if s > 0]  # stores may return non-matches at <= 0
         pool = await self._pool(time_from, time_to, device_id)
         scored = [(t.id, cosine(vec, v)) for t in pool if t.caption and (v := getattr(t, field))]
         scored = [(i, s) for i, s in scored if s > 0]
