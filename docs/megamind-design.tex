@@ -84,6 +84,27 @@ Demonstrate, live, a wearer asking the headset questions whose answers depend on
 \end{itemize}
 
 % -------------------------------------------------------------------
+\section{Prior Art and Differentiation}
+The use case is not new; the open, agent-callable system on a consumer headset is. Details and links in \texttt{docs/prior-art.md}.
+
+\paragraph{Products.} Google's \emph{Project Astra} (I/O 2024, now Gemini Live / Android XR) demonstrated ``where did I leave my glasses?'' from a short rolling window of camera frames---closed, session-scoped, no third-party access. Meta AI on Ray-Ban Meta offers explicit ``remember where I parked'' reminders and Live AI sessions, not passive searchable visual memory. Limitless, Rewind, Bee and Omi pendants are audio-only lifeloggers.
+
+\paragraph{Research.} \emph{Ego4D Episodic Memory} (2022) defines our exact task (NLQ, Visual Queries) as an offline benchmark. \emph{EgoLife} (CVPR 2025) is the closest system: a week-long egocentric assistant with EgoRAG, a caption/text-based hierarchical memory, captured on Aria glasses with no interactive AR client. \emph{Vinci} (2024) is a real-time egocentric VLM assistant for smart glasses focused on live understanding.
+
+\paragraph{Open source on Quest.} \texttt{QuestCameraKit} ($\sim$580$\star$) provides Passthrough Camera API templates (reuse its plumbing). \texttt{JarvisVR}, \texttt{OpenAI-for-Meta-Quest-3} and similar projects answer questions about the \emph{current} scene; JarvisVR explicitly lists episodic memory as future work.
+
+\paragraph{What Megamind adds.}
+\begin{enumerate}
+  \item Persistent, passive episodic \emph{visual} memory on a consumer headset via the Passthrough Camera API.
+  \item Memory exposed as an agent tool (\texttt{recall\_memory}) with a published schema, decoupled from any one assistant.
+  \item A two-model read path in which a Qwen-VL reader re-attends over the retrieved \emph{frames}, not just captions.
+  \item Temporal + semantic + visual hybrid retrieval with time-range filtering.
+  \item Grounded answers: the cited frame is rendered in AR next to the reply.
+  \item Open, device-agnostic (feeder, phone, webcam) with a local-first store and purge.
+\end{enumerate}
+We claim a working, open, agent-integrated system on hardware people own---not a new use case or a model-level contribution.
+
+% -------------------------------------------------------------------
 \section{Key Design Decisions}
 
 \begin{decision}
@@ -98,7 +119,7 @@ Each token = one keyframe at time $t$ with: a dense caption, OCR text, entity li
 
 \begin{decision}
 \textbf{D3 --- Two-model agent: Claude orchestrates, Qwen-VL reads memory.}
-Claude (Sonnet) is the user-facing agent and tool caller. The \texttt{recall\_memory} tool retrieves top-$k$ tokens and invokes a Qwen2.5-VL (or Qwen3-VL) reader that answers the sub-question over those tokens with citations. Claude never sees raw frames unless the reader's evidence is insufficient, keeping its context small and latency bounded.
+Claude (Sonnet) is the user-facing agent and tool caller. The \texttt{recall\_memory} tool retrieves top-$k$ tokens and invokes a Qwen reader (Qwen3.6-35B-A3B via Sail, or self-hosted Qwen2.5-VL) that answers the sub-question over those tokens with citations. Claude never sees raw frames unless the reader's evidence is insufficient, keeping its context small and latency bounded.
 \end{decision}
 
 \begin{decision}
@@ -215,7 +236,7 @@ MemoryToken {
 }
 \end{lstlisting}
 
-\paragraph{Enrichment model.} Qwen2.5-VL-7B-Instruct (or Qwen3-VL) via an OpenAI-compatible endpoint (vLLM locally if a GPU is available, otherwise a hosted provider). One call per keyframe with a fixed JSON-output prompt producing \texttt{caption}, \texttt{ocr\_text}, \texttt{entities}. Fallback: Claude Haiku with vision. Prompt emphasises \emph{retrievable} detail: object locations relative to surfaces, legible text verbatim, people descriptors (no identity claims), room type.
+\paragraph{Enrichment model.} Qwen3.6-35B-A3B (vision) via Sail Research's OpenAI-compatible endpoint, or Qwen2.5-VL-7B on vLLM/Modal as plan~B. One call per keyframe with a fixed JSON-output prompt producing \texttt{caption}, \texttt{ocr\_text}, \texttt{entities}. Fallback: Claude Haiku with vision. Prompt emphasises \emph{retrievable} detail: object locations relative to surfaces, legible text verbatim, people descriptors (no identity claims), room type.
 
 \paragraph{Embeddings.} Text: a hosted embedding model (Voyage \texttt{voyage-3} or OpenAI \texttt{text-embedding-3-small}) or local \texttt{bge-m3}. Image: SigLIP-base (\texttt{open\_clip}) for visual-similarity queries. Both configurable via environment variables.
 
@@ -254,7 +275,7 @@ Claude's system prompt instructs it to call \texttt{recall\_memory} whenever the
 \end{enumerate}
 
 \subsection{Reader sub-agent (Qwen-VL)}
-The reader receives, in one prompt, the concatenated tokens: for each, \texttt{[id] [timestamp] caption / ocr} plus the thumbnail image, followed by the query. It is asked to answer only from the tokens, cite token ids, and emit a confidence label as JSON. This is the component that literally performs attention across memories. Qwen2.5-VL-7B handles 12--24 images comfortably; use 72B via a hosted provider if quality is lacking.
+The reader receives, in one prompt, the concatenated tokens: for each, \texttt{[id] [timestamp] caption / ocr} plus the thumbnail image, followed by the query. It is asked to answer only from the tokens, cite token ids, and emit a confidence label as JSON. This is the component that literally performs attention across memories. Qwen3.6-35B-A3B accepts up to 20 images per request on Sail; if its flex-window latency is too high for live Q\&A, switch the reader to Gemma~4~31B (same API) or self-host Qwen2.5-VL on Modal.
 
 \paragraph{Why two models.} Claude keeps the conversation, tool-use discipline and final phrasing; the reader does cheap, parallelisable, image-heavy evidence extraction. Claude's context never fills with thumbnails, so multi-turn chat remains fast.
 
@@ -379,13 +400,15 @@ Privacy of bystanders & Low (hackathon) & Visible capture indicator, local stora
 
 % -------------------------------------------------------------------
 \section{Configuration}
+\paragraph{Hackathon resources.} Anthropic credits (\$800) run the Claude orchestrator; Sail Research credits (\$2000, OpenAI-compatible) serve Qwen3.6-35B-A3B with image input for the enricher and reader (Gemma~4~31B as the low-latency fallback); Modal credits (\$2000) are plan~B for self-hosting Qwen2.5-VL on vLLM plus SigLIP/Whisper endpoints; OpenAI credits (\$400) cover embeddings, Whisper and TTS. Four Quest~3 units are available on site. Full mapping in \texttt{docs/resources.md}.
+
 All secrets and model selections via environment variables (\texttt{server/.env.example}):
 \begin{lstlisting}
 ANTHROPIC_API_KEY=...
 CLAUDE_MODEL=claude-sonnet-4-5
-READER_BASE_URL=http://localhost:8001/v1      # vLLM or hosted OpenAI-compatible
+READER_BASE_URL=https://api.sailresearch.com/v1  # Sail (credits); or vLLM on Modal
 READER_API_KEY=...
-READER_MODEL=Qwen/Qwen2.5-VL-7B-Instruct
+READER_MODEL=Qwen/Qwen3.6-35B-A3B            # vision; fallback google/gemma-4-31B-it
 ENRICH_BASE_URL=${READER_BASE_URL}            # same model by default
 EMBED_PROVIDER=openai|voyage|local
 EMBED_MODEL=text-embedding-3-small

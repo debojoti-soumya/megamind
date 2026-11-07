@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     reader_base_url: str = "http://localhost:8001/v1"
     reader_api_key: str = "none"
-    reader_model: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+    reader_model: str = "Qwen/Qwen3.6-35B-A3B"
     enrich_base_url: str = ""
     enrich_model: str = ""
 
