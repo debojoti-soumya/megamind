@@ -29,11 +29,12 @@ class Weights:
     image: float = 0.6  # CLIP-family towers are weak on dense text (research digest)
     recency: float = 0.15  # pull toward newer tokens among near-equal scores
     ocr: float = 0.0  # bonus for tokens that carry OCR text (read-text questions)
+    ocr_bm25: float = 0.0  # extra BM25 list over `ocr_text` only (research digest: read-text path)
 
 
 WEIGHTS_BY_TYPE: dict[str, Weights] = {
     "locate_object": Weights(text=1.0, bm25=1.0, image=0.8, recency=0.3),
-    "read_text": Weights(text=0.8, bm25=1.6, image=0.3, recency=0.1, ocr=0.6),
+    "read_text": Weights(text=0.8, bm25=1.6, image=0.3, recency=0.1, ocr=0.6, ocr_bm25=2.0),
     "activity": Weights(text=1.0, bm25=0.6, image=1.0, recency=0.2),
     "people": Weights(text=1.0, bm25=0.6, image=1.0, recency=0.15),
     "generic": Weights(),

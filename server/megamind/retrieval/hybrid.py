@@ -129,6 +129,9 @@ class HybridRetriever(Retriever):
                 qv = await self.text_embedder.embed(text)
                 tv = await self.adapter.vector_search(qv, n, "text_vec", **flt)
                 lists.append(("text", w.text, [i for i, _ in tv]))
+            if w.ocr_bm25:
+                ocr = await self.adapter.ocr_search(text, n, **flt)
+                lists.append(("ocr_bm25", w.ocr_bm25, [i for i, _ in ocr]))
         if mode in ("visual", "hybrid") and self.image_embedder is not None:
             iv_q = await self.image_embedder.embed_text(text)
             iv = await self.adapter.vector_search(iv_q, n, "image_vec", **flt)
