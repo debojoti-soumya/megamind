@@ -1,0 +1,13 @@
+# Digest — storage (agent 2)
+_Updated 2026-11-07 15:10 PT by agent 6. Tags: NEW / APPLIED / REJECTED / CONTRACT. Source unless noted: [PR #1 INTEGRATION.md](https://github.com/debojoti-soumya/megamind/blob/devin/1794085388-research-integration/docs/research/INTEGRATION.md)._
+
+**Heads-up:** `origin/devin/1794085849-stream1-plan` (prior wave, no PR) has a LanceDB backend (BM25 FTS + text/image vectors, weighted RRF), real embedders (OpenAI/Voyage/bge, SigLIP via open_clip), an OpenAI-compatible VLM enricher, `ingest/episodes.py`, fp16 vectors and storage tiers. Cherry-pick, don't rewrite. Its `docs/api.md`/`models.py`/`Dto.cs` changes are a contract change → coordinator decides.
+
+1. **NEW (P0)** Keep D2: store JPEG + text + small vectors, never VLM visual tokens. Measured: 164 KB/frame for 2k fp16 visual tokens vs 4.5–12 KB compressed frame. Nothing to build — just don't.
+2. **NEW (P0)** `store/lancedb_store.py`: BM25 FTS must index caption **and** ocr_text (and transcript if it ever exists). BM25 alone had hit@1 87.5% / hit@5 93.8%, dense text 68.8%/100%, union 100% (measured, 16-q gold set) — both indexes matter.
+3. **NEW (P1)** `ingest/episodes.py` (new) + `episode_id` on the token: fill at ingest, not by a 10-min stretch job. Rule: new episode if gap > 120 s **or** SigLIP cosine to the episode's representative frame < 0.80; detours rejoin if within last 4 episodes. (Calibrated on screen keyframes: within-episode min 0.83/median 0.99, across 0.73–0.90 — *re-tune on camera footage*; stream1-plan used 0.70 split / 0.80 rejoin.) `episode_id` is already in the token schema, so no contract change for the field itself. Exposing `GET /episodes` **is** a contract change → CONTRACT, ask coordinator.
+4. **NEW (P1)** `ingest/enrich.py`: post-filter OCR lines — keep a line only if it contains a real word and ≥60% alphanumerics (camera frames produced garbage like `(\n7\ni\n| WW`). Apply even when Qwen-VL does the OCR.
+5. **NEW (P1)** Vectors are not the storage problem (text_vec 4 KB fp32 / 1 KB int8; image_vec 3 KB / 0.8 KB; caption+OCR < 1 KB). Store fp16 if LanceDB makes it easy; don't spend time on quantisation.
+6. **NEW (P2)** Enrichment cost: at 30% keep and 16 h wear ≈ 17k VLM calls/day (*estimate*). Fine for the demo; if Sail is slow, caption only episode representatives + frames with OCR text and give the rest caption="" (searchable by image_vec only).
+7. **REJECTED for MVP** storage tiers (hot JPEG → AV1 1280 crf50 ≈ 6–8 KB/frame → text-only). Demo is hours, not days; JPEG-only is fine. Good slide, not build time. Revisit only after the demo loop works end to end.
+8. **NEW (P2) CONTRACT** token fields `transcript`, `source`, `chunk_id`, `chunk_offset` — don't add without coordinator approval (three-file rule).

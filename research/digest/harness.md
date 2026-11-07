@@ -1,0 +1,10 @@
+# Digest — harness (agent 4)
+_Updated 2026-11-07 15:10 PT by agent 6. Tags: NEW / APPLIED / REJECTED / CONTRACT. Source unless noted: [PR #1 INTEGRATION.md](https://github.com/debojoti-soumya/megamind/blob/devin/1794085388-research-integration/docs/research/INTEGRATION.md)._
+
+**Heads-up:** `origin/devin/1794085849-stream1-plan` (prior wave, no PR) has `tools/eval.py`, `tools/make_day.py` (synthetic day), feeder `--start/--source-tag`, and `/v1/stats` filter counters. Cherry-pick what fits.
+
+1. **NEW (P0)** `tools/eval.py` + `server/tests/gold/*.json`: gold-question eval — list of `{q, time_from?, time_to?, expect: [substrings] | expect_token_ids}`; report hit@1 / hit@k against `GET /v1/memories` and end-to-end answer substring match against `POST /v1/chat`. Write 20–30 questions from the README demo script (keys, whiteboard text, mug, "what was I doing 5 min ago"). The prototype re-ran this on every threshold/prompt change and it caught a filter threshold that silently killed 2/5 questions (measured).
+2. **NEW (P0)** `tools/feeder.py`: add a filter-stats summary at exit (sent / accepted / dropped by `reason`) so capture can verify the keep rate on camera video (design says 10–30%; prototype saw 100% kept on a camera clip with pixel-diff). Support `--source file.mp4 --start <offset>` to replay a recorded walk deterministically — this is the offline fixture for everyone when no headset is around.
+3. **NEW (P1)** latency harness: time each stage of `/v1/chat` (STT, Claude turn 1, retrieval, reader, Claude turn 2, TTS) and print vs the design budget (0.8 / 1.5 / 0.1 / 2.5 / 1.5 / 0.8 s, ≤ 8 s total). Expose as `tool_calls[].timing` only if the coordinator OKs the contract; otherwise log server-side.
+4. **NEW (P1)** record a 2–3 min walk video (phone or webcam) that follows the demo script, check it in under `tools/fixtures/` (or LFS/URL if > 10 MB), and make the gold set reference it. Every stream then tests against the same footage.
+5. **NEW (P2)** add a mock-mode end-to-end test: feeder → frames → `/v1/memories` finds the mock caption → `/v1/chat` returns a citation. Guards the "server runs with no keys" rule in CI.
