@@ -1,0 +1,155 @@
+{
+ "per_q": [
+  {
+   "q": "What was the budget I noted for the Lisbon trip?",
+   "type": "exact",
+   "n_gold_frames": 7,
+   "fts@1": true,
+   "fts@5": true,
+   "sem@1": true,
+   "sem@5": true
+  },
+  {
+   "q": "What invoice number did I need to call the dentist about?",
+   "type": "exact",
+   "n_gold_frames": 6,
+   "fts@1": true,
+   "fts@5": true,
+   "sem@1": true,
+   "sem@5": true
+  },
+  {
+   "q": "Who is the action item for benchmarking AV1 vs HEVC assigned to, and by when?",
+   "type": "exact",
+   "n_gold_frames": 7,
+   "fts@1": false,
+   "fts@5": true,
+   "sem@1": false,
+   "sem@5": true
+  },
+  {
+   "q": "By how much did the Northwind Logistics renewal price go up and what did I propose?",
+   "type": "exact",
+   "n_gold_frames": 27,
+   "fts@1": true,
+   "fts@5": true,
+   "sem@1": true,
+   "sem@5": true
+  },
+  {
+   "q": "What did my design doc say happens to keyframes after 7 days?",
+   "type": "exact",
+   "n_gold_frames": 3,
+   "fts@1": true,
+   "fts@5": true,
+   "sem@1": false,
+   "sem@5": true
+  },
+  {
+   "q": "Which arXiv paper did I look at?",
+   "type": "exact",
+   "n_gold_frames": 4,
+   "fts@1": true,
+   "fts@5": true,
+   "sem@1": true,
+   "sem@5": true
+  },
+  {
+   "q": "What GitHub repository did I view?",
+   "type": "exact",
+   "n_gold_frames": 15,
+   "fts@1": true,
+   "fts@5": true,
+   "sem@1": false,
+   "sem@5": true
+  },
+  {
+   "q": "Which Python standard library module docs did I read?",
+   "type": "exact",
+   "n_gold_frames": 6,
+   "fts@1": true,
+   "fts@5": true,
+   "sem@1": true,
+   "sem@5": true
+  },
+  {
+   "q": "What YouTube video did I watch?",
+   "type": "exact",
+   "n_gold_frames": 57,
+   "fts@1": false,
+   "fts@5": false,
+   "sem@1": true,
+   "sem@5": true
+  },
+  {
+   "q": "Which battle did I read about on Wikipedia?",
+   "type": "semantic",
+   "n_gold_frames": 10,
+   "fts@1": true,
+   "fts@5": true,
+   "sem@1": true,
+   "sem@5": true
+  },
+  {
+   "q": "What spice did I read about?",
+   "type": "semantic",
+   "n_gold_frames": 4,
+   "fts@1": true,
+   "fts@5": true,
+   "sem@1": true,
+   "sem@5": true
+  },
+  {
+   "q": "Did I read anything about image hashing techniques?",
+   "type": "semantic",
+   "n_gold_frames": 5,
+   "fts@1": true,
+   "fts@5": true,
+   "sem@1": true,
+   "sem@5": true
+  },
+  {
+   "q": "What video codec article did I read on Wikipedia?",
+   "type": "semantic",
+   "n_gold_frames": 13,
+   "fts@1": true,
+   "fts@5": true,
+   "sem@1": false,
+   "sem@5": true
+  },
+  {
+   "q": "Which news sites did I visit?",
+   "type": "semantic",
+   "n_gold_frames": 10,
+   "fts@1": true,
+   "fts@5": true,
+   "sem@1": false,
+   "sem@5": true
+  },
+  {
+   "q": "Where did I read about the browser Screen Capture API?",
+   "type": "exact",
+   "n_gold_frames": 8,
+   "fts@1": true,
+   "fts@5": true,
+   "sem@1": true,
+   "sem@5": true
+  },
+  {
+   "q": "Did I get any error pages while browsing?",
+   "type": "semantic",
+   "n_gold_frames": 1,
+   "fts@1": true,
+   "fts@5": true,
+   "sem@1": true,
+   "sem@5": true
+  }
+ ],
+ "agg": {
+  "fts@1": 0.875,
+  "fts@5": 0.9375,
+  "sem@1": 0.6875,
+  "sem@5": 1.0,
+  "answerable_from_ocr": 1.0
+ }
+}

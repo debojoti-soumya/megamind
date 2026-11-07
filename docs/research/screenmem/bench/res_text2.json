@@ -1,0 +1,17 @@
+{
+ "n_kept": 156,
+ "n_total": 819,
+ "text_full_raw": 267308,
+ "text_full_zstd19": 53891,
+ "text_delta_raw": 178029,
+ "text_delta_zstd19": 51603,
+ "emb_fp16": 119808,
+ "emb_int8": 59904,
+ "emb_binary": 7488,
+ "sqlite_db": 655360,
+ "words_per_kept_frame": 253.83333333333334,
+ "text_full_zstd19_MB_per_16h": 3.7793224111848613,
+ "text_delta_zstd19_MB_per_16h": 3.6188672391377485,
+ "emb_int8_MB_per_16h": 4.201008140869865,
+ "sqlite_db_MB_per_16h": 45.95974718216605
+}

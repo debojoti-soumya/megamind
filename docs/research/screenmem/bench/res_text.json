@@ -1,0 +1,17 @@
+{
+ "n_kept": 109,
+ "n_total": 819,
+ "text_raw": 201544,
+ "text_zstd19": 48926,
+ "emb_fp16": 83712,
+ "emb_int8": 41856,
+ "sqlite_db": 512000,
+ "ocr_recall": {
+  "kept_hevc_full_crf28": 0.7657492395925262,
+  "kept_hevc_1920_crf30": 0.5241668908288666,
+  "kept_hevc_1920_crf34": 0.46403551656225395,
+  "kept_hevc_1280_crf30": 0.35695115628008944,
+  "kept_av1_1920_crf40": null,
+  "kept_av1_1920_crf48": null
+ }
+}

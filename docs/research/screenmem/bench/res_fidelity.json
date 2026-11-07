@@ -1,0 +1,55 @@
+{
+ "res": {
+  "kept_hevc_full_crf28": {
+   "word_recall": 0.9222916980000043,
+   "word_precision": 0.9074968668976154,
+   "n": 16
+  },
+  "kept_hevc_1920_crf30": {
+   "word_recall": 0.9090080603204542,
+   "word_precision": 0.8881949142939709,
+   "n": 16
+  },
+  "kept_hevc_1920_crf34": {
+   "word_recall": 0.9049621736000277,
+   "word_precision": 0.8854796885663302,
+   "n": 16
+  },
+  "kept_hevc_1280_crf30": {
+   "word_recall": 0.8740490467668209,
+   "word_precision": 0.8627712819669858,
+   "n": 16
+  },
+  "kept_av1_1920_crf40": {
+   "word_recall": 0.896955770492283,
+   "word_precision": 0.8723963873725125,
+   "n": 16
+  },
+  "kept_av1_1920_crf48": {
+   "word_recall": 0.8749611672135658,
+   "word_precision": 0.8357442988949336,
+   "n": 16
+  },
+  "png1920": {
+   "word_recall": 0.8779882123438321,
+   "word_precision": 0.8722133344252179,
+   "n": 16
+  },
+  "webp1920q60": {
+   "word_recall": 0.9011856449345563,
+   "word_precision": 0.8648460113829994,
+   "n": 16
+  },
+  "webpfullq50": {
+   "word_recall": 0.9112479380374372,
+   "word_precision": 0.8856487518907943,
+   "n": 16
+  },
+  "jpegfullq60": {
+   "word_recall": 0.9293896015223982,
+   "word_precision": 0.8878160885175698,
+   "n": 16
+  }
+ },
+ "gt_words_per_frame": 119.625
+}
