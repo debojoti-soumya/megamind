@@ -14,6 +14,7 @@ async def client(request, tmp_path):
         lancedb_path=tmp_path / "lancedb",
         embed_provider="mock",
         filter_min_gap_s=0.0,
+        consolidate_enabled=False,
         _env_file=None,
     )
     app = create_app(settings)
