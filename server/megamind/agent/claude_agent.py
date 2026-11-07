@@ -6,6 +6,11 @@ The loop is the standard Anthropic tool-use loop: ``messages.create`` with
 called again until it stops with ``end_turn`` (or we hit ``MAX_TOOL_ROUNDS``).
 Per-session history is kept in memory, capped at ``MAX_TURNS`` exchanges.
 
+Latency: with ``RECALL_PREFETCH`` the turn starts ``recall_memory`` on the raw question
+concurrently with the first model call; Claude's first tool call reuses it when it adds no
+time bounds and its keywords come from the question (:func:`prefetch_reusable`), otherwise
+the prefetch is cancelled and the tool runs with Claude's arguments.
+
 Without ``ANTHROPIC_API_KEY`` (or when the API fails) the deterministic
 ``_no_llm_fallback`` path answers straight from the reader's evidence so the
 whole system keeps working offline.
@@ -13,6 +18,8 @@ whole system keeps working offline.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -25,7 +32,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import anthropic
 from ulid import ULID
 
-from megamind.agent.tools import RECALL_MEMORY_TOOL, RecallMemory
+from megamind.agent.tools import OCR_MATCH_PREFIX, RECALL_MEMORY_TOOL, RecallMemory, keywords
 from megamind.config import Settings
 from megamind.models import ChatResponse, Citation, RecallResult, ToolCallRecord
 
@@ -34,6 +41,7 @@ log = logging.getLogger("megamind.agent")
 MAX_TOOL_ROUNDS = 4
 MAX_TURNS = 10
 MAX_TOKENS = 400
+PREFETCH_MIN_OVERLAP = 0.5  # share of Claude's query keywords that must appear in the question to reuse the prefetch
 NOT_FOUND_ANSWER = "I don't have a memory of that."
 _CITES_RE = re.compile(r"\s*<cites>(.*?)</cites>\s*", re.DOTALL)
 
@@ -138,6 +146,24 @@ def _tool_result_payload(r: RecallResult, now: float, zone: ZoneInfo) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def prefetch_reusable(args: dict, question: str) -> bool:
+    """Claude's first recall_memory call can reuse the raw-question prefetch when it adds no explicit
+    time bounds / mode / k and its keywords mostly come from the question itself."""
+    if args.get("time_from") or args.get("time_to"):
+        return False
+    if args.get("mode", "hybrid") not in (None, "hybrid") or args.get("k", 12) not in (None, 12):
+        return False
+    q = keywords(str(args.get("query") or ""))
+    return bool(q) and len(q & keywords(question)) / len(q) >= PREFETCH_MIN_OVERLAP
+
+
+async def _cancel(task: asyncio.Task | None) -> None:
+    if task is not None and not task.done():
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+
 def _split_cites(text: str) -> tuple[str, list[str] | None]:
     m = _CITES_RE.search(text)
     if not m:
@@ -217,55 +243,73 @@ class ClaudeAgent:
         reader_cited: list[Citation] = []
         answer_text = ""
 
-        for _round in range(MAX_TOOL_ROUNDS + 1):
-            t_llm = time.perf_counter()
-            msg = await self._client.messages.create(
-                model=self.settings.claude_model,
-                max_tokens=MAX_TOKENS,
-                system=self.system_prompt(now),
-                tools=[RECALL_MEMORY_TOOL],
-                messages=prior + turn,
-            )
-            stats.llm_ms += (time.perf_counter() - t_llm) * 1000
-            stats.model_calls += 1
-            stats.input_tokens += msg.usage.input_tokens
-            stats.output_tokens += msg.usage.output_tokens
-
-            assistant_content = [b.model_dump(exclude_none=True) for b in msg.content]
-            turn.append({"role": "assistant", "content": assistant_content})
-            texts = [b.text for b in msg.content if b.type == "text"]
-            if texts:
-                answer_text = "\n".join(texts)
-            uses = [b for b in msg.content if b.type == "tool_use"]
-            if msg.stop_reason != "tool_use" or not uses or _round == MAX_TOOL_ROUNDS:
-                break
-
-            results: list[dict] = []
-            for use in uses:
-                args = dict(use.input) if isinstance(use.input, dict) else {}
-                t_tool = time.perf_counter()
-                r = await self._run_tool(use.name, args, device_id, now)
-                stats.tool_ms += (time.perf_counter() - t_tool) * 1000
-                stats.tool_calls += 1
-                tool_calls.append(ToolCallRecord(name=use.name, args=args, confidence=r.confidence))
-                for c in r.all_retrieved:
-                    retrieved.setdefault(c.id, c)
-                for c in r.cited:
-                    retrieved.setdefault(c.id, c)
-                    if c.id not in {x.id for x in reader_cited}:
-                        reader_cited.append(c)
-                log.info(
-                    "req=%s tool=%s args=%s -> %s (%d cited / %d retrieved)",
-                    stats.request_id,
-                    use.name,
-                    json.dumps(args, ensure_ascii=False),
-                    r.confidence,
-                    len(r.cited),
-                    len(r.all_retrieved),
+        prefetch: asyncio.Task[RecallResult] | None = None
+        if self.settings.recall_prefetch:
+            # overlap retrieval + reader with Claude's first call; most first tool calls are the question's keywords
+            prefetch = asyncio.create_task(self._run_tool("recall_memory", {"query": text}, device_id, now))
+            stats.extra["prefetch"] = "unused"
+        try:
+            for _round in range(MAX_TOOL_ROUNDS + 1):
+                t_llm = time.perf_counter()
+                msg = await self._client.messages.create(
+                    model=self.settings.claude_model,
+                    max_tokens=MAX_TOKENS,
+                    system=self.system_prompt(now),
+                    tools=[RECALL_MEMORY_TOOL],
+                    messages=prior + turn,
                 )
-                payload = _tool_result_payload(r, now, _zone(self.settings.wearer_tz))
-                results.append({"type": "tool_result", "tool_use_id": use.id, "content": payload})
-            turn.append({"role": "user", "content": results})
+                stats.llm_ms += (time.perf_counter() - t_llm) * 1000
+                stats.model_calls += 1
+                stats.input_tokens += msg.usage.input_tokens
+                stats.output_tokens += msg.usage.output_tokens
+
+                assistant_content = [b.model_dump(exclude_none=True) for b in msg.content]
+                turn.append({"role": "assistant", "content": assistant_content})
+                texts = [b.text for b in msg.content if b.type == "text"]
+                if texts:
+                    answer_text = "\n".join(texts)
+                uses = [b for b in msg.content if b.type == "tool_use"]
+                if msg.stop_reason != "tool_use" or not uses or _round == MAX_TOOL_ROUNDS:
+                    break
+
+                results: list[dict] = []
+                for use in uses:
+                    args = dict(use.input) if isinstance(use.input, dict) else {}
+                    t_tool = time.perf_counter()
+                    if prefetch is not None and use.name == "recall_memory" and prefetch_reusable(args, text):
+                        r, stats.extra["prefetch"] = await prefetch, "hit"
+                    else:
+                        if prefetch is not None:
+                            stats.extra["prefetch"] = "miss"
+                            await _cancel(prefetch)
+                        r = await self._run_tool(use.name, args, device_id, now)
+                    prefetch = None
+                    if r.evidence.startswith(OCR_MATCH_PREFIX):
+                        stats.extra["reader_skipped"] = stats.extra.get("reader_skipped", 0) + 1
+                    stats.tool_ms += (time.perf_counter() - t_tool) * 1000
+                    stats.tool_calls += 1
+                    tool_calls.append(ToolCallRecord(name=use.name, args=args, confidence=r.confidence))
+                    for c in r.all_retrieved:
+                        retrieved.setdefault(c.id, c)
+                    for c in r.cited:
+                        retrieved.setdefault(c.id, c)
+                        if c.id not in {x.id for x in reader_cited}:
+                            reader_cited.append(c)
+                    log.info(
+                        "req=%s tool=%s args=%s -> %s (%d cited / %d retrieved)",
+                        stats.request_id,
+                        use.name,
+                        json.dumps(args, ensure_ascii=False),
+                        r.confidence,
+                        len(r.cited),
+                        len(r.all_retrieved),
+                    )
+                    payload = _tool_result_payload(r, now, _zone(self.settings.wearer_tz))
+                    results.append({"type": "tool_result", "tool_use_id": use.id, "content": payload})
+                turn.append({"role": "user", "content": results})
+
+        finally:
+            await _cancel(prefetch)
 
         answer, cite_ids = _split_cites(answer_text)
         if not answer:
@@ -290,7 +334,9 @@ class ClaudeAgent:
         kwargs = {k: v for k, v in args.items() if k in allowed and v is not None}
         kwargs.setdefault("query", "")
         try:
-            return await self.recall(device_id=device_id, now=now, **kwargs)
+            return await self.recall(
+                device_id=device_id, now=now, skip_reader_on_ocr=self.settings.reader_skip_on_ocr, **kwargs
+            )
         except ValueError as e:  # bad ISO timestamp etc. -> tell the model instead of crashing the turn
             return RecallResult(evidence=f"Tool error: {e}", confidence="not_found", cited=[], all_retrieved=[])
 

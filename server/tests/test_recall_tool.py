@@ -4,7 +4,7 @@ reader a best-first list of full tokens (hand-off contract in issue #5). The rea
 from datetime import UTC, datetime
 
 from megamind.agent.reader import Reader, ReaderOutput
-from megamind.agent.tools import RECALL_MEMORY_TOOL, RecallMemory
+from megamind.agent.tools import OCR_MATCH_PREFIX, RECALL_MEMORY_TOOL, RecallMemory, keywords, ocr_exact_matches
 from megamind.ingest.enrich import ImageEmbedder, MockTextEmbedder
 from megamind.models import MemoryToken
 from megamind.retrieval import HybridConfig, HybridRetriever
@@ -170,3 +170,36 @@ async def test_now_reaches_the_retriever_planner():
     await tool("lunch", now=1_800_000_000.0)
     await tool("lunch")
     assert SpyRetriever.seen == [datetime.fromtimestamp(1_800_000_000.0, UTC), None]
+
+
+def _tok(tid: str, ocr: str) -> MemoryToken:
+    return MemoryToken(id=tid, device_id="d", ts=NOW, caption="c", ocr_text=ocr, thumb_path="", frame_hash="0" * 16)
+
+
+def test_keywords_drop_stopwords_and_plurals():
+    assert keywords("where are my keys?") == {"key"}
+    assert keywords("what's the dentist's phone number") == {"dentist", "phone", "number"}
+    assert keywords("OAT MILK $4.99") == {"oat", "milk", "4", "99"}
+
+
+def test_ocr_exact_match_is_conservative():
+    milk, sign = _tok("a", "OAT MILK $4.99"), _tok("b", "VISITORS CHECK IN")
+    assert ocr_exact_matches("how much was the oat milk", [milk, sign]) == [milk]
+    assert ocr_exact_matches("oat milk price", [milk]) == []  # "price" is not printed
+    assert ocr_exact_matches("milk", [milk]) == []  # one keyword is too weak
+    assert ocr_exact_matches("where did I see the oat milk", [milk]) == []  # location: pixels matter
+    filler = [_tok(f"f{i}", "") for i in range(3)]
+    assert ocr_exact_matches("oat milk", [*filler, milk]) == []  # the match must be a top-3 hit
+
+
+async def test_ocr_match_skips_reader_only_when_asked():
+    recall, reader = await _setup()
+    res = await recall(query="how much was the oat milk", skip_reader_on_ocr=True)
+    assert reader.calls == []
+    assert res.evidence.startswith(OCR_MATCH_PREFIX) and "OAT MILK $4.99" in res.evidence
+    assert res.confidence == "medium" and [c.id for c in res.cited] == ["t6"]
+    assert res.all_retrieved
+
+    await recall(query="how much was the oat milk")  # default: no-LLM path speaks reader evidence
+    await recall(query="how much was the oat milk", mode="visual", skip_reader_on_ocr=True)
+    assert len(reader.calls) == 2

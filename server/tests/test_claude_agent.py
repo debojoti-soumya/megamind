@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 
 import anthropic
 import httpx2 as httpx
 import pytest
 
-from megamind.agent.claude_agent import MAX_TOOL_ROUNDS, MAX_TURNS, NOT_FOUND_ANSWER, ClaudeAgent
+from megamind.agent.claude_agent import (
+    MAX_TOOL_ROUNDS,
+    MAX_TURNS,
+    NOT_FOUND_ANSWER,
+    ClaudeAgent,
+    prefetch_reusable,
+)
 from megamind.agent.reader import CaptionOnlyReader
 from megamind.agent.tools import RecallMemory
 from megamind.config import Settings
@@ -258,3 +266,122 @@ def test_render_system_prompt_local_time_and_bad_tz():
     assert "2024-11-07T08:00:00-08:00" in p  # example ISO with offset
     p = render_system_prompt(NOW, "Not/AZone")
     assert "(UTC)" in p
+
+
+class SpyRecall:
+    """Wraps RecallMemory: records every call's kwargs and adds latency (like a ~3 s Sail reader, scaled down)."""
+
+    def __init__(self, inner: RecallMemory, delay: float = 0.0):
+        self.inner, self.delay = inner, delay
+        self.calls: list[dict] = []
+        self.cancelled = 0
+
+    async def __call__(self, **kw):
+        self.calls.append(kw)
+        try:
+            await asyncio.sleep(self.delay)
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+        return await self.inner(**kw)
+
+
+def _spy_agent(spy: SpyRecall, script: ScriptedAnthropic, **cfg) -> ClaudeAgent:
+    return ClaudeAgent(Settings(anthropic_api_key="k", _env_file=None, **cfg), spy, client=script.client())
+
+
+def test_prefetch_reusable():
+    q = "where did I leave my keys this morning?"
+    assert prefetch_reusable({"query": "keys"}, q)
+    assert prefetch_reusable({"query": "keys morning", "k": 12, "mode": "hybrid", "time_from": None}, q)
+    assert not prefetch_reusable({"query": "keys", "time_from": "2026-11-07T06:00:00-08:00"}, q)
+    assert not prefetch_reusable({"query": "keys", "k": 6}, q)
+    assert not prefetch_reusable({"query": "keys", "mode": "visual"}, q)
+    assert not prefetch_reusable({"query": "car keys hallway table"}, q)  # 1/4 of Claude's words from the question
+    assert not prefetch_reusable({"query": ""}, q)
+
+
+async def test_prefetch_hit_reuses_raw_question_recall(recall):
+    spy = SpyRecall(recall)
+    script = ScriptedAnthropic(
+        [
+            _message([tool_use({"query": "keys"})], stop_reason="tool_use"),
+            _message([text("On the kitchen counter. <cites>t_keys</cites>")]),
+        ]
+    )
+    resp, stats = await _spy_agent(spy, script).chat_with_stats("s", "where did I leave my keys?", "dev1", now=NOW)
+    assert [c["query"] for c in spy.calls] == ["where did I leave my keys?"]  # one recall: the prefetch
+    assert stats.extra["prefetch"] == "hit" and stats.tool_calls == 1
+    assert resp.tool_calls[0].args == {"query": "keys"}  # the record shows what Claude asked for
+    assert [c.id for c in resp.cited] == ["t_keys"]
+
+
+async def test_prefetch_miss_requeries_with_claude_args(recall):
+    spy = SpyRecall(recall, delay=0.2)
+    args = {"query": "keys", "time_from": "2024-11-07T08:00:00+00:00"}
+    script = ScriptedAnthropic(
+        [_message([tool_use(args)], stop_reason="tool_use"), _message([text("Counter. <cites>t_keys</cites>")])]
+    )
+    _, stats = await _spy_agent(spy, script).chat_with_stats("s", "where were my keys this morning", "dev1", now=NOW)
+    assert stats.extra["prefetch"] == "miss" and spy.cancelled == 1
+    assert [c["query"] for c in spy.calls] == ["where were my keys this morning", "keys"]
+    assert spy.calls[1]["time_from"] == args["time_from"]
+
+
+async def test_prefetch_cancelled_when_claude_answers_without_tools(recall):
+    spy = SpyRecall(recall, delay=5.0)
+    script = ScriptedAnthropic([_message([text("Hi there.")])])
+    t0 = time.perf_counter()
+    resp, stats = await _spy_agent(spy, script).chat_with_stats("s", "hello", "dev1")
+    assert time.perf_counter() - t0 < 1.0 and resp.answer == "Hi there."
+    assert stats.extra["prefetch"] == "unused" and spy.cancelled == 1
+
+
+async def test_prefetch_cancelled_on_api_error_fallback(recall):
+    spy = SpyRecall(recall, delay=0.05)
+    script = ScriptedAnthropic([{"_status": 500}])
+    resp, stats = await _spy_agent(spy, script).chat_with_stats("s", "keys kitchen counter", "dev1")
+    assert stats.path == "fallback" and spy.cancelled == 1 and len(spy.calls) == 2
+    assert resp.cited and resp.cited[0].id == "t_keys"
+
+
+async def test_prefetch_disabled(recall):
+    spy = SpyRecall(recall)
+    script = ScriptedAnthropic(
+        [_message([tool_use({"query": "keys"})], stop_reason="tool_use"), _message([text("Counter.")])]
+    )
+    _, stats = await _spy_agent(spy, script, recall_prefetch=False).chat_with_stats("s", "where are my keys", "dev1")
+    assert [c["query"] for c in spy.calls] == ["keys"] and "prefetch" not in stats.extra
+
+
+async def test_prefetch_overlaps_recall_with_first_claude_call(recall):
+    spy = SpyRecall(recall, delay=0.3)
+    script = ScriptedAnthropic(
+        [_message([tool_use({"query": "keys"})], stop_reason="tool_use"), _message([text("Counter.")])]
+    )
+    sync_handler = script.handler
+
+    async def slow_handler(request):
+        await asyncio.sleep(0.3)  # first Claude call ~ recall latency
+        return sync_handler(request)
+
+    script.handler = slow_handler
+    _, stats = await _spy_agent(spy, script).chat_with_stats("s", "where are my keys", "dev1")
+    assert stats.extra["prefetch"] == "hit"
+    assert stats.total_ms < 1100  # serial would be 0.3 + 0.3 + 0.3 = 0.9 s; overlapped ~0.6 s
+    assert stats.tool_ms < 150
+
+
+async def test_ocr_match_skips_reader_on_claude_path(recall):
+    script = ScriptedAnthropic(
+        [
+            _message([tool_use({"query": "standup demo", "k": 4})], stop_reason="tool_use"),
+            _message([text("Standup at 10am. <cites>t_board</cites>")]),
+        ]
+    )
+    _, stats = await _agent(recall, script).chat_with_stats("s", "when is standup and the demo", "dev1", now=NOW)
+    payload = json.loads(script.requests[1]["messages"][2]["content"][0]["content"])
+    assert (
+        payload["evidence"].startswith("[exact text match") and "Standup 10am / Ship demo Sunday" in payload["evidence"]
+    )
+    assert stats.extra["reader_skipped"] == 1
