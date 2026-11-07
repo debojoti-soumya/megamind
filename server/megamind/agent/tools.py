@@ -27,7 +27,13 @@ RECALL_MEMORY_TOOL = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "What to look for, in natural language."},
+            "query": {
+                "type": "string",
+                "description": (
+                    "Short search keywords, not the full question: the object, place or text to find "
+                    "(e.g. 'keys kitchen counter', 'whiteboard text', 'coffee mug')."
+                ),
+            },
             "time_from": {"type": ["string", "null"], "description": "ISO-8601 lower bound or null."},
             "time_to": {"type": ["string", "null"], "description": "ISO-8601 upper bound or null."},
             "k": {"type": "integer", "default": 12, "minimum": 1, "maximum": 24},

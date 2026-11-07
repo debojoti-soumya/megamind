@@ -11,17 +11,19 @@ class Settings(BaseSettings):
     claude_model: str = "claude-sonnet-4-5"
     claude_timeout_s: float = 30.0
     claude_max_retries: int = 2
+    wearer_tz: str = "America/Los_Angeles"  # local time shown to Claude for "this morning"-style queries
 
     reader_base_url: str = "http://localhost:8001/v1"
     reader_api_key: str = "none"
-    reader_model: str = "Qwen/Qwen3.6-35B-A3B"
+    reader_model: str = "google/gemma-4-31B-it"  # Qwen3.6-35B-A3B is flex-only on Sail (research/reports/04)
     reader_provider: str = "auto"  # auto (vlm iff READER_API_KEY set) | vlm | mock
     reader_timeout_s: float = 8.0
     reader_max_retries: int = 1
     reader_max_images: int = 20  # Sail limit per request; more tokens -> chunk + merge
     reader_thumb_max_px: int = 512
     reader_max_tokens: int = 300
-    reader_json_mode: bool = True
+    reader_json_mode: str = "schema"  # schema (json_schema) | object (json_object) | off; downgraded on HTTP 400
+    reader_completion_window: str = ""  # Sail: asap | balanced; sent as X-Sail-Completion-Window when set
     reader_extra_body: str = ""  # JSON merged into the request, e.g. {"chat_template_kwargs":{"enable_thinking":false}}
     enrich_base_url: str = ""
     enrich_model: str = ""
