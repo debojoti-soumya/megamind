@@ -52,7 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.keyframe_filter = KeyframeFilter(settings)
         st.episodes = EpisodeTracker(settings, st.image_embedder)
         st.worker = EnrichmentWorker(
-            st.store, build_enricher(settings), st.text_embedder, st.image_embedder, st.episodes
+            st.store, build_enricher(settings, st.image_embedder), st.text_embedder, st.image_embedder, st.episodes
         )
         st.reader = build_reader(settings)
         st.recall = RecallMemory(st.store, st.text_embedder, st.image_embedder, st.reader)
@@ -84,7 +84,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             models={
                 "claude": settings.claude_model,
                 "reader": settings.reader_model,
-                "embed": f"{settings.embed_provider}:{settings.embed_model}",
+                "embed": f"{settings.embed_provider}:"
+                + (settings.local_text_model if settings.embed_provider == "local" else settings.embed_model),
+                "image_embed": f"{settings.image_embed_provider}:{settings.image_embed_model}",
+                "enrich": settings.enrich_provider,
             },
         )
 

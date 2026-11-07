@@ -248,10 +248,46 @@ class MockImageEmbedder(ImageEmbedder):
         return _normalise([1.0] * self.dim)
 
 
-def build_enricher(settings: Settings) -> Enricher:
+class LocalEnricher(Enricher):
+    """Keyless fallback: Tesseract OCR (exact text) + zero-shot scene caption from the image embedder."""
+
+    def __init__(self, image_embedder: ImageEmbedder | None, labels: list[str] | None = None) -> None:
+        from megamind.ingest.episodes import SCENE_LABELS
+
+        self.image_embedder = image_embedder
+        self.labels = labels or SCENE_LABELS
+        self._label_vecs: list[list[float]] | None = None
+
+    @staticmethod
+    def _ocr(jpeg: bytes) -> str:
+        import shutil
+        import subprocess
+
+        if not shutil.which("tesseract"):
+            return ""
+        r = subprocess.run(["tesseract", "stdin", "stdout", "--psm", "11"], input=jpeg, capture_output=True)
+        words = [w for w in r.stdout.decode(errors="ignore").split() if len(w) >= 3 and any(c.isalnum() for c in w)]
+        # psm 11 on photos yields noise; keep tokens that look like words/numbers
+        return " ".join(w for w in words if sum(c.isalnum() for c in w) / len(w) >= 0.7)
+
+    async def enrich(self, jpeg: bytes) -> Enrichment:
+        ocr = await asyncio.to_thread(self._ocr, jpeg)
+        caption = ""
+        if self.image_embedder is not None:
+            if self._label_vecs is None:
+                self._label_vecs = [await self.image_embedder.embed_text(f"a photo of {lbl}") for lbl in self.labels]
+            v = await self.image_embedder.embed_image(jpeg)
+            best = max(range(len(self.labels)), key=lambda i: sum(a * b for a, b in zip(v, self._label_vecs[i])))
+            caption = self.labels[best]
+        return Enrichment(caption=caption, ocr_text=ocr, entities=[])
+
+
+def build_enricher(settings: Settings, image_embedder: ImageEmbedder | None = None) -> Enricher:
     p = settings.enrich_provider
     if p == "vlm" or (p == "auto" and settings.enrich_base_url):
         return VLMEnricher(settings)
+    if p == "local":
+        return LocalEnricher(image_embedder)
     return MockEnricher()
 
 

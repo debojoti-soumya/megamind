@@ -25,6 +25,8 @@ def main() -> None:
     ap.add_argument("--width", type=int, default=960)
     ap.add_argument("--quality", type=int, default=75)
     ap.add_argument("--realtime", action="store_true", help="for video files: use the video's own timestamps")
+    ap.add_argument("--start", type=float, default=None, help="epoch ts of the video's first frame (with --realtime)")
+    ap.add_argument("--source-tag", default="feeder", help="FrameMeta.source")
     args = ap.parse_args()
 
     src: int | str = int(args.source) if args.source.isdigit() else args.source
@@ -34,7 +36,7 @@ def main() -> None:
     video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     step = max(1, int(round(video_fps / args.fps))) if isinstance(src, str) else 1
     period = 1.0 / args.fps
-    start = time.time()
+    start = time.time() if args.start is None else args.start
     sent = accepted = 0
     idx = 0
 
@@ -53,7 +55,7 @@ def main() -> None:
             if not ok:
                 continue
             ts = start + idx / video_fps if (args.realtime and isinstance(src, str)) else time.time()
-            meta = {"device_id": args.device_id, "ts": ts}
+            meta = {"device_id": args.device_id, "ts": ts, "source": args.source_tag}
             try:
                 r = http.post(
                     "/v1/frames",

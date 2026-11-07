@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from datetime import timedelta
 from pathlib import Path
 
 import pyarrow as pa
@@ -22,6 +23,7 @@ from megamind.store.fusion import POOL, FusionWeights, diversify, tokenize, weig
 _TABLE = "tokens"
 _EPISODES = "episodes"
 _OPTIMIZE_EVERY = 200
+_KEEP_VERSIONS = timedelta(minutes=5)
 
 
 def _q(s: str) -> str:
@@ -172,7 +174,7 @@ class LanceDBStore(MemoryStore):
             self._writes += len(tokens)
             if self._writes >= _OPTIMIZE_EVERY:
                 self._writes = 0
-                self._t.optimize()
+                self._t.optimize(cleanup_older_than=_KEEP_VERSIONS)
 
     async def add(self, token: MemoryToken) -> None:
         await asyncio.to_thread(self._add_sync, [token])
@@ -334,7 +336,7 @@ class LanceDBStore(MemoryStore):
             self._episode_writes += 1
             if self._episode_writes >= _OPTIMIZE_EVERY:
                 self._episode_writes = 0
-                self._e.optimize()
+                self._e.optimize(cleanup_older_than=_KEEP_VERSIONS)
 
     @staticmethod
     def _episode(r: dict) -> MemoryEpisode:

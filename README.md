@@ -36,6 +36,20 @@ python tools/feeder.py --server http://localhost:8000 --source 0 --fps 1
 python tools/ask.py --server http://localhost:8000 "what did I just see?"
 ```
 
+Keyless local stack (BGE text + SigLIP image embeddings, Tesseract OCR, zero-shot captions):
+`EMBED_PROVIDER=local IMAGE_EMBED_PROVIDER=siglip ENRICH_PROVIDER=local`. Point `ENRICH_BASE_URL`
+at a Qwen-VL / OpenAI-compatible server for real captions + OCR.
+
+Gold-question eval on a synthetic first-person "day" (9 indoor scenes, signs with exact text):
+
+```bash
+python tools/make_day.py --scenes <dir of scene_n.jpg> --out /tmp/day
+START=$(($(date +%s) - 3600))
+python tools/feeder.py --source /tmp/day/day.mp4 --fps 1 --realtime --start $START
+python tools/eval.py --gold /tmp/day/gold.json --start $START   # hit@1/hit@5, episode purity, stats
+curl -XPOST "localhost:8000/v1/admin/age?hot_older_than_s=600"  # force hot JPEG -> AV1 chunks
+```
+
 ## Streams and owners
 
 | Stream | Code | Status |

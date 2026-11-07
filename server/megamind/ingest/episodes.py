@@ -85,11 +85,11 @@ class EpisodeTracker:
             self._label_vecs = [await self.image_embedder.embed_text(f"a photo of {lbl}") for lbl in self.labels]
         return self._label_vecs
 
-    def _fits(self, o: _Open, t: MemoryToken) -> bool:
+    def _fits(self, o: _Open, t: MemoryToken, min_sim: float) -> bool:
         if abs(t.ts - o.ep.end_ts) > self.s.episode_gap_s and not (o.ep.start_ts <= t.ts <= o.ep.end_ts):
             return False
         if t.image_vec is not None and o.centroid is not None:
-            if _cos(t.image_vec, o.centroid) < self.s.episode_split_sim:
+            if _cos(t.image_vec, o.centroid) < min_sim:
                 return False
         pc = o.pose_centroid()
         if t.pose is not None and pc is not None:
@@ -101,7 +101,10 @@ class EpisodeTracker:
         """Set `t.episode_id` and return the updated episode (caller persists both)."""
         async with self._lock:
             recent = self._open.setdefault(t.device_id, [])
-            target = next((o for o in reversed(recent) if self._fits(o, t)), None)
+            current = recent[-1:] if recent else []
+            target = next((o for o in current if self._fits(o, t, self.s.episode_split_sim)), None)
+            if target is None:  # rejoining an older episode after a detour needs a closer match
+                target = next((o for o in reversed(recent[:-1]) if self._fits(o, t, self.s.episode_rejoin_sim)), None)
             if target is None:
                 target = _Open(
                     MemoryEpisode(

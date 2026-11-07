@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     enrich_base_url: str = ""
     enrich_model: str = ""
 
-    enrich_provider: str = "auto"  # auto (vlm if ENRICH_BASE_URL set) | vlm | mock
+    enrich_provider: str = "auto"  # auto (vlm if ENRICH_BASE_URL set) | vlm | local (tesseract) | mock
     embed_provider: str = "mock"  # text: mock | openai | voyage | local
     embed_model: str = "text-embedding-3-small"
     local_text_model: str = "BAAI/bge-small-en-v1.5"
@@ -54,7 +54,8 @@ class Settings(BaseSettings):
     filter_budget_burst: int = 6
 
     episode_gap_s: float = 120.0
-    episode_split_sim: float = 0.80
+    episode_rejoin_sim: float = 0.80  # stricter bar to rejoin a non-current recent episode
+    episode_split_sim: float = 0.70  # SigLIP-B/16, calibrated on tools/make_day.py footage
     episode_move_m: float = 3.0
     episode_rejoin_last: int = 4
 
