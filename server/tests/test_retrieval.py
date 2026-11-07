@@ -313,3 +313,24 @@ async def test_read_text_adds_ocr_only_bm25_list():
     assert best.token.ocr_text.strip() and "ocr_bm25" in best.reasons
     generic = await _retr(st).retrieve("where are my keys", k=3, now=NOW)
     assert all("ocr_bm25" not in r.reasons for r in generic.ranked)
+
+
+async def test_meal_question_widens_when_the_meal_window_is_empty():
+    # meal eaten outside the planner's lunch hours (or "lunch" asked before lunchtime): text search still finds it
+    st = InMemoryStore()
+    emb = MockTextEmbedder()
+    now = datetime(2026, 11, 8, 16, 0, tzinfo=UTC)
+    for i, (dt, cap) in enumerate([(-7200, "A desk with a laptop."), (-3600, "A plate of pasta on a cafe table.")]):
+        await st.add(
+            MemoryToken(
+                id=f"m{i}",
+                device_id="dev",
+                ts=now.timestamp() + dt,
+                caption=cap,
+                text_vec=await emb.embed(cap),
+                thumb_path="",
+                frame_hash=f"{i:016x}",
+            )
+        )
+    r = await HybridRetriever(st, emb, None, tz="UTC").retrieve("what did I have for lunch", k=3, now=now)
+    assert r.widened and r.ranked[0].token.id == "m1"

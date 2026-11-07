@@ -10,8 +10,10 @@ time window / device as free metadata filters and whose columns are relevance fa
   answers) over httpx, so neither the private `ucc` SDK nor pyarrow is a dependency and tests use `MockTransport`.
 - `UCCIndexer`: periodic sync job (store -> corpus); pushes enriched tokens it has not pushed yet. New documents
   become queryable a few seconds after upload (until then a select just doesn't see them).
-- `UCCRetriever`: the `Retriever`. Pure-time questions, cool-down after an error, timeouts, and an empty corpus all
-  go to the `HybridRetriever` fallback, so a UCC outage never breaks `recall_memory`.
+- `UCCRetriever`: the `Retriever`. The planner decides routing (`QueryPlan.route`): pure-time / anchor-only questions
+  ("what was I doing at 11", "what did I do after lunch") are `route="hybrid"` and never call UCC, since with no
+  content words there is nothing for a facet to judge. Everything else goes to UCC; a cool-down after an error,
+  timeouts, and an empty window/corpus go to the `HybridRetriever` fallback, so an outage never breaks `recall_memory`.
 """
 
 from __future__ import annotations
@@ -340,10 +342,10 @@ class UCCRetriever(Retriever):
         device_id: str | None,
         now: datetime,
     ) -> RetrievalResult | None:
-        """None = defer to the hybrid (pure-time question, or nothing indexed in the window)."""
+        """None = defer to the hybrid (planner routed to hybrid, or nothing indexed in the window)."""
         k = max(1, k)
         plan = plan_query(query, now=now, tz=self.tz, time_from=time_from, time_to=time_to)
-        if (plan.mode == "temporal" and not plan.search_text) or not (plan.search_text or plan.query.strip()):
+        if plan.route == "hybrid" or not (plan.search_text or plan.query.strip()):
             return None
         anchor_ts = None
         if plan.anchor_event and not plan.has_time:
