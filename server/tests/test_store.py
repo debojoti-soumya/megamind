@@ -188,3 +188,10 @@ async def test_search_unrelated_query_returns_nothing(store):
     await store.add_many([_token(i, caption=f"coffee mug on desk {i}") for i in range(3)])
     hits = await store.search(_vec(99), None, "zebra", k=5)
     assert hits == []
+
+
+async def test_vector_search_drops_orthogonal_vectors(store):
+    await store.add_many([_token(0), _token(1), _token(2)])
+    hits = await store.vector_search(_vec(1), 10)
+    assert [t.id for t, _ in hits] == ["tok0001"]
+    assert await store.vector_search(_vec(5), 10) == []

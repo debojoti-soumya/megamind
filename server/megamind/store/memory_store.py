@@ -10,7 +10,7 @@ from pathlib import Path
 from megamind.models import MemoryHit, MemoryToken, SearchMode
 from megamind.store.base import MemoryStore, Scored, VectorField
 from megamind.store.episodes import EpisodeTracker
-from megamind.store.rrf import fuse_hits
+from megamind.store.rrf import MIN_SCORE, fuse_hits
 
 _WORD = re.compile(r"[a-z0-9]+")
 
@@ -111,6 +111,7 @@ class InMemoryStore(MemoryStore):
             )
             if (v := getattr(t, field)) is not None and len(v) == len(vec)
         ]
+        scored = [(t, s) for t, s in scored if s > MIN_SCORE]
         scored.sort(key=lambda ts: (ts[1], ts[0].ts), reverse=True)
         return scored[:k]
 

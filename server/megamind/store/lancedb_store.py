@@ -30,7 +30,7 @@ from lancedb.index import FTS
 from megamind.models import MemoryHit, MemoryToken, Pose, SearchMode
 from megamind.store.base import MemoryStore, Scored, VectorField
 from megamind.store.episodes import EpisodeTracker
-from megamind.store.rrf import fuse_hits
+from megamind.store.rrf import MIN_SCORE, fuse_hits
 
 log = logging.getLogger(__name__)
 
@@ -335,7 +335,8 @@ class LanceDBStore(MemoryStore):
         )
         if where:
             q = q.where(where, prefilter=True)
-        return [(self._token(r), 1.0 - float(r["_distance"])) for r in q.to_list()]
+        out = [(self._token(r), 1.0 - float(r["_distance"])) for r in q.to_list()]
+        return [(t, s) for t, s in out if s > MIN_SCORE]
 
     async def vector_search(
         self,

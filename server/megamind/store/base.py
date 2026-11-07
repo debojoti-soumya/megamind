@@ -21,7 +21,8 @@ class MemoryStore(ABC):
     - `search()`: the default hybrid (text vector + BM25 [+ image vector], RRF), kept for the
       debug endpoint and as a fallback.
 
-    `vector_search` / `keyword_search` only return enriched tokens (non-empty caption);
+    `vector_search` / `keyword_search` only return enriched tokens (non-empty caption) with a
+    positive score (cosine > 0 / at least one matching term), so unrelated queries return `[]`;
     `get_many` / `range` / `neighbors` return everything. `kinds` filters on the token kind
     (`"frame"` for captured keyframes, `"episode"` for consolidation summaries); `None` = all.
 
