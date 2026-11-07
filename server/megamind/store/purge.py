@@ -32,7 +32,7 @@ def parse_since(value: str | None, *, now: float | None = None) -> float | None:
     m = _REL.match(value.strip())
     if m:
         return (now if now is not None else time.time()) - float(m.group(1)) * _UNIT_S[m.group(2)]
-    return datetime.fromisoformat(value).timestamp()
+    return datetime.fromisoformat(value.strip()).timestamp()
 
 
 async def purge(
@@ -59,7 +59,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="count matching tokens, delete nothing")
     ap.add_argument("--yes", "-y", action="store_true", help="skip the confirmation prompt")
     a = ap.parse_args(argv)
+    try:
+        parse_since(a.since)
+    except ValueError:
+        ap.error(f"--since: expected ISO-8601 or <N>[s|m|h|d], got {a.since!r}")
     settings = Settings()
+    if settings.store_backend != "lancedb":
+        print(f"note: STORE_BACKEND={settings.store_backend!r} keeps nothing on disk; nothing to purge")
     scope = f"device={a.device or '*'} since={a.since or 'beginning'} backend={settings.store_backend}"
     if not a.dry_run and not a.yes:
         if input(f"Delete memories ({scope})? [y/N] ").strip().lower() not in ("y", "yes"):

@@ -15,7 +15,7 @@ server/data/
 ├── lancedb/                      # LanceDBStore (embedded, no daemon)
 │   └── memory_tokens.lance/      # one Lance table = all tokens for all devices
 │       ├── data/*.lance          # columnar fragments (append + merge_insert on `id`)
-│       ├── _versions/            # MVCC manifests; `table.optimize()` compacts every 500 writes
+│       ├── _versions/            # MVCC manifests; `table.optimize()` compacts every 256 writes
 │       ├── _indices/             # FTS (BM25) index on `search_text`; IVF_FLAT cosine index on
 │       │                         #   text_vec / image_vec once ≥ 4096 non-null rows (flat scan below that)
 │       └── _transactions/
@@ -45,10 +45,10 @@ Mirrors `MemoryToken` in `docs/api.md` plus one derived column:
 | `thumb_path` | string | relative path as given by ingest |
 | `frame_hash` | string | dHash hex, used by `recent_hashes` for dedupe |
 | `episode_id` | string \| null | assigned by `EpisodeTracker` on insert |
-| `text_vec` | fixed_size_list\<float32\>[D_t] \| null | D_t inferred from the first token that carries one (1024 for OpenAI) |
+| `text_vec` | fixed_size_list\<float32\>[D_t] \| null | D_t inferred from the first token that carries one (1024 for OpenAI via `EMBED_DIM`, 256 for the mock) |
 | `image_vec` | fixed_size_list\<float32\>[D_i] \| null | likewise (768 for SigLIP) |
 
-Vector dimensions are frozen once the table exists; switching embedders (e.g. mock 256-d → OpenAI 1024-d)
+Vector dimensions are frozen once the table exists; switching embedders (e.g. mock 256-d → OpenAI 1024-d, or SigLIP B/16 768-d → B/32 512-d)
 requires a purge or a fresh `LANCEDB_PATH`.
 
 ## Modules
@@ -60,15 +60,16 @@ requires a purge or a fresh `LANCEDB_PATH`.
 | `rrf.py` | reciprocal-rank fusion; `fuse_hits` drops non-positive scores so unrelated queries return nothing |
 | `episodes.py` | `EpisodeTracker`: online `episode_id` assignment (gap > 120 s or image cosine < 0.80 → new episode; detours may rejoin one of the last 4) |
 | `consolidate.py` | `Consolidator`: writes one `kind="episode"` summary token per closed episode; `python -m megamind.store.consolidate [--loop]` |
-| `embeddings.py` | `build_text_embedder` / `build_image_embedder`: OpenAI text-embedding-3-small, open_clip SigLIP (CPU), mocks |
+| `embeddings.py` (PR #38) | `build_text_embedder` / `build_image_embedder`: OpenAI text-embedding-3-small, open_clip SigLIP (CPU), mocks |
 | `purge.py` | retention CLI, see below |
-| `bench.py` | 10k-token latency benchmark of every primitive |
+| `bench.py` (planned) | 10k-token latency benchmark of every primitive |
 
 ## Retention / privacy
 
 All memories are wearer data; deletion is total (rows **and** thumbnails) and synchronous.
 
-* API: `DELETE /v1/memories?device_id=<id>&since=<ISO-8601>` — both optional; returns `{"deleted": n}`.
+* API: `DELETE /v1/memories?device_id=<id>` — returns `{"deleted": n}` (a `since=` param is proposed in a
+  separate contract PR).
 * CLI (server stopped — LanceDB must not have two writers):
   ```
   python -m megamind.store.purge                 # wipe everything
@@ -78,8 +79,7 @@ All memories are wearer data; deletion is total (rows **and** thumbnails) and sy
   `--since` takes ISO-8601 or a relative age (`30m`, `2h`, `1d`); `--keep-thumbs` leaves JPEGs on disk.
 * `since` deletes tokens with `ts >= since`, including `kind="episode"` summaries whose episode started
   in that window. A summary whose frames were partially deleted is left as-is (it is already a summary).
-* Nothing is retained elsewhere: no server logs contain captions/OCR at INFO level, and the in-memory
-  backend forgets on restart. Delete `server/data/` for a factory reset.
+* The in-memory backend forgets on restart (the CLI is a no-op for it). Delete `server/data/` for a factory reset.
 
 ## Concurrency / durability notes
 
