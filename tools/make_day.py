@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Synthesize a first-person "day" video from scene photos + a gold question set, for eval.
 
-    python tools/make_day.py --scenes /tmp/scenes --out /tmp/day   # -> day.mp4, gold.json
+    python tools/make_day.py --scenes /tmp/scenes --out /tmp/day   # -> day.mp4, day.srt, gold.json
 
 Each scene gets `--seconds` of 1 fps handheld-style footage (jittered crops, zoom, noise,
 exposure drift). Some scenes carry a rendered sign/note so exact-text questions have answers.
@@ -28,6 +28,11 @@ SIGNS = {
     "library": ["QUIET ZONE", "ROOM 214"],
     "gym": ["LOCKER 42"],
 }
+SPEECH = {  # (seconds into scene, utterance) -> written to day.srt
+    "kitchen": (20, "remind me to call mom about the flight tickets"),
+    "restaurant": (18, "honestly the pasta here is way too salty"),
+    "livingroom": (22, "the package from amazon should arrive on thursday"),
+}
 QUESTIONS = [
     ("what is the wifi password", "hybrid", "office"),
     ("when is the demo for project falcon", "hybrid", "meeting_room"),
@@ -43,6 +48,9 @@ QUESTIONS = [
     ("a long hallway with doors", "visual", "corridor"),
     ("supermarket shelves", "hybrid", "grocerystore"),
     ("people sitting around a conference table", "hybrid", "meeting_room"),
+    ("what did I say I need to call mom about", "hybrid", "kitchen"),
+    ("which food was too salty", "hybrid", "restaurant"),
+    ("when is my package arriving", "hybrid", "livingroom"),
 ]
 ORDER = ["bedroom", "kitchen", "corridor", "office", "meeting_room", "restaurant",
          "library", "gym", "grocerystore", "livingroom"]  # fmt: skip
@@ -112,6 +120,13 @@ def main() -> None:
             t += 1
         scenes.append({"scene": name, "start_s": start, "end_s": t})
     vw.release()
+
+    def ts(x: float) -> str:
+        return f"{int(x // 3600):02d}:{int(x % 3600 // 60):02d}:{int(x % 60):02d},{int(x % 1 * 1000):03d}"
+
+    cues = [(s["start_s"] + SPEECH[s["scene"]][0], SPEECH[s["scene"]][1]) for s in scenes if s["scene"] in SPEECH]
+    srt = "\n".join(f"{i + 1}\n{ts(a)} --> {ts(a + 4)}\n{text}\n" for i, (a, text) in enumerate(cues))
+    (args.out / "day.srt").write_text(srt)
     present = {s["scene"] for s in scenes}
     gold = {
         "scenes": scenes,

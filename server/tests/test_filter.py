@@ -76,3 +76,15 @@ def test_seed_restores_state():
 
     f.seed("d", [(0.0, dhash(a))])
     assert f.decide(a, _meta(5)).reason == "duplicate"
+
+
+def test_speech_frames_always_kept():
+    f = _filter()
+    a = _noisy(1)
+    assert f.decide(a, _meta(0)).accepted
+    m = FrameMeta(device_id="d", ts=0.5, transcript="call mom about the tickets")
+    d = f.decide(a, m)
+    assert d.accepted and d.trigger == "speech"
+    dark = FrameMeta(device_id="d", ts=0.7, transcript="lights are off")
+    assert f.decide(Image.new("RGB", (160, 120), (5, 5, 5)), dark).trigger == "speech"
+    assert f.counts["speech"] == 2

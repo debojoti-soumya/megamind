@@ -16,10 +16,12 @@ and the C# DTOs in `headset/` must match it.
   ```json
   { "device_id": "quest3-abc", "ts": 1731000000.123,
     "pose": { "x": 0.0, "y": 1.6, "z": 0.0, "yaw": 90.0 },
-    "force": false, "source": "quest" }
+    "force": false, "source": "quest", "transcript": null }
   ```
   `force` (optional) bypasses blur/gap/novelty/budget, e.g. at push-to-talk start.
   `source` (optional) labels the sensor (`quest`, `feeder`, `phone`).
+  `transcript` (optional) is speech heard around this frame (on-device ASR / subtitles). Frames with a
+  transcript are always kept (`trigger=speech`) and the text is stored and searchable on the token.
 Response `202 Accepted`:
 ```json
 { "frame_id": "01J...", "accepted": true, "reason": null }
@@ -89,10 +91,10 @@ Purge all memory tokens for a device. Returns `{ "deleted": 1234 }`.
 ```
 id, device_id, ts, caption, ocr_text, entities[], pose{x,y,z,yaw}|null,
 text_vec[d], image_vec[d], thumb_path, frame_hash, episode_id|null,
-transcript, source, trigger(novel|pose|heartbeat|forced), sharpness, enriched,
+transcript, source, trigger(novel|pose|heartbeat|forced|speech), sharpness, enriched,
 tier(hot|cold|text), chunk_id|null, chunk_offset|null
 ```
-Vector dims follow the configured embedder (e.g. 1024 bge-m3/voyage, 1536 OpenAI 3-small,
+Vectors are stored as float16. Vector dims follow the configured embedder (e.g. 1024 bge-m3/voyage, 1536 OpenAI 3-small,
 768 SigLIP-base). Search hits additionally carry `transcript`, `episode_id`, `tier`.
 
 ## Internal: `recall_memory` tool (Claude -> server)

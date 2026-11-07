@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 Confidence = Literal["high", "medium", "low", "not_found"]
 SearchMode = Literal["semantic", "visual", "hybrid"]
 RejectReason = Literal["duplicate", "too_soon", "dark", "blurry", "budget"]
-Trigger = Literal["novel", "pose", "heartbeat", "forced"]
+Trigger = Literal["novel", "pose", "heartbeat", "forced", "speech"]
 Tier = Literal["hot", "cold", "text"]
 
 
@@ -26,6 +26,7 @@ class FrameMeta(BaseModel):
     pose: Pose | None = None
     force: bool = False
     source: str | None = None
+    transcript: str | None = None  # speech heard around this frame; always kept (trigger=speech)
 
 
 class FrameAccepted(BaseModel):

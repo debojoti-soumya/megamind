@@ -123,16 +123,17 @@ class KeyframeFilter:
     def _decide(self, img: Image.Image, meta: FrameMeta) -> FilterDecision:
         s = self.s
         h = dhash(img)
-        if mean_luma(img) < s.filter_min_luma:
+        keep_anyway = meta.force or bool(meta.transcript)
+        if mean_luma(img) < s.filter_min_luma and not keep_anyway:
             return FilterDecision(False, "dark", h)
         sharp = sharpness(img)
-        if sharp < s.filter_min_sharpness and not meta.force:
+        if sharp < s.filter_min_sharpness and not keep_anyway:
             return FilterDecision(False, "blurry", h, sharpness=sharp)
 
         st = self._state.setdefault(meta.device_id, self._new_state())
         self._refill(st, meta.ts)
-        if meta.force:
-            return self._keep(st, meta, h, "forced", sharp)
+        if keep_anyway:
+            return self._keep(st, meta, h, "forced" if meta.force else "speech", sharp)
         if st.last_kept_ts is None:
             return self._keep(st, meta, h, "novel", sharp)
 

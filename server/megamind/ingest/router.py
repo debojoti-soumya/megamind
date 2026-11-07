@@ -61,6 +61,7 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
         source=fm.source or "quest",
         trigger=decision.trigger,
         sharpness=decision.sharpness,
+        transcript=fm.transcript or "",
     )
     await app.worker.submit(token, jpeg)
     return FrameAccepted(frame_id=frame_id, accepted=True)
@@ -143,10 +144,14 @@ async def stats(request: Request):
     disk = app.media.disk_bytes()
     counts = dict(app.keyframe_filter.counts)
     seen = sum(counts.values())
-    kept = sum(counts.get(t, 0) for t in ("novel", "pose", "heartbeat", "forced"))
+    kept = sum(counts.get(t, 0) for t in ("novel", "pose", "heartbeat", "forced", "speech"))
     hot_pf = disk["hot_jpeg"] / max(1, tiers.get("hot", 0))
     cold_pf = disk["cold_chunks"] / max(1, tiers.get("cold", 0)) if tiers.get("cold") else hot_pf / 8
-    index_pf = disk["index"] / max(1, n)
+    # small stores are dominated by LanceDB fixed overhead; below 1k rows use an analytic estimate
+    # (fp16 vectors + ~1 KB text/metadata) so the 100-day projection isn't inflated
+    ie = app.image_embedder
+    est_index_pf = 2 * (app.text_embedder.dim + (ie.dim if ie else 0)) + 1024
+    index_pf = disk["index"] / n if n >= 1000 else est_index_pf
     per_day = app.settings.filter_budget_per_min * 60 * 16
     hot_days = app.settings.hot_retention_h / 24
     proj = per_day * (hot_days * hot_pf + (100 - hot_days) * cold_pf + 100 * index_pf)

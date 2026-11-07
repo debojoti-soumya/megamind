@@ -1,9 +1,10 @@
 """LanceDB-backed MemoryStore (docs/stream1-memory-engine.pdf §6).
 
-One `tokens` table. Vectors are fixed-size float32 columns with `has_*` flags (missing vectors are
-stored as zeros and excluded by prefilter). Native BM25 FTS over `search_text` (caption + OCR +
-entities + transcript); unindexed rows are still searched, and `optimize()` folds them into the
-index periodically. Flat vector search is exact and fast below ~100k rows per device.
+One `tokens` table. Vectors are fixed-size float16 columns (half the bytes, same ranking) with
+`has_*` flags (missing vectors are stored as zeros and excluded by prefilter). Native BM25 FTS
+over `search_text` (caption + OCR + entities + transcript); unindexed rows are still searched,
+and `optimize()` folds them into the index periodically. Flat vector search is exact and fast
+below ~100k rows per device.
 """
 
 from __future__ import annotations
@@ -84,9 +85,9 @@ class LanceDBStore(MemoryStore):
                 ("transcript", s),
                 ("search_text", s),
                 ("pose", s),
-                ("text_vec", pa.list_(pa.float32(), self.text_dim)),
+                ("text_vec", pa.list_(pa.float16(), self.text_dim)),
                 ("has_text_vec", pa.bool_()),
-                ("image_vec", pa.list_(pa.float32(), self.image_dim)),
+                ("image_vec", pa.list_(pa.float16(), self.image_dim)),
                 ("has_image_vec", pa.bool_()),
                 ("thumb_path", s),
                 ("frame_hash", s),
