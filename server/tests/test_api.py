@@ -71,6 +71,18 @@ async def test_chat_json_fallback(client):
     assert body["cited"]
 
 
+async def test_chat_unrelated_query_is_not_found(client):
+    c, app = client
+    await _post_frame(c, _noisy_jpeg(5), 2500.0)
+    await app.state.worker.queue.join()
+    r = await c.post("/v1/chat", json={"session_id": "s", "text": "zebra"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["cited"] == []
+    assert body["tool_calls"][0]["confidence"] == "not_found"
+    assert body["answer"] == "I don't have a memory of that."
+
+
 async def test_purge(client):
     c, app = client
     await _post_frame(c, _noisy_jpeg(4), 3000.0)

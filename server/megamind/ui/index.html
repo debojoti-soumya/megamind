@@ -252,6 +252,7 @@
       $('ptt').disabled = false;
     } catch {
       $('srvdot').className = 'dot err'; $('srvtext').textContent = 'offline';
+      $('ptt').disabled = true;
     }
     healthTimer = setTimeout(pollHealth, 4000);
   }

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable
 
 from megamind.models import MemoryHit, MemoryToken, SearchMode
 from megamind.store.base import MemoryStore
@@ -25,6 +26,11 @@ def _keyword_score(query: str, text: str) -> float:
         return 0.0
     t = set(_WORD.findall(text.lower()))
     return len(q & t) / len(q)
+
+
+def _ranked(pool: list[MemoryToken], score: Callable[[MemoryToken], float], eps: float = 1e-6) -> list[str]:
+    scored = [(score(t), t) for t in pool]
+    return [t.id for s, t in sorted(scored, key=lambda st: st[0], reverse=True) if s > eps]
 
 
 def _rrf(rankings: list[list[str]], c: int = 60) -> dict[str, float]:
@@ -76,30 +82,22 @@ class InMemoryStore(MemoryStore):
         if not pool:
             return []
 
+        # Each ranking only keeps tokens with a positive score, so an unrelated query yields no hits
+        # (-> recall_memory reports not_found) instead of citing arbitrary memories.
         rankings: list[list[str]] = []
         if mode in ("semantic", "hybrid"):
             if query_text_vec is not None:
-                sem = sorted(
-                    (t for t in pool if t.text_vec),
-                    key=lambda t: _cosine(query_text_vec, t.text_vec or []),
-                    reverse=True,
-                )
-                rankings.append([t.id for t in sem])
-            kw = sorted(
-                pool,
-                key=lambda t: _keyword_score(query_text, f"{t.caption} {t.ocr_text} {' '.join(t.entities)}"),
-                reverse=True,
-            )
-            rankings.append([t.id for t in kw])
+                sem = _ranked(pool, lambda t: _cosine(query_text_vec, t.text_vec) if t.text_vec else 0.0)
+                rankings.append(sem)
+            kw = _ranked(pool, lambda t: _keyword_score(query_text, f"{t.caption} {t.ocr_text} {' '.join(t.entities)}"))
+            rankings.append(kw)
         if mode in ("visual", "hybrid") and query_image_vec is not None:
-            vis = sorted(
-                (t for t in pool if t.image_vec),
-                key=lambda t: _cosine(query_image_vec, t.image_vec or []),
-                reverse=True,
-            )
-            rankings.append([t.id for t in vis])
+            vis = _ranked(pool, lambda t: _cosine(query_image_vec, t.image_vec) if t.image_vec else 0.0)
+            rankings.append(vis)
 
         fused = _rrf(rankings)
+        if not fused:
+            return []
         # recency tie-break: newer first among equal scores
         ordered = sorted(fused.items(), key=lambda kv: (kv[1], self._tokens[kv[0]].ts), reverse=True)
         return [MemoryHit.from_token(self._tokens[i], s) for i, s in ordered[:k]]
