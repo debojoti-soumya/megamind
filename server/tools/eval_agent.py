@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import statistics
 import sys
 import tempfile
@@ -138,11 +139,86 @@ class RecordingReader(Reader):
 # --------------------------------------------------------------------------- scoring
 
 
+_UNITS = {
+    w: i
+    for i, w in enumerate(
+        "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
+        "sixteen seventeen eighteen nineteen".split()
+    )
+}
+_TENS = {w: 10 * i for i, w in enumerate("twenty thirty forty fifty sixty seventy eighty ninety".split(), start=2)}
+_NUM_WORD = "|".join(sorted([*_UNITS, *_TENS, "hundred", "thousand"], key=len, reverse=True))
+_NUM_RUN = re.compile(rf"\b(?:{_NUM_WORD})(?:(?:\s+and\s+|\s+oh\s+|[\s-]+)(?:{_NUM_WORD}))*\b")
+# digit groups separated by these are one spoken number: "4.99" / "4 99" / "4 dollars and 99", "10:30" / "10 30"
+_DIGIT_JOIN = re.compile(r"(\d)(?:[:.,\-/]|,? |\s+(?:dollars?|bucks?|point)(?:\s+and)?\s+)(?=\d)")
+
+
+def _run_to_digits(run: str) -> str:
+    """One run of number words -> space-separated numbers, splitting where speech starts a new number:
+    "four ninety nine" -> "4 99", "four hundred and eighty" -> "480", "ten oh five" -> "10 0 5"."""
+    out: list[int] = []
+    big = small = 0
+    last = ""  # previous word kind: unit | tens | hundred | thousand
+
+    def flush() -> None:
+        nonlocal big, small, last
+        if last:
+            out.append(big + small)
+        big = small = 0
+        last = ""
+
+    for w in re.split(r"[\s-]+", run):
+        if w == "and":
+            if last not in ("hundred", "thousand"):
+                flush()
+            continue
+        if w == "oh":
+            w = "zero"
+        if w in _UNITS:
+            v = _UNITS[w]
+            if not ((last == "tens" and v < 10) or last in ("hundred", "thousand")):
+                flush()
+            small, last = small + v, "unit"
+        elif w in _TENS:
+            if last not in ("hundred", "thousand"):
+                flush()
+            small, last = small + _TENS[w], "tens"
+        elif w == "hundred" and last in ("unit", "tens") and 0 < small < 100:
+            small, last = small * 100, "hundred"
+        elif w == "thousand" and last in ("unit", "tens", "hundred") and small and not big:
+            big, small, last = small * 1000, 0, "thousand"
+        else:
+            flush()
+            out.append({"hundred": 100, "thousand": 1000}[w])
+    flush()
+    return " ".join(map(str, out))
+
+
+def normalize_numbers(text: str) -> str:
+    """Canonical form for number matching: TTS-style answers spell numbers out ("ten thirty", "four
+    ninety-nine") while expects are digits ("10:30", "4.99"); both map to joined digit runs ("1030", "499")."""
+    s = _NUM_RUN.sub(lambda m: _run_to_digits(m.group(0)), " ".join(text.lower().split()))
+    prev = None
+    while prev != s:
+        prev, s = s, _DIGIT_JOIN.sub(r"\1", s)
+    return s
+
+
+def _number_match(expect: str, answer_norm: str) -> bool:
+    e = normalize_numbers(expect)
+    if not any(c.isdigit() for c in e):
+        return False
+    return re.search(rf"(?<!\d){re.escape(e)}(?!\d)", answer_norm) is not None
+
+
 def score_answer(answer: str, case: Case) -> bool:
     a = " ".join(answer.lower().split())
     if case.not_found:
         return NOT_FOUND_ANSWER.lower() in a or "don't have a memory" in a or "no memory" in a
-    return any(e.lower() in a for e in case.expect)
+    if any(e.lower() in a for e in case.expect):
+        return True
+    a_norm = normalize_numbers(answer)
+    return any(_number_match(e, a_norm) for e in case.expect)
 
 
 def citation_scores(cited: list[str], gold: list[str]) -> tuple[float | None, float | None]:

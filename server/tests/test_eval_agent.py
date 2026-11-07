@@ -37,6 +37,59 @@ def test_score_answer_substrings_and_not_found():
     assert not eval_agent.score_answer("You fed the cat at 7.", nf)
 
 
+@pytest.mark.parametrize(
+    ("spoken", "canonical"),
+    [
+        ("ten thirty", "1030"),
+        ("ten oh five", "1005"),
+        ("four ninety-nine", "499"),
+        ("four dollars and ninety-nine cents", "499 cents"),
+        ("twenty-three forty-seven", "2347"),
+        ("four eighty", "480"),
+        ("four hundred and eighty", "480"),
+        ("twelve hundred", "1200"),
+        ("two thousand and twenty", "2020"),
+        ("four one five, five five five, zero one eight eight", "4155550188"),
+        ("route twenty-two", "route 22"),
+        ("someone often", "someone often"),
+    ],
+)
+def test_normalize_numbers_spoken_to_digits(spoken, canonical):
+    assert eval_agent.normalize_numbers(spoken) == canonical
+
+
+@pytest.mark.parametrize(
+    ("answer", "expect"),
+    [
+        ("Your demo is at ten thirty on Thursday.", "10:30"),
+        ("The oat milk was four ninety-nine.", "4.99"),
+        ("Your total came to twenty-three dollars and forty-seven cents.", "23.47"),
+        ("The slide showed a p95 of four hundred eighty milliseconds.", "480"),
+        ("It's four one five, five five five, zero one eight eight.", "415-555-0188"),
+        ("You took the twenty-two bus.", "22"),
+        ("Level three, zone B.", "level 3"),
+        ("It said sprint fourteen.", "sprint 14"),
+        ("The demo is at 10:30.", "10:30"),
+    ],
+)
+def test_score_answer_matches_spoken_numbers(answer, expect):
+    assert eval_agent.score_answer(answer, Case("q", [], [expect]))
+
+
+@pytest.mark.parametrize(
+    ("answer", "expect"),
+    [
+        ("Your demo is at eleven thirty.", "10:30"),
+        ("The oat milk was five ninety-nine.", "4.99"),
+        ("You took the two bus.", "22"),
+        ("It was route one twenty-two.", "22"),
+        ("About forty-eight milliseconds.", "480"),
+    ],
+)
+def test_score_answer_rejects_wrong_numbers(answer, expect):
+    assert not eval_agent.score_answer(answer, Case("q", [], [expect]))
+
+
 def test_citation_scores():
     assert eval_agent.citation_scores(["a", "b"], ["a"]) == (0.5, 1.0)
     assert eval_agent.citation_scores([], ["a"]) == (None, 0.0)
