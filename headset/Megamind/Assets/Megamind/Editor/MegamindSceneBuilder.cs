@@ -78,6 +78,7 @@ namespace Megamind.EditorTools
             var pca = pcaGo.AddComponent<PassthroughCameraAccess>();
             pca.CameraPosition = PassthroughCameraAccess.CameraPositionType.Left;
             pca.RequestedResolution = capture.cameraResolution;
+            pca.MaxFramerate = capture.cameraMaxFramerate;
 
             // Megamind components
             var mm = new GameObject("Megamind");
@@ -175,6 +176,7 @@ namespace Megamind.EditorTools
             }
             var manifest = File.Exists(ManifestPath) ? File.ReadAllText(ManifestPath) : "";
             Check(manifest.Contains(OVRPermissionsRequester.PassthroughCameraAccessPermission), $"{ManifestPath} has horizonos.permission.HEADSET_CAMERA");
+            Check(!manifest.Contains("android.permission.CAMERA\""), "manifest does NOT also request android.permission.CAMERA (Meta migration guide: HEADSET_CAMERA only, avoids a 2nd dialog)");
             Check(manifest.Contains("android.permission.INTERNET"), "manifest has INTERNET");
             Check(manifest.Contains("usesCleartextTraffic=\"true\""), "manifest allows cleartext HTTP (needed for http:// server URLs)");
             Check(File.Exists(ScenePath), $"{ScenePath} exists (Megamind > 1)");

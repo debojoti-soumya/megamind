@@ -92,8 +92,16 @@ namespace Megamind
                 yield break;
             }
 #endif
-            if (cameraAccess.RequestedResolution != settings.cameraResolution && !cameraAccess.IsPlaying && !cameraAccess.enabled)
+            // RequestedResolution / MaxFramerate can only be changed while the component is disabled.
+            if (!cameraAccess.IsPlaying &&
+                (cameraAccess.RequestedResolution != settings.cameraResolution || cameraAccess.MaxFramerate != settings.cameraMaxFramerate))
+            {
+                bool wasEnabled = cameraAccess.enabled;
+                cameraAccess.enabled = false;
                 cameraAccess.RequestedResolution = settings.cameraResolution;
+                cameraAccess.MaxFramerate = settings.cameraMaxFramerate;
+                cameraAccess.enabled = wasEnabled;
+            }
 
             var poll = new WaitForSeconds(0.25f);
             while (true)
@@ -172,27 +180,54 @@ namespace Megamind
                 LastReason = "client:motion";
                 return;
             }
+            StartCoroutine(CaptureAndUpload());
+        }
+
+        private IEnumerator CaptureAndUpload()
+        {
             var meta = BuildMeta();
             var t0 = Time.realtimeSinceStartup;
-            byte[] jpeg = EncodeCurrentFrame();
+            if (!ReadbackCurrentFrame())
+            {
+                LastError = "camera texture not ready";
+                yield break;
+            }
+            _pending++; // count the frame from readback on so the backlog gate sees it
+            yield return null; // encode on the next frame: ReadPixels + EncodeToJPG together would hitch the render loop
+            byte[] jpeg = _scratch.EncodeToJPG(settings.jpegQuality);
             LastEncodeMs = (Time.realtimeSinceStartup - t0) * 1000f;
             if (jpeg == null || jpeg.Length == 0)
             {
+                _pending--;
                 LastError = "encode failed";
-                return;
+                yield break;
             }
             LastJpegBytes = jpeg.Length;
-            StartCoroutine(Upload(jpeg, meta));
+            yield return Upload(jpeg, meta);
         }
 
+        /// <summary>ts = camera image timestamp (falls back to now), pose = RGB camera pose at that time (falls back to CenterEyeAnchor).</summary>
         private FrameMeta BuildMeta()
         {
-            var meta = new FrameMeta
+            double now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+            double ts = now;
+            try
             {
-                device_id = DeviceId,
-                ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
-            };
-            if (headPose != null)
+                var stamp = cameraAccess.Timestamp;
+                if (stamp.Kind == DateTimeKind.Unspecified) stamp = DateTime.SpecifyKind(stamp, DateTimeKind.Local);
+                double camTs = new DateTimeOffset(stamp.ToUniversalTime()).ToUnixTimeMilliseconds() / 1000.0;
+                if (Math.Abs(camTs - now) < 5.0) ts = camTs; // ignore if not wall-clock based
+            }
+            catch (Exception) { /* keep wall clock */ }
+
+            var meta = new FrameMeta { device_id = DeviceId, ts = ts };
+            var camPose = cameraAccess.GetCameraPose();
+            if (camPose.rotation.w != 0f) // default Pose (camera not ready) has an all-zero quaternion
+            {
+                var p = camPose.position;
+                meta.pose = new Pose { x = p.x, y = p.y, z = p.z, yaw = camPose.rotation.eulerAngles.y };
+            }
+            else if (headPose != null)
             {
                 var p = headPose.position;
                 meta.pose = new Pose { x = p.x, y = p.y, z = p.z, yaw = headPose.eulerAngles.y };
@@ -200,11 +235,11 @@ namespace Megamind
             return meta;
         }
 
-        /// <summary>Downscale the camera RenderTexture to <= jpegMaxWidth and JPEG-encode it (synchronous, ~10-30 ms on device).</summary>
-        private byte[] EncodeCurrentFrame()
+        /// <summary>Downscale the camera texture to <= jpegMaxWidth into _scratch (Blit + ReadPixels, a few ms on device).</summary>
+        private bool ReadbackCurrentFrame()
         {
             var src = cameraAccess.GetTexture();
-            if (src == null || src.width <= 16) return null;
+            if (src == null || src.width <= 16) return false;
             int w = src.width, h = src.height;
             float scale = Mathf.Min(1f, (float)settings.jpegMaxWidth / w);
             int tw = Mathf.Max(1, Mathf.RoundToInt(w * scale));
@@ -229,7 +264,7 @@ namespace Megamind
                 RenderTexture.active = prev;
                 RenderTexture.ReleaseTemporary(rt);
             }
-            return _scratch.EncodeToJPG(settings.jpegQuality);
+            return true;
         }
 
         private IEnumerator Upload(byte[] jpeg, FrameMeta meta)
@@ -239,7 +274,6 @@ namespace Megamind
                 new MultipartFormFileSection("image", jpeg, "frame.jpg", "image/jpeg"),
                 new MultipartFormDataSection("meta", JsonUtility.ToJson(meta)),
             };
-            _pending++;
             var t0 = Time.realtimeSinceStartup;
             using (var req = UnityWebRequest.Post(settings.Url(config, "/v1/frames"), form))
             {

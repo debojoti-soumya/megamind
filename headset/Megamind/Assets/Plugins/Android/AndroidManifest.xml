@@ -25,8 +25,9 @@
   <uses-permission android:name="com.oculus.permission.USE_ANCHOR_API" />
   <uses-permission android:name="com.oculus.permission.USE_SCENE" />
   <!-- Passthrough Camera API (Horizon OS v74+). Runtime-requested by MegamindPermissions. -->
+  <!-- Passthrough Camera API. Meta's WebCamTexture->PassthroughCameraAccess migration guide says to request ONLY this
+       (not android.permission.CAMERA, which also covers the avatar camera and triggers a second permission dialog). -->
   <uses-permission android:name="horizonos.permission.HEADSET_CAMERA" />
-  <uses-permission android:name="android.permission.CAMERA" />
   <!-- Megamind: upload frames / chat with the server, push-to-talk microphone -->
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
