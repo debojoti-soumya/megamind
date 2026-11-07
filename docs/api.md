@@ -60,8 +60,14 @@ Purge all memory tokens for a device. Returns `{ "deleted": 1234 }`.
 ## Memory token (stored record)
 ```
 id, device_id, ts, caption, ocr_text, entities[], pose{x,y,z,yaw}|null,
-text_vec[1024], image_vec[768], thumb_path, frame_hash, episode_id|null
+text_vec[1024], image_vec[768], thumb_path, frame_hash, episode_id|null,
+kind: "frame" | "episode"
 ```
+`kind` is `"frame"` for captured keyframes (default). The store groups consecutive frames into
+`episode_id`s (time gap + visual change) and a consolidation job writes one `kind="episode"` token
+per closed episode whose `caption` is a summary of that episode and whose `ts` is the episode start,
+so vague queries ("what did I do this morning") hit summaries. Episode tokens are server-internal and
+never appear in `FrameAccepted`; they surface through search/chat citations like any other token.
 
 ## Internal: `recall_memory` tool (Claude -> server)
 ```
