@@ -152,3 +152,21 @@ async def test_no_match_returns_not_found_without_calling_reader():
 
 def test_tool_schema_unchanged():
     assert RECALL_MEMORY_TOOL["input_schema"]["properties"]["mode"]["enum"] == ["semantic", "visual", "hybrid"]
+
+
+async def test_now_reaches_the_retriever_planner():
+    """A pinned `now` (eval / replay) must drive relative-time planning, not the wall clock."""
+
+    class SpyRetriever(HybridRetriever):
+        seen: list = []
+
+        async def retrieve(self, query, **kw):
+            self.seen.append(kw.get("now"))
+            return await super().retrieve(query, **kw)
+
+    store = InMemoryStore()
+    emb = MockTextEmbedder()
+    tool = RecallMemory(store, emb, None, FakeReader(), retriever=SpyRetriever(store, emb))
+    await tool("lunch", now=1_800_000_000.0)
+    await tool("lunch")
+    assert SpyRetriever.seen == [datetime.fromtimestamp(1_800_000_000.0, UTC), None]

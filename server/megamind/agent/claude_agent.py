@@ -180,14 +180,14 @@ class ClaudeAgent:
         t0 = time.perf_counter()
         if not self.enabled:
             stats.path = "fallback"
-            resp = await self._no_llm_fallback(text, device_id, stats)
+            resp = await self._no_llm_fallback(text, device_id, stats, now=now)
         else:
             try:
                 resp = await self._claude_turn(session_id, text, device_id, stats, now=now)
             except (anthropic.APIError, anthropic.APIConnectionError) as e:  # network, 4xx/5xx, timeouts
                 log.warning("req=%s claude failed (%s); using caption fallback", stats.request_id, e)
                 stats.path, stats.error = "fallback", f"{type(e).__name__}: {e}"
-                resp = await self._no_llm_fallback(text, device_id, stats)
+                resp = await self._no_llm_fallback(text, device_id, stats, now=now)
         stats.total_ms = (time.perf_counter() - t0) * 1000
         log.info(
             "req=%s session=%s path=%s llm_calls=%d tool_calls=%d in_tok=%d out_tok=%d "
@@ -294,10 +294,12 @@ class ClaudeAgent:
         except ValueError as e:  # bad ISO timestamp etc. -> tell the model instead of crashing the turn
             return RecallResult(evidence=f"Tool error: {e}", confidence="not_found", cited=[], all_retrieved=[])
 
-    async def _no_llm_fallback(self, text: str, device_id: str | None, stats: TurnStats | None = None) -> ChatResponse:
+    async def _no_llm_fallback(
+        self, text: str, device_id: str | None, stats: TurnStats | None = None, *, now: float | None = None
+    ) -> ChatResponse:
         """Deterministic path used before Claude is wired: always recall, echo evidence."""
         t_tool = time.perf_counter()
-        r = await self.recall(query=text, device_id=device_id)
+        r = await self.recall(query=text, device_id=device_id, now=now)
         if stats is not None:
             stats.tool_ms += (time.perf_counter() - t_tool) * 1000
             stats.tool_calls += 1

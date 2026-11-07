@@ -63,6 +63,9 @@ async def test_offline_run_scores_every_question_without_keys(monkeypatch):
     # caption-only baseline on hashed embeddings: retrieval+captions should still answer most OCR questions
     assert summ["accuracy"] >= 0.5
     assert summ["tool_calls"] == 20 and summ["latency_p95_ms"] < 2000
+    # relative-time questions plan against the scripted day's `now`, not the wall clock
+    lunch = next(t for t in turns if t.q == "what did I have for lunch")
+    assert lunch.correct and {"l01", "l02"} & set(lunch.cited)
     md = eval_agent.markdown(turns, summ, "t")
     assert md.count("\n| ") == 21 and "accuracy" in md  # header + 20 rows
 
