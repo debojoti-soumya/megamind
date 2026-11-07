@@ -1,0 +1,17 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+server/.env
+server/data/
+
+# latex
+docs/*.aux docs/*.log docs/*.out docs/*.toc docs/*.fls docs/*.fdb_latexmk docs/*.synctex.gz
+
+# os / editors
+.DS_Store
+.idea/
+.vscode/
