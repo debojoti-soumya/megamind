@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Megamind Quest 3 manifest. If "Meta > Tools > Update/Create store-compatible AndroidManifest.xml" regenerates
+  this file, re-add horizonos.permission.HEADSET_CAMERA, RECORD_AUDIO and usesCleartextTraffic (research/reports/05).
+  android.permission.CAMERA is intentionally absent: HEADSET_CAMERA alone grants the passthrough cameras and avoids a
+  second permission dialog.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:tools="http://schemas.android.com/tools"
+          android:installLocation="auto">
+  <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true" />
+  <uses-feature android:name="oculus.software.handtracking" android:required="false" />
+  <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="true" />
+
+  <uses-permission android:name="horizonos.permission.HEADSET_CAMERA" />
+  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
+
+  <application android:label="@string/app_name"
+               android:icon="@mipmap/app_icon"
+               android:usesCleartextTraffic="true"
+               android:allowBackup="false">
+    <meta-data android:name="com.oculus.supportedDevices" android:value="quest3|quest3s" />
+    <meta-data android:name="com.oculus.handtracking.version" android:value="V2.0" />
+    <meta-data android:name="com.oculus.ossplash" android:value="true" />
+
+    <activity android:name="com.unity3d.player.UnityPlayerActivity"
+              android:theme="@style/UnityThemeSelector"
+              android:screenOrientation="landscape"
+              android:launchMode="singleTask"
+              android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|fontScale|screenSize|smallestScreenSize|density|uiMode"
+              android:resizeableActivity="false"
+              android:excludeFromRecents="true"
+              android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+        <category android:name="com.oculus.intent.category.VR" />
+      </intent-filter>
+      <meta-data android:name="unityplayer.UnityActivity" android:value="true" />
+      <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
+    </activity>
+  </application>
+</manifest>

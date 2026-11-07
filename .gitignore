@@ -15,3 +15,16 @@ docs/*.aux docs/*.log docs/*.out docs/*.toc docs/*.fls docs/*.fdb_latexmk docs/*
 .DS_Store
 .idea/
 .vscode/
+
+# unity (headset/Megamind) — only Assets/, Packages/manifest.json, ProjectSettings/ are source
+headset/Megamind/[Ll]ibrary/
+headset/Megamind/[Tt]emp/
+headset/Megamind/[Oo]bj/
+headset/Megamind/[Bb]uild/
+headset/Megamind/[Ll]ogs/
+headset/Megamind/[Uu]ser[Ss]ettings/
+headset/Megamind/Packages/packages-lock.json
+headset/Megamind/*.csproj
+headset/Megamind/*.sln
+headset/Megamind/.vs/
+headset/Megamind/Assets/PassthroughCamera/
