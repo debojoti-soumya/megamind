@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 Confidence = Literal["high", "medium", "low", "not_found"]
 SearchMode = Literal["semantic", "visual", "hybrid"]
+TokenKind = Literal["frame", "episode"]
 
 
 class Pose(BaseModel):
@@ -42,6 +43,7 @@ class MemoryToken(BaseModel):
     thumb_path: str
     frame_hash: str
     episode_id: str | None = None
+    kind: TokenKind = "frame"
 
     @property
     def thumb_url(self) -> str:
