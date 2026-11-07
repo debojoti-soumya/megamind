@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""
 
     store_backend: str = "memory"
+    wearer_tz: str = "America/Los_Angeles"  # IANA zone used to resolve "this morning" in recall_memory
     lancedb_path: Path = Path("./data/lancedb")
     thumb_dir: Path = Path("./data/thumbs")
     audio_dir: Path = Path("./data/audio")
