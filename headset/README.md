@@ -36,11 +36,33 @@ design doc §2, decision D1).
 ## Scripts (`Assets/Megamind/Scripts`)
 | File | Stream | Purpose |
 |---|---|---|
-| `MegamindConfig.cs` | shared | ScriptableObject with server URL / device id |
+| `MegamindConfig.cs` | shared | ScriptableObject with server URL / device id (+ PlayerPrefs overrides) |
 | `Dto.cs` | shared | C# mirrors of `docs/api.md` payloads |
 | `FrameUploader.cs` | 1 | 1 fps sample of `WebCamTexture` → JPEG → `POST /v1/frames` |
-| `ChatClient.cs` | 3 | mic record on push-to-talk → `POST /v1/chat` → play audio |
-| `ChatPanel.cs` | 3 | transcript bubbles + cited thumbnails on the world-locked canvas |
+| `ChatClient.cs` | 3 | push-to-talk (trigger or index pinch) → 16 kHz WAV → `POST /v1/chat` → play audio |
+| `ChatPanel.cs` | 3 | transcript bubbles, cited thumbnails, confidence/latency line, status HUD (`/v1/health` poll) |
+| `PanelAnchor.cs` | 3 | places the canvas `panelDistance` m ahead on first use; hold B/Y 0.5 s to re-anchor |
+| `SettingsPanel.cs` | 3 | runtime server URL / device id, new session, purge memory |
+
+## Stream 3 panel prefab (Engineer 2)
+Hierarchy to build in the sample scene (all under one World Space Canvas):
+```
+MegamindPanel (Canvas: World Space, 600x720 px, CanvasScaler off)   + PanelAnchor + ChatPanel + ChatClient + AudioSource
+  Header            Text statusLine, Image serverDot, Button(⚙ -> SettingsPanel.Toggle)
+  Scroll            ScrollRect -> Viewport (Mask) -> Content (VerticalLayoutGroup, ContentSizeFitter)   = ChatPanel.content
+  EmptyHint         Text "Hold the trigger and ask…"                                                   = ChatPanel.emptyHint
+  Indicators        ListeningIndicator (red dot / bars), ThinkingIndicator (spinner)
+  Settings          (inactive) InputField serverUrl, InputField deviceId, Buttons Save / New session / Purge, Text feedback
+Prefabs (Assets/Megamind/Prefabs): UserBubble (Text, right-aligned), AssistantBubble (Text), ThumbRow (HorizontalLayoutGroup),
+  Thumb (RawImage 132x99 with child Text for "n min ago")
+```
+`PanelAnchor.Start` scales the canvas so it is `panelWidthMeters` (0.6 m) wide. Set `head` to
+`OVRCameraRig/TrackingSpace/CenterEyeAnchor`. For pinch-to-talk assign `OVRHand` components from
+the `OVRHandPrefab`s to `ChatClient.leftHand/rightHand`; the controller trigger works without them.
+
+A browser prototype of the same panel (same API calls, same states) is served by the server at
+`http://<server>:8000/ui` — use it to agree on layout/behaviour before building the prefab, and as a
+hardware-free demo fallback.
 
 Scripts are written against Unity 2022.3 APIs and the Meta sample's
 `PassthroughCameraSamples.WebCamTextureManager`. They compile-check only; they have not

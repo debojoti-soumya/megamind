@@ -22,7 +22,10 @@ class Settings(BaseSettings):
     voyage_api_key: str = ""
 
     stt_provider: str = "mock"
+    stt_model: str = "whisper-1"
     tts_provider: str = "mock"
+    tts_model: str = "tts-1"
+    tts_voice: str = "alloy"
     deepgram_api_key: str = ""
     elevenlabs_api_key: str = ""
 

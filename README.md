@@ -36,13 +36,19 @@ python tools/feeder.py --server http://localhost:8000 --source 0 --fps 1
 python tools/ask.py --server http://localhost:8000 "what did I just see?"
 ```
 
+Or open the browser prototype of the AR panel at <http://localhost:8000/ui>: webcam as
+passthrough, hold **Space** to talk, cited thumbnails, TTS playback, status HUD, and an optional
+1 fps capture toggle (settings ⚙) so the whole loop runs on one laptop. Real STT/TTS need
+`OPENAI_API_KEY` (or Deepgram / ElevenLabs keys) in `server/.env`; without keys the mock
+providers are used.
+
 ## Streams and owners
 
 | Stream | Code | Status |
 |---|---|---|
 | 1. Capture + tokenization | `headset/.../FrameUploader.cs`, `server/megamind/ingest`, `server/megamind/store` | skeleton |
 | 2. Retrieval tool + reader | `server/megamind/agent/{tools,reader}.py` | skeleton |
-| 3. AR chat | `headset/.../ChatClient.cs`, `ChatPanel.cs`, `server/megamind/agent` | skeleton |
+| 3. AR chat | `headset/.../ChatClient.cs`, `ChatPanel.cs`, `PanelAnchor.cs`, `SettingsPanel.cs`, `server/megamind/agent/{stt,tts}.py`, `server/megamind/ui` | prototype (browser `/ui` works end-to-end; Unity scripts untested on device) |
 
 Every `TODO(stream-N)` comment in the code marks work owned by that stream.
 

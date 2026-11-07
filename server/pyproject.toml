@@ -30,6 +30,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["megamind*"]
 
+[tool.setuptools.package-data]
+megamind = ["ui/*.html"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py311"

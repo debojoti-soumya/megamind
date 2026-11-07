@@ -1,10 +1,44 @@
-"""Text-to-speech. TODO(stream-3): OpenAI TTS / ElevenLabs; write WAV to settings.audio_dir."""
+"""Text-to-speech providers (stream 3). Output is a WAV written to settings.audio_dir and
+served at /v1/audio/{id}.wav (the headset plays it with UnityWebRequestMultimedia, WAV only).
+
+  openai     -> `audio.speech` with response_format=wav
+  elevenlabs -> REST text-to-speech with output_format=pcm_16000, wrapped in a WAV header
+  mock       -> no audio (audio_url=null)
+"""
 
 from __future__ import annotations
 
+import logging
+import struct
 from abc import ABC, abstractmethod
+from pathlib import Path
+
+import httpx
 
 from megamind.config import Settings
+
+log = logging.getLogger(__name__)
+
+
+def pcm16_to_wav(pcm: bytes, sample_rate: int, channels: int = 1) -> bytes:
+    byte_rate = sample_rate * channels * 2
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + len(pcm),
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        channels,
+        sample_rate,
+        byte_rate,
+        channels * 2,
+        16,
+        b"data",
+        len(pcm),
+    )
+    return header + pcm
 
 
 class TTS(ABC):
@@ -18,5 +52,67 @@ class MockTTS(TTS):
         return None
 
 
+class _FileTTS(TTS):
+    def __init__(self, audio_dir: Path) -> None:
+        self.audio_dir = audio_dir
+
+    async def synthesize(self, text: str, out_id: str) -> str | None:
+        if not text.strip():
+            return None
+        try:
+            wav = await self._render(text)
+        except Exception:  # noqa: BLE001
+            log.exception("TTS failed; returning no audio")
+            return None
+        self.audio_dir.mkdir(parents=True, exist_ok=True)
+        (self.audio_dir / f"{out_id}.wav").write_bytes(wav)
+        return f"/v1/audio/{out_id}.wav"
+
+    @abstractmethod
+    async def _render(self, text: str) -> bytes: ...
+
+
+class OpenAITTS(_FileTTS):
+    def __init__(self, settings: Settings) -> None:
+        from openai import AsyncOpenAI
+
+        super().__init__(settings.audio_dir)
+        self.client = AsyncOpenAI(api_key=settings.openai_api_key)
+        self.model = settings.tts_model
+        self.voice = settings.tts_voice
+
+    async def _render(self, text: str) -> bytes:
+        r = await self.client.audio.speech.create(
+            model=self.model, voice=self.voice, input=text, response_format="wav"
+        )
+        return r.content
+
+
+class ElevenLabsTTS(_FileTTS):
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings.audio_dir)
+        self.api_key = settings.elevenlabs_api_key
+        self.voice = settings.tts_voice if settings.tts_voice != "alloy" else "21m00Tcm4TlvDq8ikWAM"
+        self.model = settings.tts_model if settings.tts_model != "tts-1" else "eleven_turbo_v2_5"
+
+    async def _render(self, text: str) -> bytes:
+        async with httpx.AsyncClient(timeout=60.0) as http:
+            r = await http.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice}",
+                params={"output_format": "pcm_16000"},
+                headers={"xi-api-key": self.api_key, "Content-Type": "application/json"},
+                json={"text": text, "model_id": self.model},
+            )
+            r.raise_for_status()
+        return pcm16_to_wav(r.content, 16000)
+
+
 def build_tts(settings: Settings) -> TTS:
+    p = settings.tts_provider.lower()
+    if p == "openai" and settings.openai_api_key:
+        return OpenAITTS(settings)
+    if p == "elevenlabs" and settings.elevenlabs_api_key:
+        return ElevenLabsTTS(settings)
+    if p != "mock":
+        log.warning("TTS_PROVIDER=%s but no API key configured; using MockTTS", p)
     return MockTTS()
