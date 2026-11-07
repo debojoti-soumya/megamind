@@ -122,7 +122,7 @@ class MockImageEmbedder(ImageEmbedder):
             from PIL import Image
 
             img = Image.open(io.BytesIO(jpeg)).convert("RGB").resize((4, 4))
-            return normalize([c / 255.0 for px in img.getdata() for c in px])
+            return normalize([c / 255.0 for c in img.tobytes()])
         except Exception:  # noqa: BLE001  (no PIL / not an image: hash fallback, still deterministic)
             h = hashlib.sha256(jpeg).digest()
             return normalize([b / 255.0 for b in (h * 2)[: self.dim]])
