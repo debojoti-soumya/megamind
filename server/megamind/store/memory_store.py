@@ -7,10 +7,10 @@ from megamind.store.base import MemoryStore
 from megamind.store.fusion import POOL, FusionWeights, bm25_rank, cosine, diversify, weighted_rrf
 
 
-def _vec_rank(q: list[float], items: list[tuple[str, list[float] | None]]) -> list[str]:
-    """Top-POOL ids by cosine; non-positive similarity is treated as no match."""
+def _vec_rank(q: list[float], items: list[tuple[str, list[float] | None]]) -> list[tuple[str, float]]:
+    """Top-POOL (id, cosine); non-positive similarity is treated as no match."""
     scored = [(cosine(q, v), i) for i, v in items if v]
-    return [i for s, i in sorted(scored, reverse=True)[:POOL] if s > 0]
+    return [(i, s) for s, i in sorted(scored, reverse=True)[:POOL] if s > 0]
 
 
 class InMemoryStore(MemoryStore):
@@ -56,14 +56,15 @@ class InMemoryStore(MemoryStore):
         if not pool:
             return []
         w = self.weights
-        rankings: list[tuple[float, list[str]]] = []
+        rankings: list = []
         if mode in ("semantic", "hybrid"):
             rankings.append((w.bm25, bm25_rank(query_text, {t.id: t.search_text() for t in pool})[:POOL]))
             if query_text_vec is not None:
-                rankings.append((w.text, _vec_rank(query_text_vec, [(t.id, t.text_vec) for t in pool])))
+                rankings.append((w.text, [i for i, _ in _vec_rank(query_text_vec, [(t.id, t.text_vec) for t in pool])]))
         if mode in ("visual", "hybrid") and query_image_vec is not None:
             weight = w.image_visual_mode if mode == "visual" else w.image
-            rankings.append((weight, _vec_rank(query_image_vec, [(t.id, t.image_vec) for t in pool])))
+            hits = _vec_rank(query_image_vec, [(t.id, t.image_vec) for t in pool])
+            rankings.append((weight, [(i, w.image_conf(c)) for i, c in hits]))
 
         fused = weighted_rrf(rankings)
         cap = w.per_episode_cap if per_episode_cap is None else per_episode_cap

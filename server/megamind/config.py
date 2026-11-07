@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     reader_base_url: str = "http://localhost:8001/v1"
     reader_api_key: str = "none"
     reader_model: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+    reader_provider: str = "caption"  # caption (no model) | vlm (READER_BASE_URL) | local (transformers VLM)
+    reader_max_frames: int = 4
+    local_reader_model: str = "HuggingFaceTB/SmolVLM-500M-Instruct"
+    local_reader_split: bool = False  # image splitting: ~5x more vision tokens, slower on CPU
     enrich_base_url: str = ""
     enrich_model: str = ""
 
@@ -63,6 +67,7 @@ class Settings(BaseSettings):
     search_w_text: float = 1.0
     search_w_image: float = 0.6
     search_w_image_visual: float = 1.5
+    search_calibrate_image: bool = True  # scale image hits by the embedder's match probability
     search_per_episode_cap: int = 3
 
     @property

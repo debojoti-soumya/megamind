@@ -268,17 +268,20 @@ class LanceDBStore(MemoryStore):
             parts = [p for p in (base, extra) if p]
             return " AND ".join(parts) or None
 
-        def ids(q, w: str | None, score: str) -> list[str]:
+        def rows_of(q, w: str | None, score: str) -> list[dict]:
             if w:
                 q = q.where(w, prefilter=True)
             rows = q.limit(POOL).select(["id", score]).to_list()
             # cosine distance >= 1 means non-positive similarity: treat as no match
-            return [r["id"] for r in rows if score != "_distance" or r["_distance"] < 1.0]
+            return [r for r in rows if score != "_distance" or r["_distance"] < 1.0]
+
+        def ids(q, w: str | None, score: str) -> list[str]:
+            return [r["id"] for r in rows_of(q, w, score)]
 
         w = self.weights
-        rankings: list[tuple[float, list[str]]] = []
+        rankings: list = []
         if mode in ("semantic", "hybrid"):
-            terms = " ".join(tokenize(query_text))
+            terms = " ".join(tokenize(query_text, stem=False))
             if terms:
                 rankings.append((w.bm25, ids(self._t.search(terms, query_type="fts"), where(), "_score")))
             if query_text_vec is not None and len(query_text_vec) == self.text_dim:
@@ -287,7 +290,8 @@ class LanceDBStore(MemoryStore):
         if mode in ("visual", "hybrid") and query_image_vec is not None and len(query_image_vec) == self.image_dim:
             q = self._t.search(query_image_vec, vector_column_name="image_vec").metric("cosine")
             weight = w.image_visual_mode if mode == "visual" else w.image
-            rankings.append((weight, ids(q, where("has_image_vec = true"), "_distance")))
+            hits = rows_of(q, where("has_image_vec = true"), "_distance")
+            rankings.append((weight, [(r["id"], w.image_conf(1.0 - r["_distance"])) for r in hits]))
 
         fused = weighted_rrf(rankings)
         if not fused:

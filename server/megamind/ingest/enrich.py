@@ -72,6 +72,11 @@ class ImageEmbedder(ABC):
     async def embed_text(self, text: str) -> list[float]:
         """Text tower of the same model, for visual-mode queries."""
 
+    @property
+    def calibration(self) -> tuple[float, float] | None:
+        """(scale, bias) such that sigmoid(scale * cos + bias) is a match probability, if the model has one."""
+        return None
+
 
 class MockTextEmbedder(TextEmbedder):
     """Deterministic bag-of-words hashing embedding so retrieval tests work offline."""
@@ -228,6 +233,13 @@ class SigLIPImageEmbedder(ImageEmbedder):
     async def embed_text(self, text: str) -> list[float]:
         return await asyncio.to_thread(self._text, text)
 
+    @property
+    def calibration(self) -> tuple[float, float] | None:
+        bias = getattr(self.model, "logit_bias", None)
+        if bias is None:  # CLIP-style models have no sigmoid bias
+            return None
+        return float(self.model.logit_scale.exp().detach()), float(bias.detach())
+
 
 class MockImageEmbedder(ImageEmbedder):
     """Coarse colour layout (4x4 grid x RGB); text tower maps colour words. For offline tests only."""
@@ -245,7 +257,7 @@ class MockImageEmbedder(ImageEmbedder):
         for word, rgb in self._COLOURS.items():
             if word in text.lower():
                 return _normalise([c / 255.0 for c in rgb] * 16)
-        return _normalise([1.0] * self.dim)
+        return [0.0] * self.dim  # no visual concept in the query: image signal abstains
 
 
 class LocalEnricher(Enricher):

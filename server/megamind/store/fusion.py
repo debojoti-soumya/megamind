@@ -13,6 +13,14 @@ RRF_C = 60
 POOL = 50
 
 
+# Same idea as LanceDB's native FTS (stop words removed, English stemming) so both backends rank alike.
+STOP_WORDS = frozenset(
+    "a an and are as at be been but by can could did do does for from had has have how i i'm in is it its me my "
+    "of on or our so than that the their them there these they this to was we were what when where which who why "
+    "will with would you your".split()
+)
+
+
 @dataclass(frozen=True)
 class FusionWeights:
     bm25: float = 1.0
@@ -20,17 +28,40 @@ class FusionWeights:
     image: float = 0.6
     image_visual_mode: float = 1.5
     per_episode_cap: int = 3
+    # Sigmoid calibration of image-text cosine (SigLIP is trained with p = sigmoid(scale * cos + bias)).
+    # When set, each image hit's RRF contribution is scaled by p, so questions with no visual match
+    # (a wifi password, something someone said) don't let unrelated photos outrank the text hits.
+    image_logit_scale: float | None = None
+    image_logit_bias: float = 0.0
+
+    def image_conf(self, cos: float) -> float:
+        if self.image_logit_scale is None:
+            return 1.0
+        return 1.0 / (1.0 + math.exp(-(self.image_logit_scale * cos + self.image_logit_bias)))
 
 
-def tokenize(text: str) -> list[str]:
-    return _WORD.findall(text.lower())
+def _stem(w: str) -> str:
+    for suf in ("ing", "ed", "es", "s"):
+        if len(w) > len(suf) + 2 and w.endswith(suf) and not w.endswith("ss"):
+            return w[: -len(suf)]
+    return w
 
 
-def weighted_rrf(rankings: Iterable[tuple[float, Sequence[str]]], c: int = RRF_C) -> dict[str, float]:
+def tokenize(text: str, stem: bool = True) -> list[str]:
+    words = [w for w in _WORD.findall(text.lower()) if w not in STOP_WORDS]
+    return [_stem(w) for w in words] if stem else words
+
+
+Ranking = Sequence[str] | Sequence[tuple[str, float]]
+
+
+def weighted_rrf(rankings: Iterable[tuple[float, Ranking]], c: int = RRF_C) -> dict[str, float]:
+    """Weighted reciprocal-rank fusion. Ranking items are ids, or (id, multiplier) to scale one hit."""
     scores: dict[str, float] = {}
     for weight, ranking in rankings:
-        for rank, token_id in enumerate(ranking):
-            scores[token_id] = scores.get(token_id, 0.0) + weight / (c + rank + 1)
+        for rank, item in enumerate(ranking):
+            token_id, mult = item if isinstance(item, tuple) else (item, 1.0)
+            scores[token_id] = scores.get(token_id, 0.0) + weight * mult / (c + rank + 1)
     return scores
 
 

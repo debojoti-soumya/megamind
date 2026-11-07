@@ -47,14 +47,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.settings = settings
         st.text_embedder = build_text_embedder(settings)
         st.image_embedder = build_image_embedder(settings)
-        st.store = build_store(settings, st.text_embedder.dim, st.image_embedder.dim if st.image_embedder else None)
+        st.store = build_store(
+            settings,
+            st.text_embedder.dim,
+            st.image_embedder.dim if st.image_embedder else None,
+            st.image_embedder.calibration if st.image_embedder else None,
+        )
         st.media = MediaStore(settings, st.store)
         st.keyframe_filter = KeyframeFilter(settings)
         st.episodes = EpisodeTracker(settings, st.image_embedder)
         st.worker = EnrichmentWorker(
             st.store, build_enricher(settings, st.image_embedder), st.text_embedder, st.image_embedder, st.episodes
         )
-        st.reader = build_reader(settings)
+        st.reader = build_reader(settings, st.media)
         st.recall = RecallMemory(st.store, st.text_embedder, st.image_embedder, st.reader)
         st.list_episodes = ListEpisodes(st.store, st.text_embedder, st.image_embedder)
         st.agent = ClaudeAgent(settings, st.recall)
