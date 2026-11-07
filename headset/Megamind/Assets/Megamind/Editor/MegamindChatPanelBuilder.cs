@@ -21,7 +21,7 @@ namespace Megamind.EditorTools
     {
         const string Root = "Assets/Megamind";
         const string PrefabDir = Root + "/Prefabs";
-                const float PanelW = 600f, PanelH = 720f, HeaderH = 48f, FooterH = 56f;
+        const float PanelW = 600f, PanelH = 720f, HeaderH = 48f, FooterH = 56f;
 
         static readonly Color PanelBg = new Color(0.07f, 0.08f, 0.11f, 0.86f);
         static readonly Color HeaderBg = new Color(1f, 1f, 1f, 0.06f);
