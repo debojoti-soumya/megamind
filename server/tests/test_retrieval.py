@@ -303,3 +303,13 @@ async def test_episode_cap_limits_hits_per_episode():
     ids = [t.token.id for t in res.tokens if not t.is_context]
     assert sum(1 for i in ids if i.startswith("d")) == 2
     assert "k1" in ids
+
+
+async def test_read_text_adds_ocr_only_bm25_list():
+    st, _ = await _store()
+    out = await _retr(st).retrieve("what did the oat milk label say", k=3, now=NOW)
+    assert out.plan.query_type == "read_text"
+    best = out.ranked[0]
+    assert best.token.ocr_text.strip() and "ocr_bm25" in best.reasons
+    generic = await _retr(st).retrieve("where are my keys", k=3, now=NOW)
+    assert all("ocr_bm25" not in r.reasons for r in generic.ranked)
