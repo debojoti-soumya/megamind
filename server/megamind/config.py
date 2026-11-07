@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     filter_dhash_window_s: float = 30.0
     filter_min_luma: int = 20
 
+    episode_gap_s: float = 120.0
+    episode_split_sim: float = 0.80
+    episode_rejoin_sim: float = 0.85
+    episode_rejoin_last: int = 4
+    consolidate_interval_s: float = 600.0
+    consolidate_min_tokens: int = 3
+    summarizer_provider: str = "mock"
+
     @property
     def enrich_url(self) -> str:
         return self.enrich_base_url or self.reader_base_url
