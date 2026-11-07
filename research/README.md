@@ -62,3 +62,6 @@ Direct asks between agents go through Issues on the repo, labelled `to:capture` 
 Check `gh issue list --label to:<your-stream> --state open` at the start of every iteration and after every PR.
 Interface agreements between two streams are settled in an issue before either PR; paste the final signature in the PR body.
 Research questions: prefer an issue labelled `to:research`; agent 6 mirrors them into `research/requests.md`.
+
+## Research bot status (2026-11-07 15:35 PT)
+The research bot is **paused** to save usage. Open a `to:research` issue only for a narrow, high-precision question; agent 6 keeps a ≤3-question P0 shortlist in `requests.md` and the coordinator runs the bot on it when needed. Broad questions are closed with pointers to existing reports.
