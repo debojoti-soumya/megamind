@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     reader_provider: str = "auto"  # auto (vlm iff READER_API_KEY set) | vlm | mock
     reader_timeout_s: float = 8.0
     reader_max_retries: int = 1
-    reader_max_images: int = 20  # Sail limit per request; more tokens -> chunk + merge
+    reader_max_images: int = 12  # per call (Sail cap 20; report 04 says <=12 for latency); more -> chunk + merge
     reader_thumb_max_px: int = 512
     reader_max_tokens: int = 300
     reader_json_mode: str = "schema"  # schema (json_schema) | object (json_object) | off; downgraded on HTTP 400
