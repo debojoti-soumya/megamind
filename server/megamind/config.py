@@ -9,6 +9,8 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = ""
     claude_model: str = "claude-sonnet-4-5"
+    claude_timeout_s: float = 30.0
+    claude_max_retries: int = 2
 
     reader_base_url: str = "http://localhost:8001/v1"
     reader_api_key: str = "none"
