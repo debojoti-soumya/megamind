@@ -84,6 +84,27 @@ Demonstrate, live, a wearer asking the headset questions whose answers depend on
 \end{itemize}
 
 % -------------------------------------------------------------------
+\section{Prior Art and Differentiation}
+The use case is not new; the open, agent-callable system on a consumer headset is. Details and links in \texttt{docs/prior-art.md}.
+
+\paragraph{Products.} Google's \emph{Project Astra} (I/O 2024, now Gemini Live / Android XR) demonstrated ``where did I leave my glasses?'' from a short rolling window of camera frames---closed, session-scoped, no third-party access. Meta AI on Ray-Ban Meta offers explicit ``remember where I parked'' reminders and Live AI sessions, not passive searchable visual memory. Limitless, Rewind, Bee and Omi pendants are audio-only lifeloggers.
+
+\paragraph{Research.} \emph{Ego4D Episodic Memory} (2022) defines our exact task (NLQ, Visual Queries) as an offline benchmark. \emph{EgoLife} (CVPR 2025) is the closest system: a week-long egocentric assistant with EgoRAG, a caption/text-based hierarchical memory, captured on Aria glasses with no interactive AR client. \emph{Vinci} (2024) is a real-time egocentric VLM assistant for smart glasses focused on live understanding.
+
+\paragraph{Open source on Quest.} \texttt{QuestCameraKit} ($\sim$580$\star$) provides Passthrough Camera API templates (reuse its plumbing). \texttt{JarvisVR}, \texttt{OpenAI-for-Meta-Quest-3} and similar projects answer questions about the \emph{current} scene; JarvisVR explicitly lists episodic memory as future work.
+
+\paragraph{What Megamind adds.}
+\begin{enumerate}
+  \item Persistent, passive episodic \emph{visual} memory on a consumer headset via the Passthrough Camera API.
+  \item Memory exposed as an agent tool (\texttt{recall\_memory}) with a published schema, decoupled from any one assistant.
+  \item A two-model read path in which a Qwen-VL reader re-attends over the retrieved \emph{frames}, not just captions.
+  \item Temporal + semantic + visual hybrid retrieval with time-range filtering.
+  \item Grounded answers: the cited frame is rendered in AR next to the reply.
+  \item Open, device-agnostic (feeder, phone, webcam) with a local-first store and purge.
+\end{enumerate}
+We claim a working, open, agent-integrated system on hardware people own---not a new use case or a model-level contribution.
+
+% -------------------------------------------------------------------
 \section{Key Design Decisions}
 
 \begin{decision}
