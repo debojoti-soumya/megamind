@@ -87,7 +87,7 @@ def test_anchor_event_detected_without_time():
     p = plan_query("where were my glasses before I left the office?", now=NOW)
     assert p.anchor_event == "left the office"
     assert not p.has_time
-    assert p.search_text == "glasses"
+    assert p.search_text.split()[0] == "glasses"
 
 
 def test_explicit_bounds_override_parsed_and_strip_phrase():

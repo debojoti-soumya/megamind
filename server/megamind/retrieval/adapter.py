@@ -30,6 +30,10 @@ def tokenize(text: str) -> list[str]:
         w = w.strip("'.-")
         if len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
             w = w[:-1]
+        if len(w) > 5 and w.endswith("ing"):
+            w = w[:-3]
+        elif len(w) > 4 and w.endswith("ed"):
+            w = w[:-2]
         if w:
             out.append(w)
     return out

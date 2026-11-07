@@ -6,7 +6,7 @@ hits) so the reader sees context. Returns <= k tokens in chronological order.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -33,6 +33,8 @@ class HybridConfig:
     expand_max_frac: float = 0.34  # neighbours take at most this share of k
     widen_on_empty: bool = True  # drop a *parsed* (not explicit) time window if nothing matched
     anchor_pad_s: float = 15 * 60  # +/- around a resolved "when I ..." anchor
+    temporal_sample_span_s: float = 3 * 3600  # windows wider than this are sampled evenly instead of by focus
+    weights_by_type: dict[str, Weights] | None = None  # override planner weights (used by the eval harness)
 
 
 class HybridRetriever(Retriever):
@@ -68,6 +70,8 @@ class HybridRetriever(Retriever):
         now = now or datetime.now(UTC)
         k = max(1, k)
         plan = plan_query(query, now=now, tz=self.tz, time_from=time_from, time_to=time_to)
+        if self.cfg.weights_by_type and plan.query_type in self.cfg.weights_by_type:
+            plan.weights = self.cfg.weights_by_type[plan.query_type]
         # The caller's explicit non-default mode wins; otherwise follow the plan.
         eff_mode = plan.mode if mode in ("hybrid", None) else mode
         if eff_mode == "temporal" and plan.search_text and not plan.has_time:
@@ -85,7 +89,9 @@ class HybridRetriever(Retriever):
 
         text = plan.search_text or plan.query
         ref_ts = min(now.timestamp(), plan.time_to) if plan.time_to else now.timestamp()
-        fused = await self._fuse(text, eff_mode, plan.weights, plan.time_from, plan.time_to, device_id, ref_ts)
+        # inside an explicit/parsed window the window itself carries the time intent: no recency prior
+        w = replace(plan.weights, recency=0.0) if plan.has_time else plan.weights
+        fused = await self._fuse(text, eff_mode, w, plan.time_from, plan.time_to, device_id, ref_ts)
         widened = False
         if not fused and self.cfg.widen_on_empty and plan.has_time and not plan.explicit_time and anchor_ts is None:
             fused = await self._fuse(text, eff_mode, plan.weights, None, None, device_id, now.timestamp())
@@ -155,6 +161,9 @@ class HybridRetriever(Retriever):
                 continue
             age = max(0.0, ref_ts - t.ts)
             s += w.recency * top * math.exp(-age / self.cfg.recency_tau_s)
+            if w.ocr and t.ocr_text.strip():
+                s += w.ocr * top
+                reasons[i].append("ocr")
             out.append((i, s, reasons[i]))
         out.sort(key=lambda x: (-x[1], -toks[x[0]].ts))
         self._cache = toks
@@ -210,7 +219,9 @@ class HybridRetriever(Retriever):
         return list(chosen.values())
 
     async def _temporal(self, plan: QueryPlan, k: int, device_id: str | None) -> list[RetrievedToken]:
-        """Pure time query ("what was I doing 10 minutes ago"): spread k frames across the window."""
+        """Pure time query ("what was I doing at 11" / "after lunch"): frames from the window, scored by
+        closeness to the focus point (start for "after X", end for "before X", else the centre). Wide windows
+        are sampled evenly so the reader sees the whole span; narrow ones take the k closest frames."""
         toks = [
             t
             for t in await self.adapter.range(plan.time_from, plan.time_to, limit=10_000, device_id=device_id)
@@ -218,12 +229,19 @@ class HybridRetriever(Retriever):
         ]
         if not toks:
             return []
+        lo = plan.time_from if plan.time_from is not None else toks[0].ts
+        hi = plan.time_to if plan.time_to is not None else toks[-1].ts
+        span = max(hi - lo, 60.0)
+        focus = {"start": lo, "end": hi}.get(plan.time_focus, (lo + hi) / 2)
         if plan.time_from is None and plan.time_to is None:
-            toks = toks[-k:]  # no window at all: the most recent k
+            focus = hi
         if len(toks) > k:
-            step = len(toks) / k
-            toks = [toks[int(i * step)] for i in range(k)]
-        return [RetrievedToken(token=t, score=1.0, reasons=["time"]) for t in toks]
+            if span <= self.cfg.temporal_sample_span_s and plan.has_time:
+                toks = sorted(sorted(toks, key=lambda t: abs(t.ts - focus))[:k], key=lambda t: t.ts)
+            else:
+                step = len(toks) / k
+                toks = [toks[int(i * step)] for i in range(k)]
+        return [RetrievedToken(token=t, score=1.0 / (1.0 + abs(t.ts - focus) / span), reasons=["time"]) for t in toks]
 
     async def _resolve_anchor(self, plan: QueryPlan, device_id: str | None) -> float | None:
         """Find when 'I left the office' happened: best keyword/text match for the event."""

@@ -28,15 +28,19 @@ class Weights:
     bm25: float = 1.0
     image: float = 0.6  # CLIP-family towers are weak on dense text (research digest)
     recency: float = 0.15  # pull toward newer tokens among near-equal scores
+    ocr: float = 0.0  # bonus for tokens that carry OCR text (read-text questions)
 
 
 WEIGHTS_BY_TYPE: dict[str, Weights] = {
     "locate_object": Weights(text=1.0, bm25=1.0, image=0.8, recency=0.3),
-    "read_text": Weights(text=0.8, bm25=1.6, image=0.3, recency=0.1),
+    "read_text": Weights(text=0.8, bm25=1.6, image=0.3, recency=0.1, ocr=0.6),
     "activity": Weights(text=1.0, bm25=0.6, image=1.0, recency=0.2),
     "people": Weights(text=1.0, bm25=0.6, image=1.0, recency=0.15),
     "generic": Weights(),
 }
+
+
+TimeFocus = Literal["start", "center", "end"]
 
 
 @dataclass
@@ -51,6 +55,7 @@ class QueryPlan:
     weights: Weights = field(default_factory=Weights)
     mode: PlanMode = "hybrid"
     explicit_time: bool = False
+    time_focus: TimeFocus = "center"  # "after lunch" -> start, "before I left" -> end
 
     @property
     def has_time(self) -> bool:
@@ -140,6 +145,10 @@ _RE_DAYPART = re.compile(
     r"\b(" + "|".join(sorted((re.escape(k) for k in _DAY_PARTS), key=len, reverse=True)) + r")\b", re.I
 )
 _RE_LAST_WEEK = re.compile(r"\b(?:last|past|this) week\b", re.I)
+_RE_REL_AFTER = re.compile(r"\b(?:right |just )?(?:after|since|following)\s+$", re.I)
+_RE_REL_BEFORE = re.compile(r"\b(?:right |just )?(?:before|until|till|prior to)\s+$", re.I)
+_RE_FOCUS_START = re.compile(r"\b(?:after|since|following)\b", re.I)
+_RE_FOCUS_END = re.compile(r"\b(?:before|until|till|prior to)\b", re.I)
 _RE_TIME_FILLER = re.compile(r"\b(?:at|around|about|on|in|during|sometime|some time)\s*$", re.I)
 
 
@@ -268,6 +277,14 @@ def _parse_time(q: str, now: datetime) -> TimeWindow | None:  # noqa: C901 - a l
             lo_dt, hi_dt = _hours(day, start_h), _hours(day, end_h)
         spans = hint_parts + [md.span()]
         lo, hi = min(s[0] for s in spans), max(s[1] for s in spans)
+        mid = lo_dt + (hi_dt - lo_dt) / 2
+        rel = _RE_REL_BEFORE.search(q[:lo]) or _RE_REL_AFTER.search(q[:lo])
+        if rel:
+            lo = rel.start()
+            if _RE_REL_AFTER.match(rel.group(0)):
+                lo_dt, hi_dt = mid, now
+            else:
+                lo_dt, hi_dt = day, mid
         return TimeWindow(lo_dt.timestamp(), min(now_ts, hi_dt.timestamp()), q[lo:hi], (lo, hi))
 
     if my or mw:
@@ -365,6 +382,8 @@ _SCAFFOLD = re.compile(
     r"last|see|saw|seen|look|looked|looking|leave|left|put|place|placed|set|find|lose|lost|keep|kept|"
     r"go|went|get|got|say|said|says|read|show|showed|written|write|doing|done|up|down|earlier|again|"
     r"some|any|something|anything|thing|things|stuff|exactly|really|just|actually|like|kind|sort|"
+    r"before|after|since|until|till|while|during|following|prior|"
+    r"take|took|taken|happen|happened|eat|ate|eaten|meet|met|talk|talked|hand|handed|"
     r"s|t|m|re|ve|ll|d|again|ago|around|about)\b",
     re.I,
 )
@@ -392,7 +411,27 @@ def rewrite(query: str, time_span: tuple[int, int] | None = None, anchor: str | 
     q = _FILLER.sub(" ", q)
     q = _SCAFFOLD.sub(" ", q)
     q = _MULTISPACE.sub(" ", q).strip(" .,?!'").lower()
-    return q
+    words = q.split()
+    extra = [e for w in words for e in _EXPAND.get(w, "").split() if e not in words]
+    return " ".join(words + extra)
+
+
+# Query words -> what a caption/OCR is likely to say instead (kept tiny and obvious on purpose).
+_EXPAND: dict[str, str] = {
+    "park": "parking garage car",
+    "parked": "parking garage car",
+    "car": "parking",
+    "lunch": "food plate restaurant",
+    "dinner": "food plate restaurant",
+    "breakfast": "food plate kitchen",
+    "phone": "phone screen",
+    "glasses": "reading glasses",
+    "spectacles": "glasses",
+    "colleague": "person",
+    "someone": "person",
+    "person": "people",
+    "people": "person",
+}
 
 
 Rewriter = Callable[[str], Awaitable[str]]
@@ -421,8 +460,13 @@ def plan_query(
 
     win = parse_time(query, now_local)
     anchor = parse_anchor(query)
+    if anchor and win:
+        anchor = re.sub(re.escape(win.hint), " ", anchor, flags=re.I).strip() or None
     qtype = detect_type(query)
     text = rewrite(query, win.span if win else None, anchor)
+    if qtype == "people" and not any(w in text.split() for w in ("person", "people")):
+        text = f"{text} person".strip()
+    focus: TimeFocus = "start" if _RE_FOCUS_START.search(query) else "end" if _RE_FOCUS_END.search(query) else "center"
 
     explicit = time_from is not None or time_to is not None
     if explicit:
@@ -444,6 +488,7 @@ def plan_query(
         weights=WEIGHTS_BY_TYPE[qtype],
         mode=_mode_for(qtype, text, has_time),
         explicit_time=explicit,
+        time_focus=focus,
     )
 
 
