@@ -29,6 +29,7 @@ from lancedb.index import FTS
 
 from megamind.models import MemoryHit, MemoryToken, Pose, SearchMode
 from megamind.store.base import MemoryStore, Scored, VectorField
+from megamind.store.episodes import EpisodeTracker
 from megamind.store.rrf import fuse_hits
 
 log = logging.getLogger(__name__)
@@ -72,7 +73,9 @@ class LanceDBStore(MemoryStore):
         optimize_every: int = 256,
         vector_index_min_rows: int = 4096,
         fts_index_min_rows: int = 1,
+        episodes: EpisodeTracker | None = None,
     ) -> None:
+        self.episodes = episodes
         self.path = Path(path)
         self.path.mkdir(parents=True, exist_ok=True)
         self._text_dim = text_dim
@@ -147,7 +150,7 @@ class LanceDBStore(MemoryStore):
             "id": token.id,
             "device_id": token.device_id,
             "ts": float(token.ts),
-            "kind": getattr(token, "kind", None) or "frame",
+            "kind": token.kind,
             "caption": token.caption,
             "ocr_text": token.ocr_text,
             "entities": list(token.entities),
@@ -176,8 +179,7 @@ class LanceDBStore(MemoryStore):
             "frame_hash": row["frame_hash"],
             "episode_id": row.get("episode_id"),
         }
-        if "kind" in MemoryToken.model_fields:
-            data["kind"] = row.get("kind") or "frame"
+        data["kind"] = row.get("kind") or "frame"
         return MemoryToken(**data)
 
     # ------------------------------------------------------------------ writes
@@ -219,10 +221,13 @@ class LanceDBStore(MemoryStore):
         table.create_index(metric="cosine", vector_column_name=col, index_type="IVF_FLAT", num_partitions=partitions)
 
     async def add(self, token: MemoryToken) -> None:
+        await self._episodize([token])
         await asyncio.to_thread(self._add_sync, [token])
 
     async def add_many(self, tokens: Sequence[MemoryToken]) -> None:
-        await asyncio.to_thread(self._add_sync, list(tokens))
+        tokens = list(tokens)
+        await self._episodize(tokens)
+        await asyncio.to_thread(self._add_sync, tokens)
 
     async def optimize(self) -> None:
         if self._table is not None:
@@ -309,7 +314,7 @@ class LanceDBStore(MemoryStore):
         anchor = await self.get(token_id)
         if anchor is None:
             return []
-        kinds = (getattr(anchor, "kind", None) or "frame",)
+        kinds = (anchor.kind,)
         where = self._where(device_id=anchor.device_id, kinds=kinds)
         rows = await asyncio.to_thread(self._scan, where, ["id", "ts"], None)
         rows.sort(key=lambda r: (r["ts"], r["id"]))

@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from typing import Literal
 
 from megamind.models import MemoryHit, MemoryToken, SearchMode
+from megamind.store.episodes import EpisodeTracker
 from megamind.store.rrf import Scored
 
 VectorField = Literal["text_vec", "image_vec"]
@@ -23,7 +24,26 @@ class MemoryStore(ABC):
     `vector_search` / `keyword_search` only return enriched tokens (non-empty caption);
     `get_many` / `range` / `neighbors` return everything. `kinds` filters on the token kind
     (`"frame"` for captured keyframes, `"episode"` for consolidation summaries); `None` = all.
+
+    Episodes: when `episodes` (an `EpisodeTracker`) is set, `add`/`add_many` assign an
+    `episode_id` to every frame that arrives without one, rebuilding the tracker's window from
+    persisted frames on first sight of a device.
     """
+
+    episodes: EpisodeTracker | None = None
+
+    async def _episodize(self, tokens: Sequence[MemoryToken]) -> None:
+        tracker = self.episodes
+        if tracker is None:
+            return
+        for t in tokens:
+            if t.kind != "frame":
+                continue
+            if not tracker.knows(t.device_id):
+                lookback = max(tracker.gap_s * 2 * tracker.rejoin_last, 1800.0)
+                recent = await self.range(t.ts - lookback, None, limit=5000, device_id=t.device_id, kinds=("frame",))
+                tracker.seed(t.device_id, recent)
+            tracker.assign(t)
 
     @abstractmethod
     async def add(self, token: MemoryToken) -> None:

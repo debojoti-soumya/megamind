@@ -9,6 +9,7 @@ from pathlib import Path
 
 from megamind.models import MemoryHit, MemoryToken, SearchMode
 from megamind.store.base import MemoryStore, Scored, VectorField
+from megamind.store.episodes import EpisodeTracker
 from megamind.store.rrf import fuse_hits
 
 _WORD = re.compile(r"[a-z0-9]+")
@@ -30,15 +31,22 @@ def _keyword_score(query: str, text: str) -> float:
 
 
 def _kind(t: MemoryToken) -> str:
-    return getattr(t, "kind", None) or "frame"
+    return t.kind
 
 
 class InMemoryStore(MemoryStore):
-    def __init__(self) -> None:
+    def __init__(self, *, episodes: EpisodeTracker | None = None) -> None:
         self._tokens: dict[str, MemoryToken] = {}
+        self.episodes = episodes
 
     async def add(self, token: MemoryToken) -> None:
+        await self._episodize([token])
         self._tokens[token.id] = token
+
+    async def add_many(self, tokens: Sequence[MemoryToken]) -> None:
+        await self._episodize(tokens)
+        for t in tokens:
+            self._tokens[t.id] = t
 
     async def get(self, token_id: str) -> MemoryToken | None:
         return self._tokens.get(token_id)
