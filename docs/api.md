@@ -51,7 +51,19 @@ A new episode starts after a >120 s gap, an image-similarity drop below `EPISODE
 against the episode centroid, or >3 m of movement; short detours rejoin a recent episode.
 
 ## `GET /thumbs/{id}.jpg`
-Keyframe thumbnail (JPEG).
+Keyframe thumbnail (JPEG), on every storage tier: `hot` serves the uploaded JPEG, `cold`
+decodes the frame from its AV1 episode chunk, `text` returns 404 except for episode
+representatives (kept as JPEG indefinitely).
+
+## `POST /admin/age?hot_older_than_s=&cold_older_than_s=`  (ops / demo)
+Run pixel aging now (also runs every `AGE_INTERVAL_S`). Defaults: `HOT_RETENTION_H=72`,
+`COLD_RETENTION_DAYS=100`. Returns `{to_cold, chunks, jpeg_bytes, chunk_bytes, to_text, skipped}`.
+Text, OCR, transcripts and vectors are never aged.
+
+## `GET /stats`
+`{tokens, tiers{hot,cold,text}, filter{seen,kept,keep_rate,by_reason}, worker_queue,
+disk_bytes{hot_jpeg,cold_chunks,index}, bytes_per_frame{hot,cold,index},
+projected_100d_gb_at_budget, episodes}`
 
 ## `POST /chat`
 Either `application/json` with `text`, or `multipart/form-data` with `audio` (16 kHz mono WAV).

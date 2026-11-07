@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
@@ -19,8 +21,19 @@ from megamind.ingest.router import router as ingest_router
 from megamind.ingest.worker import EnrichmentWorker
 from megamind.models import HealthResponse
 from megamind.store import build_store
+from megamind.store.media import MediaStore
 
 logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
+
+async def _aging_loop(media: MediaStore, interval_s: float) -> None:
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            log.info("aging: %s", await media.age())
+        except Exception:  # noqa: BLE001
+            log.exception("aging failed")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -35,6 +48,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.text_embedder = build_text_embedder(settings)
         st.image_embedder = build_image_embedder(settings)
         st.store = build_store(settings, st.text_embedder.dim, st.image_embedder.dim if st.image_embedder else None)
+        st.media = MediaStore(settings, st.store)
         st.keyframe_filter = KeyframeFilter(settings)
         st.episodes = EpisodeTracker(settings, st.image_embedder)
         st.worker = EnrichmentWorker(
@@ -47,7 +61,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.stt = build_stt(settings)
         st.tts = build_tts(settings)
         await st.worker.start()
+        aging = (
+            asyncio.create_task(_aging_loop(st.media, settings.age_interval_s)) if settings.age_interval_s > 0 else None
+        )
         yield
+        if aging:
+            aging.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await aging
         await st.worker.stop()
 
     app = FastAPI(title="Megamind", version="0.1.0", lifespan=lifespan)

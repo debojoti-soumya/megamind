@@ -71,6 +71,31 @@ class InMemoryStore(MemoryStore):
         picked = diversify(ordered, {i: self._tokens[i].episode_id for i, _ in ordered}, k, cap)
         return [MemoryHit.from_token(self._tokens[i], s) for i, s in picked]
 
+    async def list_tokens(
+        self,
+        device_id: str | None = None,
+        time_to: float | None = None,
+        tier: str | None = None,
+        limit: int | None = None,
+    ) -> list[MemoryToken]:
+        ts = sorted(
+            (
+                t
+                for t in self._tokens.values()
+                if (device_id is None or t.device_id == device_id)
+                and (time_to is None or t.ts <= time_to)
+                and (tier is None or t.tier == tier)
+            ),
+            key=lambda t: t.ts,
+        )
+        return ts[:limit] if limit else ts
+
+    async def tier_counts(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for t in self._tokens.values():
+            out[t.tier] = out.get(t.tier, 0) + 1
+        return out
+
     async def upsert_episode(self, episode: MemoryEpisode) -> None:
         self._episodes[episode.id] = episode.model_copy(deep=True)
 

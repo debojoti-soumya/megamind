@@ -9,6 +9,7 @@ from megamind.main import create_app
 async def client(tmp_path):
     settings = Settings(
         thumb_dir=tmp_path / "thumbs",
+        chunk_dir=tmp_path / "chunks",
         audio_dir=tmp_path / "audio",
         store_backend="memory",
         embed_provider="mock",

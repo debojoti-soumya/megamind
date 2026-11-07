@@ -16,6 +16,10 @@ class MemoryStore(ABC):
     @abstractmethod
     async def add(self, token: MemoryToken) -> None: ...
 
+    async def add_many(self, tokens: list[MemoryToken]) -> None:
+        for t in tokens:
+            await self.add(t)
+
     @abstractmethod
     async def get(self, token_id: str) -> MemoryToken | None: ...
 
@@ -41,6 +45,19 @@ class MemoryStore(ABC):
         per_episode_cap: int | None = None,
     ) -> list[MemoryHit]:
         """`per_episode_cap=None` uses the configured diversity cap; 0 disables it."""
+
+    @abstractmethod
+    async def list_tokens(
+        self,
+        device_id: str | None = None,
+        time_to: float | None = None,
+        tier: str | None = None,
+        limit: int | None = None,
+    ) -> list[MemoryToken]:
+        """Tokens matching the filters, oldest first (used by media aging)."""
+
+    @abstractmethod
+    async def tier_counts(self) -> dict[str, int]: ...
 
     @abstractmethod
     async def upsert_episode(self, episode: MemoryEpisode) -> None: ...

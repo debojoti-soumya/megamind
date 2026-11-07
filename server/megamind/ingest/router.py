@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from PIL import Image
 from ulid import ULID
 
@@ -111,7 +111,9 @@ async def list_episodes(
 
 @router.delete("/memories")
 async def purge_memories(request: Request, device_id: str | None = None):
-    n = await request.app.state.store.purge(device_id)
+    app = request.app.state
+    await app.media.delete_files(await app.store.list_tokens(device_id=device_id))
+    n = await app.store.purge(device_id)
     request.app.state.keyframe_filter.reset(device_id)
     request.app.state.episodes.reset(device_id)
     return {"deleted": n}
@@ -119,7 +121,42 @@ async def purge_memories(request: Request, device_id: str | None = None):
 
 @router.get("/thumbs/{token_id}.jpg")
 async def get_thumb(request: Request, token_id: str):
-    p = request.app.state.settings.thumb_dir / f"{token_id}.jpg"
-    if not p.exists():
+    app = request.app.state
+    token = await app.store.get(token_id)
+    data = await app.media.read(token) if token else None
+    if data is None:
         raise HTTPException(404)
-    return FileResponse(p, media_type="image/jpeg")
+    return Response(data, media_type="image/jpeg")
+
+
+@router.post("/admin/age")
+async def age_now(request: Request, hot_older_than_s: float | None = None, cold_older_than_s: float | None = None):
+    """Run pixel aging now (demo/ops). Defaults: HOT_RETENTION_H / COLD_RETENTION_DAYS."""
+    return await request.app.state.media.age(hot_s=hot_older_than_s, cold_s=cold_older_than_s)
+
+
+@router.get("/stats")
+async def stats(request: Request):
+    app = request.app.state
+    tiers = await app.store.tier_counts()
+    n = sum(tiers.values())
+    disk = app.media.disk_bytes()
+    counts = dict(app.keyframe_filter.counts)
+    seen = sum(counts.values())
+    kept = sum(counts.get(t, 0) for t in ("novel", "pose", "heartbeat", "forced"))
+    hot_pf = disk["hot_jpeg"] / max(1, tiers.get("hot", 0))
+    cold_pf = disk["cold_chunks"] / max(1, tiers.get("cold", 0)) if tiers.get("cold") else hot_pf / 8
+    index_pf = disk["index"] / max(1, n)
+    per_day = app.settings.filter_budget_per_min * 60 * 16
+    hot_days = app.settings.hot_retention_h / 24
+    proj = per_day * (hot_days * hot_pf + (100 - hot_days) * cold_pf + 100 * index_pf)
+    return {
+        "tokens": n,
+        "tiers": tiers,
+        "filter": {"seen": seen, "kept": kept, "keep_rate": kept / seen if seen else None, "by_reason": counts},
+        "worker_queue": app.worker.queue.qsize(),
+        "disk_bytes": disk,
+        "bytes_per_frame": {"hot": round(hot_pf), "cold": round(cold_pf), "index": round(index_pf)},
+        "projected_100d_gb_at_budget": round(proj / 1e9, 2),
+        "episodes": len(await app.store.list_episodes(limit=10**9)),
+    }

@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     store_backend: str = "memory"
     lancedb_path: Path = Path("./data/lancedb")
     thumb_dir: Path = Path("./data/thumbs")
+    chunk_dir: Path = Path("./data/chunks")
+    hot_retention_h: float = 72.0
+    cold_retention_days: float = 100.0
+    cold_width: int = 960
+    cold_crf: int = 50
+    age_interval_s: float = 3600.0  # 0 disables the background aging loop
     audio_dir: Path = Path("./data/audio")
 
     filter_min_gap_s: float = 2.0

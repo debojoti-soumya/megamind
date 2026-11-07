@@ -8,7 +8,7 @@ State is per device and uses frame timestamps (not wall clock), so video replays
 from __future__ import annotations
 
 import math
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -79,6 +79,7 @@ class KeyframeFilter:
     def __init__(self, settings: Settings) -> None:
         self.s = settings
         self._state: dict[str, _DeviceState] = {}
+        self.counts: Counter[str] = Counter()
 
     def has_state(self, device_id: str) -> bool:
         return device_id in self._state
@@ -115,6 +116,11 @@ class KeyframeFilter:
         return FilterDecision(True, None, h, trigger, sharp)
 
     def decide(self, img: Image.Image, meta: FrameMeta) -> FilterDecision:
+        d = self._decide(img, meta)
+        self.counts[d.trigger if d.accepted else d.reason] += 1
+        return d
+
+    def _decide(self, img: Image.Image, meta: FrameMeta) -> FilterDecision:
         s = self.s
         h = dhash(img)
         if mean_luma(img) < s.filter_min_luma:

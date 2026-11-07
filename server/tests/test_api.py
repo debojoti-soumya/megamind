@@ -89,6 +89,7 @@ async def test_episodes_endpoint(tmp_path):
 
     settings = Settings(
         thumb_dir=tmp_path / "thumbs",
+        chunk_dir=tmp_path / "chunks",
         audio_dir=tmp_path / "audio",
         image_embed_provider="mock",
         filter_min_gap_s=0.0,

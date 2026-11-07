@@ -207,6 +207,39 @@ class LanceDBStore(MemoryStore):
 
         return await asyncio.to_thread(run)
 
+    async def list_tokens(
+        self,
+        device_id: str | None = None,
+        time_to: float | None = None,
+        tier: str | None = None,
+        limit: int | None = None,
+    ) -> list[MemoryToken]:
+        conds = []
+        if device_id:
+            conds.append(f"device_id = {_q(device_id)}")
+        if time_to is not None:
+            conds.append(f"ts <= {float(time_to)}")
+        if tier:
+            conds.append(f"tier = {_q(tier)}")
+
+        def run() -> list[MemoryToken]:
+            q = self._t.search()
+            if conds:
+                q = q.where(" AND ".join(conds))
+            toks = sorted((self._token(r) for r in q.limit(None).to_list()), key=lambda t: t.ts)
+            return toks[:limit] if limit else toks
+
+        return await asyncio.to_thread(run)
+
+    async def tier_counts(self) -> dict[str, int]:
+        def run() -> dict[str, int]:
+            out: dict[str, int] = {}
+            for r in self._t.search().select(["tier"]).limit(None).to_list():
+                out[r["tier"] or "hot"] = out.get(r["tier"] or "hot", 0) + 1
+            return out
+
+        return await asyncio.to_thread(run)
+
     def _search_sync(
         self,
         query_text_vec: list[float] | None,
