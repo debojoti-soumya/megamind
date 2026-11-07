@@ -18,6 +18,7 @@ from megamind.ingest.filter import KeyframeFilter
 from megamind.ingest.router import router as ingest_router
 from megamind.ingest.worker import EnrichmentWorker
 from megamind.models import HealthResponse
+from megamind.retrieval import build_retriever
 from megamind.store import build_store
 from megamind.ui.router import router as ui_router
 
@@ -40,12 +41,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.image_embedder = build_image_embedder(settings)
         st.worker = EnrichmentWorker(st.store, build_enricher(settings), st.text_embedder, st.image_embedder)
         st.reader = build_reader(settings)
-        st.recall = RecallMemory(st.store, st.text_embedder, st.image_embedder, st.reader)
+        st.retriever, st.ucc_indexer = build_retriever(settings, st.store, st.text_embedder, st.image_embedder)
+        st.recall = RecallMemory(
+            st.store, st.text_embedder, st.image_embedder, st.reader, retriever=st.retriever, tz=settings.wearer_tz
+        )
         st.agent = ClaudeAgent(settings, st.recall)
         st.stt = build_stt(settings)
         st.tts = build_tts(settings)
         await st.worker.start()
+        if st.ucc_indexer is not None:
+            await st.ucc_indexer.start()
         yield
+        if st.ucc_indexer is not None:
+            await st.ucc_indexer.stop()
         await st.worker.stop()
 
     app = FastAPI(title="Megamind", version="0.1.0", lifespan=lifespan)

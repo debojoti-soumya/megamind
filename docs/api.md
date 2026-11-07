@@ -21,8 +21,8 @@ Response `202 Accepted`:
 ```json
 { "frame_id": "01J...", "accepted": true, "reason": null }
 ```
-`accepted=false` with `reason` in `{"duplicate","too_soon","dark"}` means the frame was
-dropped by the filter. Enrichment (caption/embedding) is asynchronous; a token appears
+`accepted=false` with `reason` in `{"duplicate","too_soon","dark","blurry","budget"}` means the
+frame was dropped by the filter (`blurry` = motion blur / out of focus, `budget` = per-minute cap). Enrichment (caption/embedding) is asynchronous; a token appears
 in search a few seconds later.
 
 ## `GET /memories`  (debug search)

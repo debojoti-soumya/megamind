@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -11,6 +12,7 @@ from ulid import ULID
 
 from megamind.models import FrameAccepted, FrameMeta, MemoryToken, SearchMode, SearchResponse
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -34,15 +36,18 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
         raise HTTPException(400, "image is not a decodable JPEG") from exc
 
     frame_id = str(ULID())
-    recent = await app.store.recent_hashes(fm.device_id, fm.ts - app.settings.filter_dhash_window_s)
+    kf = app.keyframe_filter
+    recent = await app.store.recent_hashes(fm.device_id, fm.ts - kf.history_window_s)
     recent += app.pending_hashes.get(fm.device_id, [])
-    decision = app.keyframe_filter.decide(img, fm.ts, recent)
+    decision = kf.decide(img, fm, recent)
+    if sum(kf.counts.values()) % 60 == 0:
+        log.info("filter counts %s", dict(kf.counts))
     if not decision.accepted:
         return FrameAccepted(frame_id=frame_id, accepted=False, reason=decision.reason)
 
     app.pending_hashes.setdefault(fm.device_id, []).append((fm.ts, decision.frame_hash))
     app.pending_hashes[fm.device_id] = [
-        (t, h) for t, h in app.pending_hashes[fm.device_id] if fm.ts - t <= app.settings.filter_dhash_window_s
+        (t, h) for t, h in app.pending_hashes[fm.device_id] if fm.ts - t <= kf.history_window_s
     ]
 
     thumb_path = app.settings.thumb_dir / f"{frame_id}.jpg"

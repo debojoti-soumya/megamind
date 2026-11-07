@@ -81,6 +81,7 @@ class StoreAdapter:
     def __init__(self, store: MemoryStore) -> None:
         self.store = store
         self._seen: dict[str, MemoryToken] = {}
+        self.ocr_pool = 5_000  # tokens scanned by `ocr_search` (no store primitive for OCR-only BM25)
 
     def _rank(self, rows: list) -> list[tuple[str, float]]:
         """Normalise a store ranking (`(token, score)` per #3, or `(id, score)`) to ids."""
@@ -109,7 +110,7 @@ class StoreAdapter:
             rows = await self.store.vector_search(
                 vec, k, field=field, time_from=time_from, time_to=time_to, device_id=device_id
             )
-            return self._rank(rows)
+            return [(i, s) for i, s in self._rank(rows) if s > 0]  # stores may return non-matches at <= 0
         pool = await self._pool(time_from, time_to, device_id)
         scored = [(t.id, cosine(vec, v)) for t in pool if t.caption and (v := getattr(t, field))]
         scored = [(i, s) for i, s in scored if s > 0]
@@ -141,6 +142,21 @@ class StoreAdapter:
             for t in fetched:
                 self._seen[t.id] = t
         return [self._seen[i] for i in ids if i in self._seen]
+
+    async def ocr_search(
+        self,
+        query: str,
+        k: int,
+        *,
+        time_from: float | None = None,
+        time_to: float | None = None,
+        device_id: str | None = None,
+    ) -> list[tuple[str, float]]:
+        """BM25 over `ocr_text` only. No store primitive covers this, so it runs over `range()`."""
+        pool = await self.range(time_from, time_to, limit=self.ocr_pool, device_id=device_id)
+        for t in pool:
+            self._seen[t.id] = t
+        return bm25_scores(query, {t.id: t.ocr_text for t in pool if t.ocr_text.strip()})[:k]
 
     async def range(
         self,

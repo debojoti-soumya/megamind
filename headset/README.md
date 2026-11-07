@@ -1,87 +1,203 @@
 # Megamind headset app (Unity, Quest 3)
 
-Single Unity app that (1) captures passthrough keyframes and uploads them, and
-(2) hosts the voice-first AR chat panel. Both streams share this project (see
-design doc §2, decision D1).
+Single Unity app that (1) captures passthrough keyframes and uploads them to the
+server, and (2) hosts the voice-first AR chat panel. Both streams share this project
+(design doc §2, decision D1). The project in `headset/Megamind/` is a complete Unity
+project: open it in Unity Hub, let the packages resolve, run one menu item, build.
 
-## Requirements
-- Quest 3 / 3S on Horizon OS **v74+**, developer mode on, adb working (`adb devices`).
-- Unity **6000.0.38f1+** (pinned in `ProjectSettings/ProjectVersion.txt`; 2022.3 LTS also works with the
-  older `WebCamTextureManager` sample) with Android Build Support (SDK/NDK/OpenJDK).
-- Meta XR Core SDK + MR Utility Kit **v81+** (`Packages/manifest.json` pins 81.0.0 from Meta's npm registry;
-  bump to what the samples repo requires). Passthrough Camera API ships from v74; `PassthroughCameraAccess`
-  from v81 (see `research/reports/05-quest3-passthrough-camera-api.md`).
-- Meta's sample: https://github.com/oculus-samples/Unity-PassthroughCameraApiSamples — copy its
-  `PassthroughCamera/` folder into `Assets/` (git-ignored). `FrameUploader` currently targets the sample's
-  `WebCamTextureManager`; porting it to `PassthroughCameraAccess` is a stream-1 task (report 05 §2).
+> Status: the project has been assembled and compile-checked against the Meta SDK
+> 85 / MRUK 85 API surface, but **not yet built or run on a headset**. Expect to
+> iterate on device; the troubleshooting list below covers the likely failures.
 
-## What is committed
+## Exact versions
+| Thing | Version | Where it is pinned |
+|---|---|---|
+| Unity Editor | **6000.0.66f2** (Unity 6, any 6000.0.38f1+ works) | `ProjectSettings/ProjectVersion.txt` |
+| Meta XR Core SDK (`com.meta.xr.sdk.core`) | **85.0.0** | `Packages/manifest.json` |
+| Meta MR Utility Kit (`com.meta.xr.mrutilitykit`) — provides `PassthroughCameraAccess` | **85.0.0** | `Packages/manifest.json` |
+| OpenXR plugin / XR Management | 1.15.1 / 4.5.4 | `Packages/manifest.json` |
+| Headset | Quest 3 / 3S, Horizon OS **v74+**, developer mode on | — |
+| Android target | **ARM64, IL2CPP, min SDK 32, ASTC**, OpenXR (Meta Quest feature group) | `ProjectSettings/ProjectSettings.asset`, `Assets/XR/` |
+| Package id | `com.megamind.quest` | `ProjectSettings/ProjectSettings.asset` |
+
+The project settings, XR settings (`Assets/XR/`), `Assets/Oculus/OculusProjectConfig.asset`
+(passthrough + passthrough camera access enabled, target Horizon OS SDK 74) and the
+Android manifest were copied from Meta's official
+[Unity-PassthroughCameraApiSamples](https://github.com/oculus-samples/Unity-PassthroughCameraApiSamples)
+and renamed. The camera is read through MRUK's `Meta.XR.PassthroughCameraAccess`
+component (the current official path; the older `WebCamTextureManager` sample is deprecated).
+
+## Build + sideload, step by step
+1. **Install Unity 6000.0.66f2** via Unity Hub with the *Android Build Support* module
+   **including OpenJDK, Android SDK & NDK Tools**. (Hub → Installs → Install Editor → 6000.0.66f2.)
+2. **Open the project**: Hub → Add → `headset/Megamind`. First open takes a few minutes
+   while it downloads the Meta packages from the Unity registry. If a dialog asks to
+   enable the new Input System / restart, accept.
+3. **Switch platform to Android**: File → Build Profiles (or Build Settings) → Android → *Switch Platform*.
+4. **Meta project setup**: Edit → Project Settings → Meta XR. Click **Fix All** / **Apply All**
+   for *Required* items (it will not change the manifest permissions we need). Ignore
+   *Recommended* items if short on time.
+5. **Create the capture scene**: menu **Megamind → 1. Create Capture Scene**. This
+   generates `Assets/Megamind/Scenes/Megamind.unity` containing
+   `OVRCameraRig` (+ `OVRManager` with passthrough enabled, `OVRPassthroughLayer`),
+   a `PassthroughCameraAccess` component (left camera, 1280×960), and a `Megamind`
+   object with `MegamindPermissions`, `FrameUploader`, `CaptureHud`, and sets it as the
+   only scene in Build Settings. It also creates `Assets/Megamind/MegamindConfig.asset`
+   (server URL / device id) and `Assets/Megamind/CaptureSettings.asset` (fps, resolution, JPEG).
+   Run **Megamind → Check Project** — every line should be `OK`.
+6. **Set the server URL**: select `Assets/Megamind/MegamindConfig.asset` (menu
+   *Megamind → Select Config*) and set `Server Base Url` to the laptop's Tailscale IP,
+   e.g. `http://100.101.102.103:8000` (see *Networking*). `Device Id` can stay `quest3-1`.
+7. **Apply Android player settings**: **Megamind → 2. Apply Android Player Settings**
+   (ARM64, IL2CPP, ASTC, min SDK 32, Internet permission required, insecure HTTP allowed,
+   package `com.megamind.quest`). Idempotent; safe to re-run.
+8. **Connect the headset**: USB-C, put it on, accept *Allow USB debugging* (tick *Always
+   allow*). Verify from a terminal:
+   ```sh
+   adb devices            # must list the headset as "device", not "unauthorized"
+   ```
+9. **Build & install**: **Megamind → 4. Build and Run on headset** (builds
+   `Builds/megamind.apk` and installs + launches it), or **Megamind → 3. Build APK** then
+   ```sh
+   adb install -r Builds/megamind.apk
+   adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerActivity
+   ```
+   First IL2CPP build is ~10 min; incremental builds ~2 min.
+10. **On the headset**, the app appears under *Library → Unknown Sources → Megamind*.
+    On first launch it asks for **Camera** (this is the `HEADSET_CAMERA` permission —
+    allow) and **Microphone**. The capture HUD then shows `camera starting…` →
+    `capturing 1280x960 → 960px JPEG` and `sent N / accepted M (reason)` updating once per second.
+11. **Watch logs** from the laptop:
+    ```sh
+    adb logcat -s Unity:I | grep -i megamind
+    ```
+    Expected lines: `[Megamind] permissions: camera=True`, `[Megamind] config: server=…`,
+    `[Megamind] camera playing 1280x960`, and on the server `POST /v1/frames … 200`.
+
+### Pointing the app at a different server without rebuilding
+The URL is resolved in this order: PlayerPrefs (`megamind.serverBaseUrl`, written by the
+settings panel) → `megamind.json` pushed over adb → `MegamindConfig.asset`. From the editor use
+**Megamind → Push config to headset (adb)**, or by hand:
+```sh
+adb shell mkdir -p /sdcard/Android/data/com.megamind.quest/files
+adb shell 'echo "{\"serverBaseUrl\":\"http://100.101.102.103:8000\",\"deviceId\":\"quest3-1\"}" > /sdcard/Android/data/com.megamind.quest/files/megamind.json'
+adb shell am force-stop com.megamind.quest && adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerActivity
 ```
-headset/Megamind/
-  Packages/manifest.json              Meta XR Core + MRUK (scoped registry), uGUI, OpenXR
-  ProjectSettings/ProjectVersion.txt  editor version only — Unity regenerates the rest; see Megamind > 1
-  Assets/Plugins/Android/AndroidManifest.xml   HEADSET_CAMERA, RECORD_AUDIO, INTERNET, cleartext, Quest 3/3S
-  Assets/Megamind/Scripts/*.cs        runtime scripts (table below)
-  Assets/Megamind/Editor/             menu items that build the project (no hand-written scene/prefab YAML):
-    MegamindProjectSetup.cs           Megamind > 1. Apply Player Settings — Android, IL2CPP/ARM64, minSdk 32, Vulkan, ASTC, http allowed
-    MegamindSceneBuilder.cs           Megamind > 2. Build Chat Panel — creates MegamindConfig.asset, bubble/thumb prefabs, the panel + settings UI, wires every reference
-    MegamindBuild.cs                  Megamind > 3. Build Android APK — Build/megamind.apk (also -executeMethod for CI)
-```
-`Library/`, `Temp/`, `Build/`, `UserSettings/`, `Assets/PassthroughCamera/` and `packages-lock.json` are git-ignored.
-Whoever opens the project first should commit the generated `.meta` files.
+Optional keys: `captureFps` (default 1).
 
-## Project bring-up (Engineer 1, hour 0)
-1. Open `headset/Megamind/` in Unity Hub (installs the pinned editor if missing). Package Manager resolves
-   Meta XR Core/MRUK from the scoped registry. Run **Megamind > 1. Apply Player Settings**.
-2. Run *Meta > Tools > Project Setup Tool* and fix all. If it regenerates `AndroidManifest.xml`, re-add
-   `horizonos.permission.HEADSET_CAMERA`, `RECORD_AUDIO` and `usesCleartextTraffic="true"`.
-3. Import the Passthrough Camera API sample into `Assets/PassthroughCamera/`. Build & run the **unmodified**
-   `CameraViewer` scene first. Confirm live camera frames on device. Do not proceed until this works.
-4. With the `CameraViewer` scene open and saved, run **Megamind > 2. Build Chat Panel In Current Scene**. It
-   adds `MegamindPanel` (Canvas + `PanelAnchor`/`ChatPanel`/`ChatClient`/`SettingsPanel`/`AudioSource`),
-   the `EventSystem` (Meta `OVRInputModule` + `OVRRaycaster` when present, right-controller ray), finds
-   `CenterEyeAnchor`, `OVRHand`s and the sample's `FrameUploader`, and sets the scene as the only one in
-   Build Settings. Add `FrameUploader` to the `WebCamTextureManager` GameObject yourself (stream 1) and
-   assign its `config` (`Assets/Megamind/MegamindConfig.asset`) and `headPose`.
-5. Set `serverBaseUrl` on `MegamindConfig.asset` to the laptop's Tailscale IP (plain HTTP, backup: ngrok
-   HTTPS URL), or change it at runtime in the panel's Settings.
-6. **Megamind > 3. Build Android APK**, then
-   `adb install -r Build/megamind.apk && adb shell monkey -p com.megamind.quest 1`.
-   Pre-grant permissions for dev loops: `adb shell pm grant com.megamind.quest horizonos.permission.HEADSET_CAMERA`
-   and `… android.permission.RECORD_AUDIO`.
-   Headless: `Unity -batchmode -quit -projectPath headset/Megamind -executeMethod Megamind.Editor.MegamindBuild.Android`.
+## Networking (Tailscale)
+1. Install Tailscale on the laptop running the server and on the Quest (Tailscale is
+   on the Horizon store; or sideload the Android APK from tailscale.com). Log both into
+   the same tailnet.
+2. On the laptop: `tailscale ip -4` → e.g. `100.101.102.103`. Start the server bound
+   to all interfaces: `cd server && uvicorn megamind.main:app --host 0.0.0.0 --port 8000`.
+3. From the headset's browser (or `adb shell curl http://100.101.102.103:8000/v1/health`)
+   confirm the health JSON loads. Use that URL as `serverBaseUrl` (plain HTTP — the app
+   manifest allows cleartext traffic).
+4. Fallback without Tailscale: same Wi-Fi + laptop LAN IP, or `ngrok http 8000` and use
+   the HTTPS URL.
+
+## Capture pipeline (stream 1)
+`FrameUploader` waits for the camera permission (`MegamindPermissions`), then for
+`PassthroughCameraAccess.IsPlaying`, then every `1/captureFps` s:
+1. (settings from `CaptureSettings.asset`) skips the frame if `maxPendingUploads` uploads are still in flight (slow network) or,
+   if `maxHeadDegPerSec` > 0, when the head is turning faster than that (off by default —
+   the server's blur filter handles motion blur);
+2. blits `cameraAccess.GetTexture()` into a ≤ `jpegMaxWidth` (960 px) texture (GPU resize +
+   `ReadPixels`), then JPEG-encodes it on the *next* frame (`jpegQuality` 75 ⇒ ~60–120 KB) so
+   readback and encode never hitch the same render frame;
+3. POSTs multipart `image` + `meta` JSON to `/v1/frames` per `docs/api.md`: `ts` is
+   `PassthroughCameraAccess.Timestamp` (image time, falls back to wall clock) and `pose`
+   x/y/z/yaw is `GetCameraPose()` (RGB camera pose at that time, falls back to
+   `CenterEyeAnchor`). The camera stream itself is capped at `cameraMaxFramerate` = 30 fps
+   (we sample 1 fps; saves GPU/battery vs the API default 60);
+4. updates counters shown by `CaptureHud` (state, resolution, sent/accepted, last server
+   reason, latency, JPEG size, skipped-motion/backlog) — a visible recording indicator is
+   always on screen while capturing. **A / X button pauses and resumes capture.**
+
+Permissions: `Assets/Plugins/Android/AndroidManifest.xml` declares
+`horizonos.permission.HEADSET_CAMERA`, `android.permission.CAMERA`,
+`android.permission.RECORD_AUDIO`, `android.permission.INTERNET`, and
+`android:usesCleartextTraffic="true"` (research digest #0). There is exactly **one** runtime
+permission flow: `MegamindPermissions` calls `OVRPermissionsRequester.Request` once (camera +
+mic), the same mechanism as Meta's sample `RequestPermissionsOnce`. `PassthroughCameraAccess`
+only checks `HEADSET_CAMERA`, so `android.permission.CAMERA` is never requested at runtime and
+only one dialog appears. The scene builder clears OVRManager's *Permission Requests On
+Startup* so nothing else asks, and *Meta > Tools > Update AndroidManifest.xml* must not be
+allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 
 ## Scripts (`Assets/Megamind/Scripts`)
 | File | Stream | Purpose |
 |---|---|---|
-| `MegamindConfig.cs` | shared | ScriptableObject with server URL / device id (+ PlayerPrefs overrides) |
+| `MegamindConfig.cs` | 3 | ScriptableObject with server URL / device id (stream 3 owns it) |
+| `CaptureSettings.cs` | 1 | ScriptableObject: fps, camera resolution, JPEG width/quality, backpressure; `megamind.json` adb override for the server URL |
 | `Dto.cs` | shared | C# mirrors of `docs/api.md` payloads |
-| `FrameUploader.cs` | 1 | 1 fps sample of `WebCamTexture` → JPEG → `POST /v1/frames` |
-| `ChatClient.cs` | 3 | push-to-talk (trigger or index pinch) → 16 kHz WAV → `POST /v1/chat` → play audio |
+| `MegamindPermissions.cs` | 1 | requests `HEADSET_CAMERA` + mic at start, exposes `CameraGranted` |
+| `FrameUploader.cs` | 1 | 1 fps sample of `PassthroughCameraAccess.GetTexture()` → JPEG → `POST /v1/frames` with pose meta |
+| `CaptureHud.cs` | 1 | world-locked capture status HUD + recording indicator, A/X pause |
+| `ChatClient.cs` | 3 | push-to-talk (trigger or index pinch) → 16 kHz WAV → `POST /v1/chat` → play audio; barge-in, latency |
 | `ChatPanel.cs` | 3 | transcript bubbles, cited thumbnails, confidence/latency line, status HUD (`/v1/health` poll) |
 | `PanelAnchor.cs` | 3 | places the canvas `panelDistance` m ahead on first use; hold B/Y 0.5 s to re-anchor |
 | `SettingsPanel.cs` | 3 | runtime server URL / device id, new session, purge memory |
+| `Editor/MegamindSceneBuilder.cs` | 1 | the `Megamind` menu: create scene, apply player settings, build, build & run, push config, check project |
+| `Editor/MegamindChatPanelBuilder.cs` | 3 | `Megamind > 1b. Add Chat Panel To Current Scene`: bubble/thumb prefabs + the world-locked chat panel, all references wired |
 
-## Stream 3 panel (Engineer 2)
-`Megamind > 2` builds this hierarchy; tweak it in the Inspector and save the scene (all under one World Space Canvas):
+## Stream 3 chat panel
+
+After **Megamind > 1. Create Capture Scene**, run **Megamind > 1b. Add Chat Panel To Current Scene** before
+building. It creates `Assets/Megamind/Prefabs/{UserBubble,AssistantBubble,ThumbRow,Thumb}.prefab` and this
+hierarchy (one World Space Canvas, 600x720 px, scaled by `PanelAnchor` to `panelWidthMeters`), wires every
+field on `ChatPanel`/`ChatClient`/`PanelAnchor`/`SettingsPanel`, finds `CenterEyeAnchor`, `OVRHand`s and the
+`FrameUploader`, and adds an `EventSystem` with Meta's `OVRInputModule` + `OVRRaycaster` (right-controller
+ray) when the SDK provides them:
 ```
-MegamindPanel (Canvas: World Space, 600x720 px, CanvasScaler off)   + PanelAnchor + ChatPanel + ChatClient + AudioSource
-  Header            Text statusLine, Image serverDot, Button(⚙ -> SettingsPanel.Toggle)
-  Scroll            ScrollRect -> Viewport (Mask) -> Content (VerticalLayoutGroup, ContentSizeFitter)   = ChatPanel.content
-  EmptyHint         Text "Hold the trigger and ask…"                                                   = ChatPanel.emptyHint
-  Indicators        ListeningIndicator (red dot / bars), ThinkingIndicator (spinner)
-  Settings          (inactive) InputField serverUrl, InputField deviceId, Buttons Save / New session / Purge, Text feedback
-Prefabs (Assets/Megamind/Prefabs): UserBubble (Text, right-aligned), AssistantBubble (Text), ThumbRow (HorizontalLayoutGroup),
-  Thumb (RawImage 132x99 with child Text for "n min ago")
+MegamindPanel (Canvas)  + PanelAnchor + ChatPanel + ChatClient + SettingsPanel + AudioSource
+  Background, Header (StatusLine, ServerDot, Settings button)
+  Scroll -> Viewport -> Content (VerticalLayoutGroup)        = ChatPanel.content
+  EmptyHint, Indicators (ListeningIndicator, ThinkingIndicator)
+  Settings (inactive): ServerUrl, DeviceId, Save / New session / Purge, Reset / Close, Feedback
 ```
-`PanelAnchor.Start` scales the canvas so it is `panelWidthMeters` (0.6 m) wide. Set `head` to
-`OVRCameraRig/TrackingSpace/CenterEyeAnchor`. For pinch-to-talk assign `OVRHand` components from
-the `OVRHandPrefab`s to `ChatClient.leftHand/rightHand`; the controller trigger works without them.
+Re-running the menu item replaces a previous `MegamindPanel`; tweak the result in the Inspector and save.
+Push-to-talk: hold the controller trigger (or index pinch); hold B/Y 0.5 s to drag the panel to your gaze.
 
 A browser prototype of the same panel (same API calls, same states) is served by the server at
-`http://<server>:8000/ui` — use it to agree on layout/behaviour before building the prefab, and as a
-hardware-free demo fallback.
+`http://<server>:8000/ui` — use it to agree on layout/behaviour and as a hardware-free demo fallback.
 
-Scripts and the editor builders are written against Unity 6 / 2022.3 APIs and the Meta sample's
-`PassthroughCameraSamples.WebCamTextureManager`. Nothing here has been opened in Unity or run on
-hardware yet (written without a Unity install); expect compile nits and to iterate on device.
+## Quest test checklist (first human run — please report back)
+
+Nothing in this project has run on a headset yet. Hour-0, in this order:
+
+1. Build Meta's `CameraViewer` sample **unchanged** ([Unity-PassthroughCameraApiSamples](https://github.com/oculus-samples/Unity-PassthroughCameraApiSamples), Unity 6000.0.66f2) on each headset. If it shows camera frames, the OS/dev-mode side is fine. Note the Horizon OS version (Settings → System → Software update).
+2. Build Megamind (steps above), launch, grab logcat: `adb logcat -s Unity | grep Megamind`. Paste the lines
+   `[Megamind] camera: os=... supported=[...]` (resolutions the OS offers) and
+   `[Megamind] camera playing: 1280x960 maxFps=30`.
+3. Verify and report:
+   - **Permission:** exactly one camera dialog on first launch; HUD leaves `waiting for camera permission` after Allow. (If two dialogs appear, `android.permission.CAMERA` in the manifest is the suspect — delete that line and tell us.)
+   - **Camera:** HUD shows `1280x960`, frames ~1/s; if `supported=[...]` lacks 1280x960, pick one from the list in `CaptureSettings.cameraResolution`.
+   - **Upload:** HUD `sent/accepted` climbs and `server:ok` / `server:duplicate` reasons appear; server log shows `POST /v1/frames 200`.
+   - **Pose/ts:** server-side `meta.pose.yaw` changes when you turn your head; `ts` is within ~1 s of the server clock.
+   - **Perf:** no visible hitch each second (readback and JPEG encode run on consecutive frames); note `enc` ms on the HUD.
+   - **Image:** open a stored thumbnail: colours correct (skin not blue — reboot if so), upright, not mirrored.
+4. Demo day: reboot the headset in the morning (RGB-flip bug), disable auto-sleep (Settings → General → Power), keep the HUD visible as a self-test.
+
+## Troubleshooting
+| Symptom | Fix |
+|---|---|
+| Permission dialog appears twice / never granted | Two mechanisms are requesting it. Only `MegamindPermissions` should request; make sure OVRManager's *Permission Requests On Startup* list is empty (re-run *Megamind > 1. Create Capture Scene*) and the Meta sample's `RequestPermissionsOnce`/`PassthroughCameraPermissions` is not in the project. |
+| Colours wrong (skin looks blue) | Known v74 issue after first install of a camera app: reboot the headset. |
+| App won't launch, `SensorLockActivity` in logcat | Headset was idle/doffed: put it on, press the power button once, relaunch. |
+| Build regenerated the manifest and camera stopped working | *Meta > Tools > Update AndroidManifest.xml* drops `HEADSET_CAMERA`; re-add it (or `git checkout` the manifest). |
+| Hub says the editor version is missing | Install exactly 6000.0.66f2, or open with another 6000.0.x (≥ 38f1) and accept the upgrade; do not use 2022.3 (MRUK 85 needs Unity 6). |
+| Package Manager errors resolving `com.meta.xr.*` | Check internet / proxy; Window → Package Manager → refresh. Meta packages come from the Unity registry, no scoped registry needed. |
+| Compile errors mentioning `PassthroughCameraAccess` | MRUK must be 81+ (we pin 85). Project Settings → Meta XR → make sure "Passthrough Camera Access" is enabled (it is in `OculusProjectConfig.asset`). |
+| HUD stuck at `waiting for camera permission` | The permission dialog was dismissed. Settings → Apps → Megamind → Permissions → Camera → Allow, or `adb shell pm grant com.megamind.quest horizonos.permission.HEADSET_CAMERA` (and `android.permission.CAMERA`). |
+| HUD `camera starting…` forever / `camera not supported` | Headset must be Quest 3/3S on Horizon OS v74+ (Settings → System → Software update). Passthrough Camera API does **not** work in the XR Simulator or on Quest 2/Pro; only on device (or Horizon Link 2.1+). |
+| Black image / 0×0 resolution in HUD | Passthrough disabled: `OVRManager.isInsightPassthroughEnabled` must be on (scene builder sets it); re-run *Megamind → Check Project*. |
+| `sent N` grows but `accepted 0`, reason `net:…` | Server unreachable: check `adb shell curl <url>/v1/health`, Tailscale connected on both ends, server bound to `0.0.0.0`, URL has no trailing path. |
+| Reason `http:422` | `meta` JSON rejected — `Dto.cs` and `server/megamind/models.py` out of sync; check the server log. |
+| Most frames `too_soon` / `duplicate` | Expected when the scene is static — the server filter keeps ~10–30 % at 1 fps. Walk around. |
+| Many `blurry` / `dark` | Raise room light; the camera auto-exposes slowly after passthrough starts. |
+| `INSTALL_FAILED_UPDATE_INCOMPATIBLE` on `adb install` | A build with a different signing key is installed: `adb uninstall com.megamind.quest` then reinstall. |
+| `adb devices` shows `unauthorized` / nothing | Put the headset on and accept the USB debugging dialog; enable developer mode in the Meta Horizon phone app; try another cable/port. |
+| Build fails with Gradle/JDK error | Use the Hub-installed OpenJDK/SDK/NDK (Edit → Preferences → External Tools: all "Installed with Unity" ticked). |
+| App restarts when the headset is taken off | Normal: Horizon OS suspends background apps. Keep the headset on or set proximity sensor off in developer settings while testing. |

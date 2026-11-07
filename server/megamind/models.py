@@ -27,7 +27,7 @@ class FrameMeta(BaseModel):
 class FrameAccepted(BaseModel):
     frame_id: str
     accepted: bool
-    reason: Literal["duplicate", "too_soon", "dark"] | None = None
+    reason: Literal["duplicate", "too_soon", "dark", "blurry", "budget"] | None = None
 
 
 class MemoryToken(BaseModel):

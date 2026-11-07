@@ -100,7 +100,8 @@ class HybridRetriever(Retriever):
             return RetrievalResult(plan=plan, tokens=[], anchor_ts=anchor_ts)
 
         ranked = await self._dedupe(fused)
-        picked = await self._expand(ranked, k)
+        lo, hi = (None, None) if widened else (plan.time_from, plan.time_to)
+        picked = await self._expand(ranked, k, lo, hi)
         picked.sort(key=lambda r: r.token.ts)
         return RetrievalResult(plan=plan, tokens=picked, widened=widened, anchor_ts=anchor_ts)
 
@@ -128,6 +129,9 @@ class HybridRetriever(Retriever):
                 qv = await self.text_embedder.embed(text)
                 tv = await self.adapter.vector_search(qv, n, "text_vec", **flt)
                 lists.append(("text", w.text, [i for i, _ in tv]))
+            if w.ocr_bm25:
+                ocr = await self.adapter.ocr_search(text, n, **flt)
+                lists.append(("ocr_bm25", w.ocr_bm25, [i for i, _ in ocr]))
         if mode in ("visual", "hybrid") and self.image_embedder is not None:
             iv_q = await self.image_embedder.embed_text(text)
             iv = await self.adapter.vector_search(iv_q, n, "image_vec", **flt)
@@ -194,8 +198,11 @@ class HybridRetriever(Retriever):
                 pass
         return bool(a.caption) and a.caption == b.caption and a.ocr_text == b.ocr_text
 
-    async def _expand(self, ranked: list[RetrievedToken], k: int) -> list[RetrievedToken]:
-        """Top hits + their immediate neighbours (context for the reader), capped at k."""
+    async def _expand(
+        self, ranked: list[RetrievedToken], k: int, lo: float | None = None, hi: float | None = None
+    ) -> list[RetrievedToken]:
+        """Top hits + their immediate neighbours (context for the reader), capped at k and kept inside
+        the question's time window so an explicit `time_from/time_to` stays a hard filter."""
         budget = min(
             int(k * self.cfg.expand_max_frac), self.cfg.expand_top * (self.cfg.expand_before + self.cfg.expand_after)
         )
@@ -208,6 +215,8 @@ class HybridRetriever(Retriever):
                 if len(chosen) >= k:
                     break
                 if nb.id in chosen or not nb.caption:
+                    continue
+                if (lo is not None and nb.ts < lo) or (hi is not None and nb.ts > hi):
                     continue
                 if any(self._same_frame(nb, c.token) for c in chosen.values()):
                     continue
