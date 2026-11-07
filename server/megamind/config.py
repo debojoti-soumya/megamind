@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     reader_base_url: str = "http://localhost:8001/v1"
     reader_api_key: str = "none"
     reader_model: str = "google/gemma-4-31B-it"  # Qwen3.6-35B-A3B is flex-only on Sail (research/reports/04)
+    reader_fallback_model: str = "nvidia/Gemma-4-31B-IT-NVFP4"  # tried once when the primary 429/503s; "" disables
     reader_provider: str = "auto"  # auto (vlm iff READER_API_KEY set) | vlm | mock
     reader_timeout_s: float = 8.0
     reader_max_retries: int = 1

@@ -270,6 +270,7 @@ class VLMReader(Reader):
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self.settings = settings
         self.model = settings.reader_model
+        self.fallback_model = settings.reader_fallback_model if settings.reader_fallback_model != self.model else ""
         self.max_images = max(1, settings.reader_max_images)
         self.thumb_max_px = settings.reader_thumb_max_px
         self.max_retries = settings.reader_max_retries
@@ -333,6 +334,7 @@ class VLMReader(Reader):
         downgrades = 0
         last_err: Exception | None = None
         attempt = 0
+        used_fallback = False
         while attempt <= self.max_retries:
             calls += 1
             t0 = time.perf_counter()
@@ -345,6 +347,8 @@ class VLMReader(Reader):
                 text = data["choices"][0]["message"]["content"] or ""
                 answer, conf, items = parse_reader_json(text, known)
                 usage = {k: int(v) for k, v in (data.get("usage") or {}).items() if isinstance(v, int | float)}
+                if used_fallback:
+                    usage["fallback_model"] = 1
                 return ReaderOutput(
                     evidence=answer,
                     confidence=conf,
@@ -369,6 +373,11 @@ class VLMReader(Reader):
                         log.warning("reader HTTP %d, retrying with json_mode=%s", code, json_mode)
                         continue
                     break
+                if code in (429, 503) and self.fallback_model and not used_fallback:
+                    # capacity problem on the primary pool: retry on the fallback model (different pool)
+                    used_fallback, body["model"] = True, self.fallback_model
+                    log.warning("reader HTTP %d on %s, retrying on %s", code, self.model, self.fallback_model)
+                    continue
                 if attempt < self.max_retries:
                     await asyncio.sleep(_retry_after_s(e.response))
             except (httpx.TransportError, httpx.TimeoutException, KeyError, ValueError, json.JSONDecodeError) as e:

@@ -226,7 +226,7 @@ async def test_timeout_degrades_to_captions(tmp_path):
 async def test_5xx_then_success_retries(tmp_path):
     toks = _tokens(tmp_path, 1)
     s = Scripted([503, _completion({"answer": "ok", "evidence": [{"id": "t00"}], "confidence": "medium"})])
-    out = await s.reader().read("q", toks)
+    out = await s.reader(_settings(reader_fallback_model="")).read("q", toks)
     assert not out.degraded and out.calls == 2 and out.evidence == "ok"
 
 
@@ -263,9 +263,25 @@ async def test_429_honours_retry_after_then_succeeds(tmp_path, monkeypatch):
             )
 
     s = S([])
-    out = await s.reader().read("q", toks)
+    out = await s.reader(_settings(reader_fallback_model="")).read("q", toks)
     assert not out.degraded and out.calls == 2
     assert slept == [2.0]  # capped so the voice answer still arrives
+
+
+async def test_503_switches_to_fallback_model(tmp_path):
+    toks = _tokens(tmp_path, 1)
+    s = Scripted([503, _completion({"answer": "ok", "evidence": [{"id": "t00"}], "confidence": "high"})])
+    out = await s.reader().read("q", toks)
+    assert not out.degraded and out.calls == 2 and out.usage["fallback_model"] == 1
+    assert s.body(0)["model"] == "google/gemma-4-31B-it"
+    assert s.body(1)["model"] == "nvidia/Gemma-4-31B-IT-NVFP4"
+
+
+async def test_5xx_on_both_models_degrades(tmp_path):
+    toks = _tokens(tmp_path, 1)
+    s = Scripted([503, 503, 500])
+    out = await s.reader().read("q", toks)
+    assert out.degraded and out.calls == 3  # primary, fallback, retry
 
 
 async def test_garbage_output_degrades(tmp_path):
