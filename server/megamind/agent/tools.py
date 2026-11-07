@@ -6,7 +6,7 @@ from datetime import datetime
 
 from megamind.agent.reader import Reader
 from megamind.ingest.enrich import ImageEmbedder, TextEmbedder
-from megamind.models import Citation, MemoryHit, RecallResult, SearchMode
+from megamind.models import Citation, EpisodeHit, MemoryHit, RecallResult, SearchMode
 from megamind.store.base import MemoryStore
 
 RECALL_MEMORY_TOOL = {
@@ -28,6 +28,26 @@ RECALL_MEMORY_TOOL = {
             "mode": {"type": "string", "enum": ["semantic", "visual", "hybrid"], "default": "hybrid"},
         },
         "required": ["query"],
+    },
+}
+
+
+LIST_EPISODES_TOOL = {
+    "name": "list_episodes",
+    "description": (
+        "List what the wearer was doing over a time range as episodes (contiguous scenes with a "
+        "title, time span and representative frame), oldest first. Use for activity/timeline "
+        "questions ('what did I do after lunch', 'where was I this morning'). Pass `query` to rank "
+        "episodes by relevance instead ('when was I working on the poster')."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "time_from": {"type": ["string", "null"], "description": "ISO-8601 lower bound or null."},
+            "time_to": {"type": ["string", "null"], "description": "ISO-8601 upper bound or null."},
+            "query": {"type": ["string", "null"], "description": "Optional topic to rank episodes by."},
+            "k": {"type": "integer", "default": 20, "minimum": 1, "maximum": 50},
+        },
     },
 }
 
@@ -86,3 +106,46 @@ class RecallMemory:
             cited=[_cite(by_id[i]) for i in out.cited_ids if i in by_id],
             all_retrieved=[_cite(h) for h in hits],
         )
+
+
+class ListEpisodes:
+    """Chronological episodes in a range, or episodes ranked by the summed fused score of their tokens."""
+
+    def __init__(self, store: MemoryStore, text_embedder: TextEmbedder, image_embedder: ImageEmbedder | None) -> None:
+        self.store = store
+        self.text_embedder = text_embedder
+        self.image_embedder = image_embedder
+
+    async def __call__(
+        self,
+        time_from: str | float | None = None,
+        time_to: str | float | None = None,
+        query: str | None = None,
+        k: int = 20,
+        device_id: str | None = None,
+    ) -> list[EpisodeHit]:
+        k = max(1, min(k, 50))
+        t0 = time_from if isinstance(time_from, float | int) or time_from is None else _ts(time_from)
+        t1 = time_to if isinstance(time_to, float | int) or time_to is None else _ts(time_to)
+        if not query:
+            eps = await self.store.list_episodes(device_id, t0, t1, limit=1000)
+            return [EpisodeHit.from_episode(e) for e in eps[-k:]]
+        qvec = await self.text_embedder.embed_query(query)
+        ivec = await self.image_embedder.embed_text(query) if self.image_embedder else None
+        hits = await self.store.search(
+            qvec, ivec, query, k=60, time_from=t0, time_to=t1, device_id=device_id, per_episode_cap=0
+        )
+        scores: dict[str, float] = {}
+        tops: dict[str, list[MemoryHit]] = {}
+        for h in hits:
+            if h.episode_id is None:
+                continue
+            scores[h.episode_id] = scores.get(h.episode_id, 0.0) + h.score
+            if len(tops.setdefault(h.episode_id, [])) < 2:
+                tops[h.episode_id].append(h)
+        out = []
+        for eid, sc in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:k]:
+            e = await self.store.get_episode(eid)
+            if e is not None:
+                out.append(EpisodeHit.from_episode(e, score=sc, top_hits=tops[eid]))
+        return out

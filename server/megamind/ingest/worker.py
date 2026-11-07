@@ -6,6 +6,7 @@ import asyncio
 import logging
 
 from megamind.ingest.enrich import Enricher, ImageEmbedder, TextEmbedder
+from megamind.ingest.episodes import EpisodeTracker
 from megamind.models import MemoryToken
 from megamind.store.base import MemoryStore
 
@@ -19,8 +20,10 @@ class EnrichmentWorker:
         enricher: Enricher,
         text_embedder: TextEmbedder,
         image_embedder: ImageEmbedder | None,
+        episodes: EpisodeTracker | None = None,
         concurrency: int = 2,
     ) -> None:
+        self.episodes = episodes
         self.store = store
         self.enricher = enricher
         self.text_embedder = text_embedder
@@ -59,4 +62,7 @@ class EnrichmentWorker:
         token.text_vec = await self.text_embedder.embed(text) if text else None
         if self.image_embedder is not None:
             token.image_vec = await self.image_embedder.embed_image(jpeg)
+        episode = await self.episodes.assign(token) if self.episodes is not None else None
         await self.store.add(token)
+        if episode is not None:
+            await self.store.upsert_episode(episode)

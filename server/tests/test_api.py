@@ -78,3 +78,33 @@ async def test_purge(client):
     r = await c.delete("/v1/memories")
     assert r.json()["deleted"] == 1
     await asyncio.sleep(0)
+
+
+async def test_episodes_endpoint(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+    from test_episodes import BLUE, RED, _textured
+
+    from megamind.config import Settings
+    from megamind.main import create_app
+
+    settings = Settings(
+        thumb_dir=tmp_path / "thumbs",
+        audio_dir=tmp_path / "audio",
+        image_embed_provider="mock",
+        filter_min_gap_s=0.0,
+        filter_budget_per_min=0,
+        _env_file=None,
+    )
+    app = create_app(settings)
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            for i, (color, ts) in enumerate([(RED, 1000), (RED, 1010), (BLUE, 1020), (BLUE, 1030)]):
+                r = await _post_frame(c, _textured(color, i), ts)
+                assert r.json()["accepted"], r.json()
+            await app.state.worker.queue.join()
+            eps = (await c.get("/v1/episodes")).json()["episodes"]
+            assert len(eps) == 2 and eps[0]["start_ts"] == 1000 and eps[0]["n_tokens"] == 2
+            ranked = (await c.get("/v1/episodes", params={"q": "blue"})).json()["episodes"]
+            assert ranked[0]["id"] == eps[1]["id"] and ranked[0]["top_hits"]
+            hits = (await c.get("/v1/memories", params={"q": "blue", "mode": "visual"})).json()["results"]
+            assert hits[0]["episode_id"] == eps[1]["id"]

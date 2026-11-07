@@ -9,10 +9,11 @@ from megamind.agent.claude_agent import ClaudeAgent
 from megamind.agent.reader import build_reader
 from megamind.agent.router import router as agent_router
 from megamind.agent.stt import build_stt
-from megamind.agent.tools import RecallMemory
+from megamind.agent.tools import ListEpisodes, RecallMemory
 from megamind.agent.tts import build_tts
 from megamind.config import Settings, get_settings
 from megamind.ingest.enrich import build_enricher, build_image_embedder, build_text_embedder
+from megamind.ingest.episodes import EpisodeTracker
 from megamind.ingest.filter import KeyframeFilter
 from megamind.ingest.router import router as ingest_router
 from megamind.ingest.worker import EnrichmentWorker
@@ -35,9 +36,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.image_embedder = build_image_embedder(settings)
         st.store = build_store(settings, st.text_embedder.dim, st.image_embedder.dim if st.image_embedder else None)
         st.keyframe_filter = KeyframeFilter(settings)
-        st.worker = EnrichmentWorker(st.store, build_enricher(settings), st.text_embedder, st.image_embedder)
+        st.episodes = EpisodeTracker(settings, st.image_embedder)
+        st.worker = EnrichmentWorker(
+            st.store, build_enricher(settings), st.text_embedder, st.image_embedder, st.episodes
+        )
         st.reader = build_reader(settings)
         st.recall = RecallMemory(st.store, st.text_embedder, st.image_embedder, st.reader)
+        st.list_episodes = ListEpisodes(st.store, st.text_embedder, st.image_embedder)
         st.agent = ClaudeAgent(settings, st.recall)
         st.stt = build_stt(settings)
         st.tts = build_tts(settings)

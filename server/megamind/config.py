@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     filter_budget_per_min: float = 6.0
     filter_budget_burst: int = 6
 
+    episode_gap_s: float = 120.0
+    episode_split_sim: float = 0.80
+    episode_move_m: float = 3.0
+    episode_rejoin_last: int = 4
+
     search_w_bm25: float = 1.0
     search_w_text: float = 1.0
     search_w_image: float = 0.6

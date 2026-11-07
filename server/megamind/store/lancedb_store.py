@@ -15,11 +15,12 @@ from pathlib import Path
 
 import pyarrow as pa
 
-from megamind.models import MemoryHit, MemoryToken, Pose, SearchMode
+from megamind.models import MemoryEpisode, MemoryHit, MemoryToken, Pose, SearchMode
 from megamind.store.base import MemoryStore
 from megamind.store.fusion import POOL, FusionWeights, diversify, tokenize, weighted_rrf
 
 _TABLE = "tokens"
+_EPISODES = "episodes"
 _OPTIMIZE_EVERY = 200
 
 
@@ -44,6 +45,29 @@ class LanceDBStore(MemoryStore):
         else:
             self._t = self._db.create_table(_TABLE, schema=self._schema())
             self._t.create_fts_index("search_text", use_tantivy=False)
+        if _EPISODES in self._db.table_names():
+            self._e = self._db.open_table(_EPISODES)
+        else:
+            self._e = self._db.create_table(_EPISODES, schema=self._episode_schema())
+        self._episode_writes = 0
+
+    @staticmethod
+    def _episode_schema() -> pa.Schema:
+        s = pa.string()
+        return pa.schema(
+            [
+                ("id", s),
+                ("device_id", s),
+                ("start_ts", pa.float64()),
+                ("end_ts", pa.float64()),
+                ("n_tokens", pa.int32()),
+                ("title", s),
+                ("summary", s),
+                ("rep_token_id", s),
+                ("entities", pa.list_(s)),
+                ("pose_centroid", s),
+            ]
+        )
 
     def _schema(self) -> pa.Schema:
         s = pa.string()
@@ -193,6 +217,7 @@ class LanceDBStore(MemoryStore):
         time_from: float | None,
         time_to: float | None,
         device_id: str | None,
+        per_episode_cap: int | None,
     ) -> list[MemoryHit]:
         conds = []
         if device_id:
@@ -210,7 +235,9 @@ class LanceDBStore(MemoryStore):
         def ids(q, w: str | None, score: str) -> list[str]:
             if w:
                 q = q.where(w, prefilter=True)
-            return [r["id"] for r in q.limit(POOL).select(["id", score]).to_list()]
+            rows = q.limit(POOL).select(["id", score]).to_list()
+            # cosine distance >= 1 means non-positive similarity: treat as no match
+            return [r["id"] for r in rows if score != "_distance" or r["_distance"] < 1.0]
 
         w = self.weights
         rankings: list[tuple[float, list[str]]] = []
@@ -234,7 +261,8 @@ class LanceDBStore(MemoryStore):
         ordered = sorted(
             ((i, s) for i, s in fused.items() if i in tokens), key=lambda kv: (kv[1], tokens[kv[0]].ts), reverse=True
         )
-        picked = diversify(ordered, {i: tokens[i].episode_id for i in tokens}, k, w.per_episode_cap)
+        cap = w.per_episode_cap if per_episode_cap is None else per_episode_cap
+        picked = diversify(ordered, {i: tokens[i].episode_id for i in tokens}, k, cap)
         return [MemoryHit.from_token(tokens[i], s) for i, s in picked]
 
     async def search(
@@ -248,10 +276,70 @@ class LanceDBStore(MemoryStore):
         time_from: float | None = None,
         time_to: float | None = None,
         device_id: str | None = None,
+        per_episode_cap: int | None = None,
     ) -> list[MemoryHit]:
         return await asyncio.to_thread(
-            self._search_sync, query_text_vec, query_image_vec, query_text, k, mode, time_from, time_to, device_id
+            self._search_sync,
+            query_text_vec,
+            query_image_vec,
+            query_text,
+            k,
+            mode,
+            time_from,
+            time_to,
+            device_id,
+            per_episode_cap,
         )
+
+    # -- episodes --------------------------------------------------------------------
+    def _upsert_episode_sync(self, e: MemoryEpisode) -> None:
+        row = e.model_dump()
+        row["pose_centroid"] = e.pose_centroid.model_dump_json() if e.pose_centroid else None
+        with self._lock:
+            self._e.delete(f"id = {_q(e.id)}")
+            self._e.add([row])
+            self._episode_writes += 1
+            if self._episode_writes >= _OPTIMIZE_EVERY:
+                self._episode_writes = 0
+                self._e.optimize()
+
+    @staticmethod
+    def _episode(r: dict) -> MemoryEpisode:
+        r = dict(r)
+        pc = r.pop("pose_centroid", None)
+        r["entities"] = list(r.get("entities") or [])
+        return MemoryEpisode(**r, pose_centroid=Pose(**json.loads(pc)) if pc else None)
+
+    async def upsert_episode(self, episode: MemoryEpisode) -> None:
+        await asyncio.to_thread(self._upsert_episode_sync, episode)
+
+    async def get_episode(self, episode_id: str) -> MemoryEpisode | None:
+        rows = await asyncio.to_thread(lambda: self._e.search().where(f"id = {_q(episode_id)}").limit(1).to_list())
+        return self._episode(rows[0]) if rows else None
+
+    async def list_episodes(
+        self,
+        device_id: str | None = None,
+        time_from: float | None = None,
+        time_to: float | None = None,
+        limit: int = 50,
+    ) -> list[MemoryEpisode]:
+        conds = []
+        if device_id:
+            conds.append(f"device_id = {_q(device_id)}")
+        if time_from is not None:
+            conds.append(f"end_ts >= {float(time_from)}")
+        if time_to is not None:
+            conds.append(f"start_ts <= {float(time_to)}")
+
+        def run() -> list[MemoryEpisode]:
+            q = self._e.search()
+            if conds:
+                q = q.where(" AND ".join(conds))
+            eps = [self._episode(r) for r in q.limit(None).to_list()]
+            return sorted(eps, key=lambda e: e.start_ts)[:limit]
+
+        return await asyncio.to_thread(run)
 
     async def purge(self, device_id: str | None = None) -> int:
         def run() -> int:
@@ -259,6 +347,7 @@ class LanceDBStore(MemoryStore):
                 w = f"device_id = {_q(device_id)}" if device_id else "true"
                 n = self._t.count_rows(None if device_id is None else w)
                 self._t.delete(w)
+                self._e.delete(w)
                 return n
 
         return await asyncio.to_thread(run)

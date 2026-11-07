@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from megamind.models import MemoryHit, MemoryToken, SearchMode
+from megamind.models import MemoryEpisode, MemoryHit, MemoryToken, SearchMode
 
 
 class MemoryStore(ABC):
@@ -38,7 +38,26 @@ class MemoryStore(ABC):
         time_from: float | None = None,
         time_to: float | None = None,
         device_id: str | None = None,
-    ) -> list[MemoryHit]: ...
+        per_episode_cap: int | None = None,
+    ) -> list[MemoryHit]:
+        """`per_episode_cap=None` uses the configured diversity cap; 0 disables it."""
 
     @abstractmethod
-    async def purge(self, device_id: str | None = None) -> int: ...
+    async def upsert_episode(self, episode: MemoryEpisode) -> None: ...
+
+    @abstractmethod
+    async def get_episode(self, episode_id: str) -> MemoryEpisode | None: ...
+
+    @abstractmethod
+    async def list_episodes(
+        self,
+        device_id: str | None = None,
+        time_from: float | None = None,
+        time_to: float | None = None,
+        limit: int = 50,
+    ) -> list[MemoryEpisode]:
+        """Episodes overlapping [time_from, time_to], oldest first."""
+
+    @abstractmethod
+    async def purge(self, device_id: str | None = None) -> int:
+        """Delete tokens (and their episodes); returns the number of tokens deleted."""

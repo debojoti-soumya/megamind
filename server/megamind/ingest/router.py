@@ -9,7 +9,14 @@ from fastapi.responses import FileResponse
 from PIL import Image
 from ulid import ULID
 
-from megamind.models import FrameAccepted, FrameMeta, MemoryToken, SearchMode, SearchResponse
+from megamind.models import (
+    EpisodeListResponse,
+    FrameAccepted,
+    FrameMeta,
+    MemoryToken,
+    SearchMode,
+    SearchResponse,
+)
 
 router = APIRouter()
 
@@ -84,10 +91,29 @@ async def search_memories(
     return SearchResponse(results=hits)
 
 
+@router.get("/episodes", response_model=EpisodeListResponse)
+async def list_episodes(
+    request: Request,
+    q: str | None = None,
+    k: int = 20,
+    device_id: str | None = None,
+):
+    params = request.query_params
+    eps = await request.app.state.list_episodes(
+        time_from=_iso_to_ts(params.get("from")),
+        time_to=_iso_to_ts(params.get("to")),
+        query=q,
+        k=k,
+        device_id=device_id,
+    )
+    return EpisodeListResponse(episodes=eps)
+
+
 @router.delete("/memories")
 async def purge_memories(request: Request, device_id: str | None = None):
     n = await request.app.state.store.purge(device_id)
     request.app.state.keyframe_filter.reset(device_id)
+    request.app.state.episodes.reset(device_id)
     return {"deleted": n}
 
 

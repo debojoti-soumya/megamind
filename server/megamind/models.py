@@ -96,6 +96,57 @@ class SearchResponse(BaseModel):
     results: list[MemoryHit]
 
 
+class MemoryEpisode(BaseModel):
+    id: str
+    device_id: str
+    start_ts: float
+    end_ts: float
+    n_tokens: int = 0
+    title: str = ""
+    summary: str = ""
+    rep_token_id: str
+    entities: list[str] = Field(default_factory=list)
+    pose_centroid: Pose | None = None
+
+    @property
+    def rep_thumb_url(self) -> str:
+        return f"/v1/thumbs/{self.rep_token_id}.jpg"
+
+
+class EpisodeHit(BaseModel):
+    id: str
+    start_ts: float
+    end_ts: float
+    n_tokens: int
+    title: str
+    summary: str = ""
+    entities: list[str] = Field(default_factory=list)
+    rep_token_id: str
+    rep_thumb_url: str
+    score: float | None = None
+    top_hits: list[MemoryHit] = Field(default_factory=list)
+
+    @classmethod
+    def from_episode(cls, e: MemoryEpisode, score: float | None = None, top_hits=None) -> EpisodeHit:
+        return cls(
+            id=e.id,
+            start_ts=e.start_ts,
+            end_ts=e.end_ts,
+            n_tokens=e.n_tokens,
+            title=e.title,
+            summary=e.summary,
+            entities=e.entities,
+            rep_token_id=e.rep_token_id,
+            rep_thumb_url=e.rep_thumb_url,
+            score=score,
+            top_hits=top_hits or [],
+        )
+
+
+class EpisodeListResponse(BaseModel):
+    episodes: list[EpisodeHit]
+
+
 class Citation(BaseModel):
     id: str
     ts: float

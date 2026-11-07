@@ -37,6 +37,19 @@ Query: `q` (str), `from`/`to` (ISO-8601, optional), `k` (int, default 12),
                  "score": 0.83 } ] }
 ```
 
+## `GET /episodes`  (timeline / activity)
+Query: `from`/`to` (ISO-8601, optional), `q` (optional topic), `k` (default 20), `device_id` (optional).
+Without `q`: episodes overlapping the range, oldest first. With `q`: ranked by the summed fused
+score of their tokens, each with up to 2 `top_hits` (same shape as `/memories` results).
+```json
+{ "episodes": [ { "id": "ep_...", "start_ts": 1731000000.1, "end_ts": 1731000300.4,
+                  "n_tokens": 14, "title": "a kitchen", "summary": "", "entities": ["keys"],
+                  "rep_token_id": "...", "rep_thumb_url": "/v1/thumbs/....jpg",
+                  "score": null, "top_hits": [] } ] }
+```
+A new episode starts after a >120 s gap, an image-similarity drop below `EPISODE_SPLIT_SIM`
+against the episode centroid, or >3 m of movement; short detours rejoin a recent episode.
+
 ## `GET /thumbs/{id}.jpg`
 Keyframe thumbnail (JPEG).
 
@@ -74,4 +87,5 @@ Vector dims follow the configured embedder (e.g. 1024 bge-m3/voyage, 1536 OpenAI
 ```
 recall_memory(query, time_from?, time_to?, k=12, mode="hybrid")
   -> { evidence, confidence: high|medium|low|not_found, cited[], all_retrieved[] }
+list_episodes(time_from?, time_to?, query?, k=20) -> EpisodeHit[]   # same shape as GET /episodes
 ```
