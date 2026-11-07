@@ -40,7 +40,7 @@ Three streams of work:
 |---|---|---|---|
 | 1 | **Capture → tokenize → store.** Passthrough Camera API → 1 fps JPEG → dHash dedupe → Qwen-VL caption/OCR/entities → text + SigLIP embeddings → LanceDB | `headset/.../FrameUploader.cs`, `server/megamind/ingest`, `server/megamind/store` | filter + worker + in-memory store done; VLM enricher, embeddings, LanceDB are `TODO(stream-1)` |
 | 2 | **Retrieval tool + reader.** `recall_memory(query, time_from, time_to, k, mode)` → hybrid search (vector + BM25 + time filter, RRF) → Qwen-VL reads captions + thumbnails → evidence with citations → Claude | `server/megamind/agent/{tools,reader,claude_agent}.py` | tool wiring done; Claude tool-use loop and Qwen-VL reader are `TODO(stream-2)` |
-| 3 | **AR chat.** World-locked panel, push-to-talk → STT, spoken reply via TTS, cited thumbnails | `headset/.../{ChatClient,ChatPanel}.cs`, `server/megamind/agent/{stt,tts}.py` | C# stubs written (untested on device); STT/TTS providers are `TODO(stream-3)` |
+| 3 | **AR chat.** World-locked panel, push-to-talk → STT, spoken reply via TTS, cited thumbnails | `headset/.../{ChatClient,ChatPanel,PanelAnchor,SettingsPanel}.cs`, `server/megamind/agent/{stt,tts}.py`, `server/megamind/ui` (browser prototype at `/ui`) | browser prototype works end-to-end; OpenAI/Deepgram STT + OpenAI/ElevenLabs TTS implemented; C# untested on device |
 
 Key decisions (details and rationale in the design doc §3): one Unity app does both capture
 and chat (Horizon OS suspends background apps); a memory token is a *record*, not a learned
