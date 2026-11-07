@@ -103,10 +103,14 @@ Optional keys: `captureFps` (default 1).
 1. (settings from `CaptureSettings.asset`) skips the frame if `maxPendingUploads` uploads are still in flight (slow network) or,
    if `maxHeadDegPerSec` > 0, when the head is turning faster than that (off by default —
    the server's blur filter handles motion blur);
-2. blits `cameraAccess.GetTexture()` into a ≤ `jpegMaxWidth` (960 px) texture and
-   JPEG-encodes it (`jpegQuality` 75 ⇒ ~60–120 KB);
-3. POSTs multipart `image` + `meta` JSON (`device_id`, UTC `ts`, head `pose`
-   x/y/z/yaw from `CenterEyeAnchor`) to `/v1/frames` per `docs/api.md`;
+2. blits `cameraAccess.GetTexture()` into a ≤ `jpegMaxWidth` (960 px) texture (GPU resize +
+   `ReadPixels`), then JPEG-encodes it on the *next* frame (`jpegQuality` 75 ⇒ ~60–120 KB) so
+   readback and encode never hitch the same render frame;
+3. POSTs multipart `image` + `meta` JSON to `/v1/frames` per `docs/api.md`: `ts` is
+   `PassthroughCameraAccess.Timestamp` (image time, falls back to wall clock) and `pose`
+   x/y/z/yaw is `GetCameraPose()` (RGB camera pose at that time, falls back to
+   `CenterEyeAnchor`). The camera stream itself is capped at `cameraMaxFramerate` = 30 fps
+   (we sample 1 fps; saves GPU/battery vs the API default 60);
 4. updates counters shown by `CaptureHud` (state, resolution, sent/accepted, last server
    reason, latency, JPEG size, skipped-motion/backlog) — a visible recording indicator is
    always on screen while capturing. **A / X button pauses and resumes capture.**
@@ -114,9 +118,13 @@ Optional keys: `captureFps` (default 1).
 Permissions: `Assets/Plugins/Android/AndroidManifest.xml` declares
 `horizonos.permission.HEADSET_CAMERA`, `android.permission.CAMERA`,
 `android.permission.RECORD_AUDIO`, `android.permission.INTERNET`, and
-`android:usesCleartextTraffic="true"`. `MegamindPermissions` requests the camera and
-microphone at runtime via `OVRPermissionsRequester`; the Meta project setup tool must not
-be allowed to remove `HEADSET_CAMERA`.
+`android:usesCleartextTraffic="true"` (research digest #0). There is exactly **one** runtime
+permission flow: `MegamindPermissions` calls `OVRPermissionsRequester.Request` once (camera +
+mic), the same mechanism as Meta's sample `RequestPermissionsOnce`. `PassthroughCameraAccess`
+only checks `HEADSET_CAMERA`, so `android.permission.CAMERA` is never requested at runtime and
+only one dialog appears. The scene builder clears OVRManager's *Permission Requests On
+Startup* so nothing else asks, and *Meta > Tools > Update AndroidManifest.xml* must not be
+allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 
 ## Scripts (`Assets/Megamind/Scripts`)
 | File | Stream | Purpose |
@@ -131,9 +139,30 @@ be allowed to remove `HEADSET_CAMERA`.
 | `ChatPanel.cs` | 3 | transcript bubbles + cited thumbnails on the world-locked canvas |
 | `Editor/MegamindSceneBuilder.cs` | 1 | the `Megamind` menu: create scene, apply player settings, build, build & run, push config, check project |
 
+## Quest test checklist (first human run — please report back)
+
+Nothing in this project has run on a headset yet. Hour-0, in this order:
+
+1. Build Meta's `CameraViewer` sample **unchanged** ([Unity-PassthroughCameraApiSamples](https://github.com/oculus-samples/Unity-PassthroughCameraApiSamples), Unity 6000.0.66f2) on each headset. If it shows camera frames, the OS/dev-mode side is fine. Note the Horizon OS version (Settings → System → Software update).
+2. Build Megamind (steps above), launch, grab logcat: `adb logcat -s Unity | grep Megamind`. Paste the lines
+   `[Megamind] camera: os=... supported=[...]` (resolutions the OS offers) and
+   `[Megamind] camera playing: 1280x960 maxFps=30`.
+3. Verify and report:
+   - **Permission:** exactly one camera dialog on first launch; HUD leaves `waiting for camera permission` after Allow. (If two dialogs appear, `android.permission.CAMERA` in the manifest is the suspect — delete that line and tell us.)
+   - **Camera:** HUD shows `1280x960`, frames ~1/s; if `supported=[...]` lacks 1280x960, pick one from the list in `CaptureSettings.cameraResolution`.
+   - **Upload:** HUD `sent/accepted` climbs and `server:ok` / `server:duplicate` reasons appear; server log shows `POST /v1/frames 200`.
+   - **Pose/ts:** server-side `meta.pose.yaw` changes when you turn your head; `ts` is within ~1 s of the server clock.
+   - **Perf:** no visible hitch each second (readback and JPEG encode run on consecutive frames); note `enc` ms on the HUD.
+   - **Image:** open a stored thumbnail: colours correct (skin not blue — reboot if so), upright, not mirrored.
+4. Demo day: reboot the headset in the morning (RGB-flip bug), disable auto-sleep (Settings → General → Power), keep the HUD visible as a self-test.
+
 ## Troubleshooting
 | Symptom | Fix |
 |---|---|
+| Permission dialog appears twice / never granted | Two mechanisms are requesting it. Only `MegamindPermissions` should request; make sure OVRManager's *Permission Requests On Startup* list is empty (re-run *Megamind > 1. Create Capture Scene*) and the Meta sample's `RequestPermissionsOnce`/`PassthroughCameraPermissions` is not in the project. |
+| Colours wrong (skin looks blue) | Known v74 issue after first install of a camera app: reboot the headset. |
+| App won't launch, `SensorLockActivity` in logcat | Headset was idle/doffed: put it on, press the power button once, relaunch. |
+| Build regenerated the manifest and camera stopped working | *Meta > Tools > Update AndroidManifest.xml* drops `HEADSET_CAMERA`; re-add it (or `git checkout` the manifest). |
 | Hub says the editor version is missing | Install exactly 6000.0.66f2, or open with another 6000.0.x (≥ 38f1) and accept the upgrade; do not use 2022.3 (MRUK 85 needs Unity 6). |
 | Package Manager errors resolving `com.meta.xr.*` | Check internet / proxy; Window → Package Manager → refresh. Meta packages come from the Unity registry, no scoped registry needed. |
 | Compile errors mentioning `PassthroughCameraAccess` | MRUK must be 81+ (we pin 85). Project Settings → Meta XR → make sure "Passthrough Camera Access" is enabled (it is in `OculusProjectConfig.asset`). |

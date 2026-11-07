@@ -59,6 +59,7 @@ namespace Megamind.EditorTools
             var manager = rigGo.GetComponent<OVRManager>();
             if (manager == null) manager = rigGo.AddComponent<OVRManager>();
             manager.isInsightPassthroughEnabled = true;
+            ClearStartupPermissionRequests(manager);
             manager.trackingOriginType = OVRManager.TrackingOrigin.FloorLevel;
             if (rigGo.GetComponent<OVRPassthroughLayer>() == null)
             {
@@ -99,6 +100,26 @@ namespace Megamind.EditorTools
             Debug.Log($"[Megamind] created {ScenePath} and set it as the only scene in Build Settings. " +
                       "Now run Meta > Tools > Project Setup Tool and fix all, then Megamind > 3/4.");
             Selection.activeObject = config;
+        }
+
+        /// <summary>
+        /// OVRManager "Permission Requests On Startup" must stay empty: MegamindPermissions is the single permission flow
+        /// (two requesters = two camera dialogs / races). The fields are internal, so go through SerializedObject.
+        /// </summary>
+        private static void ClearStartupPermissionRequests(OVRManager manager)
+        {
+            var so = new SerializedObject(manager);
+            foreach (var name in new[]
+                     {
+                         "requestBodyTrackingPermissionOnStartup", "requestFaceTrackingPermissionOnStartup",
+                         "requestEyeTrackingPermissionOnStartup", "requestScenePermissionOnStartup",
+                         "requestRecordAudioPermissionOnStartup", "requestPassthroughCameraAccessPermissionOnStartup",
+                     })
+            {
+                var prop = so.FindProperty(name);
+                if (prop != null) prop.boolValue = false;
+            }
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         [MenuItem("Megamind/2. Apply Android Player Settings", false, 2)]
@@ -176,7 +197,7 @@ namespace Megamind.EditorTools
             }
             var manifest = File.Exists(ManifestPath) ? File.ReadAllText(ManifestPath) : "";
             Check(manifest.Contains(OVRPermissionsRequester.PassthroughCameraAccessPermission), $"{ManifestPath} has horizonos.permission.HEADSET_CAMERA");
-            Check(!manifest.Contains("android.permission.CAMERA\""), "manifest does NOT also request android.permission.CAMERA (Meta migration guide: HEADSET_CAMERA only, avoids a 2nd dialog)");
+            Check(manifest.Contains("android.permission.CAMERA\""), "manifest declares android.permission.CAMERA (digest #0; runtime flow only asks for HEADSET_CAMERA)");
             Check(manifest.Contains("android.permission.INTERNET"), "manifest has INTERNET");
             Check(manifest.Contains("usesCleartextTraffic=\"true\""), "manifest allows cleartext HTTP (needed for http:// server URLs)");
             Check(File.Exists(ScenePath), $"{ScenePath} exists (Megamind > 1)");

@@ -57,6 +57,7 @@ namespace Megamind
         private bool _hasLastHeadRot;
         private float _nextCaptureTime;
         private float _nextCameraRetry;
+        private bool _loggedPlaying;
 
         private void Awake()
         {
@@ -92,6 +93,15 @@ namespace Megamind
                 yield break;
             }
 #endif
+            try
+            {
+                var supported = PassthroughCameraAccess.GetSupportedResolutions(cameraAccess.CameraPosition);
+                Debug.Log($"[Megamind] camera: os={SystemInfo.operatingSystem} device={SystemInfo.deviceModel} " +
+                          $"position={cameraAccess.CameraPosition} requested={settings.cameraResolution.x}x{settings.cameraResolution.y} " +
+                          $"supported=[{string.Join(", ", System.Array.ConvertAll(supported, r => r.x + "x" + r.y))}]");
+            }
+            catch (Exception e) { Debug.LogWarning("[Megamind] GetSupportedResolutions failed: " + e.Message); }
+
             // RequestedResolution / MaxFramerate can only be changed while the component is disabled.
             if (!cameraAccess.IsPlaying &&
                 (cameraAccess.RequestedResolution != settings.cameraResolution || cameraAccess.MaxFramerate != settings.cameraMaxFramerate))
@@ -120,6 +130,7 @@ namespace Megamind
                 }
                 if (!cameraAccess.IsPlaying)
                 {
+                    _loggedPlaying = false;
                     CurrentState = State.WaitingForCamera;
                     // PassthroughCameraAccess disables itself when Play() fails (e.g. camera busy); retry every 3 s.
                     if (!cameraAccess.enabled && Time.unscaledTime >= _nextCameraRetry)
@@ -131,6 +142,11 @@ namespace Megamind
                     continue;
                 }
 
+                if (!_loggedPlaying)
+                {
+                    _loggedPlaying = true;
+                    Debug.Log($"[Megamind] camera playing: {cameraAccess.CurrentResolution.x}x{cameraAccess.CurrentResolution.y} maxFps={cameraAccess.MaxFramerate}");
+                }
                 CurrentState = State.Capturing;
                 if (Time.unscaledTime >= _nextCaptureTime)
                 {
