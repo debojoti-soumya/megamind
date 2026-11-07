@@ -21,7 +21,7 @@ research/
 | `digest/storage.md`   | 2 | `server/megamind/store/`, `ingest/enrich.py` (enricher + embedders), `models.py` token fields |
 | `digest/retrieval.md` | 3 | `server/megamind/retrieval/`, `agent/tools.py` above `reader.read(...)` (ranked token list), fusion |
 | `digest/harness.md`   | 4 | `tools/`, `server/tests/`, eval + latency harness, `agent/{claude_agent,reader,router}.py`, `agent/tools.py` from `reader.read(...)` down (coordinator decision, #5) |
-| `digest/ui.md`        | 7 | `headset/.../{ChatClient,ChatPanel}.cs`, `server/megamind/ui/`, `agent/{stt,tts}.py` |
+| `digest/ui.md`        | Tim (human, GitHub ChefAltoids; PR #2) | `headset/.../{ChatClient,ChatPanel,PanelAnchor,SettingsPanel}.cs`, `server/megamind/ui/`, `agent/{stt,tts}.py` — agents do **not** edit these; asks go through an issue labelled `to:coordinator` |
 
 (The design doc numbers streams 1/2/3 = capture→store / retrieval / AR chat. Agent numbers above
 are the ones used in branch names `stream-<N>/...`.)
