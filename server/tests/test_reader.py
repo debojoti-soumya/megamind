@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -15,6 +17,7 @@ from megamind.agent.reader import (
     build_reader,
     chunk_chronological,
     parse_reader_json,
+    token_header,
 )
 from megamind.agent.tools import DEGRADED_PREFIX, RecallMemory
 from megamind.config import Settings
@@ -332,3 +335,49 @@ async def test_recall_memory_marks_degraded_evidence(tmp_path):
     r = await recall(query="caption 1")
     assert r.evidence.startswith(DEGRADED_PREFIX)
     assert r.confidence == "low" and r.cited
+
+
+def test_token_header_uses_wearer_local_time():
+    t = MemoryToken(id="t", device_id="d", ts=1_762_644_600.0, caption="c", thumb_path="", frame_hash="0" * 16)
+    la = ZoneInfo("America/Los_Angeles")
+    assert token_header(t, t.ts, t.ts + 60, la).startswith("[t] Sat 2025-11-08 15:30 PST (1 min ago")
+    assert "2025-11-08 23:30:00 UTC" in token_header(t, t.ts, t.ts + 60)
+
+
+async def test_timeout_retries_once_on_the_fallback_model(tmp_path):
+    toks = _tokens(tmp_path, 1)
+    ok = _completion({"answer": "ok", "evidence": [{"id": "t00"}], "confidence": "high"})
+    s = Scripted([httpx.ReadTimeout("slow"), ok])
+    out = await s.reader().read("q", toks)
+    assert not out.degraded and out.calls == 2 and out.usage["fallback_model"] == 1
+    assert s.body(0)["model"] == "google/gemma-4-31B-it" and s.body(1)["model"] == "nvidia/Gemma-4-31B-IT-NVFP4"
+
+
+async def test_deadline_caps_total_reader_time(tmp_path):
+    """No second attempt once less than a useful attempt's worth of the wall budget is left."""
+    toks = _tokens(tmp_path, 1)
+
+    class Slow(Scripted):
+        async def handler(self, request):
+            self.requests.append(request)
+            await asyncio.sleep(0.6)
+            raise httpx.ReadTimeout("slow")
+
+    s = Slow([])
+    out = await s.reader(_settings(reader_deadline_s=1.5)).read("q", toks)
+    assert out.degraded and out.calls == 1 and len(s.requests) == 1
+
+
+async def test_retry_after_longer_than_the_deadline_degrades_instead_of_sleeping(tmp_path, monkeypatch):
+    import megamind.agent.reader as mod
+
+    slept = []
+
+    async def fake_sleep(x):
+        slept.append(x)
+
+    monkeypatch.setattr(mod.asyncio, "sleep", fake_sleep)
+    toks = _tokens(tmp_path, 1)
+    s = Scripted([429, _completion({"answer": "ok", "evidence": [{"id": "t00"}], "confidence": "high"})])
+    out = await s.reader(_settings(reader_fallback_model="", reader_deadline_s=1.8)).read("q", toks)
+    assert out.degraded and out.calls == 1 and slept == []

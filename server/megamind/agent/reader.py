@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, get_args
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from PIL import Image
@@ -103,6 +104,9 @@ def _downgrade(mode: str) -> str:
     return _JSON_MODES[min(i + 1, len(_JSON_MODES) - 1)]
 
 
+_MIN_ATTEMPT_S = 1.0  # don't start an attempt with less budget left than the fastest observed call
+
+
 def _retry_after_s(r: httpx.Response, default: float = 1.0, cap: float = 2.0) -> float:
     try:
         return min(cap, max(0.0, float(r.headers.get("retry-after", default))))
@@ -154,8 +158,20 @@ def _fmt_delta(seconds: float) -> str:
     return f"{s / 86400:.1f} d"
 
 
-def token_header(t: MemoryToken, first_ts: float, now: float) -> str:
-    when = datetime.fromtimestamp(t.ts, UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+def _wearer_zone(name: str | None) -> ZoneInfo | None:
+    try:
+        return ZoneInfo(name) if name else None
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+
+
+def token_header(t: MemoryToken, first_ts: float, now: float, zone: ZoneInfo | None = None) -> str:
+    # wearer-local wall time: on the no-LLM path the reader's answer is spoken verbatim
+    when = (
+        datetime.fromtimestamp(t.ts, zone).strftime("%a %Y-%m-%d %H:%M %Z")
+        if zone
+        else datetime.fromtimestamp(t.ts, UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    )
     ago = _fmt_delta(now - t.ts) + " ago" if now >= t.ts else "in the future"
     delta = "first" if t.ts == first_ts else f"+{_fmt_delta(t.ts - first_ts)} after first"
     line = f"[{t.id}] {when} ({ago}, {delta})\ncaption: {t.caption or '(none)'}"
@@ -186,7 +202,9 @@ def encode_thumb(path: str, max_px: int) -> str | None:
     return "data:image/jpeg;base64," + base64.b64encode(data).decode()
 
 
-def build_user_content(query: str, tokens: list[MemoryToken], now: float, thumb_max_px: int) -> list[dict]:
+def build_user_content(
+    query: str, tokens: list[MemoryToken], now: float, thumb_max_px: int, zone: ZoneInfo | None = None
+) -> list[dict]:
     """Interleaved text/image parts, chronological. Image count == number of readable thumbs."""
     ordered = sorted(tokens, key=lambda t: t.ts)
     first_ts = ordered[0].ts if ordered else now
@@ -194,7 +212,7 @@ def build_user_content(query: str, tokens: list[MemoryToken], now: float, thumb_
         {"type": "text", "text": f"{len(ordered)} memory tokens, oldest first. Each header is followed by its image."}
     ]
     for t in ordered:
-        parts.append({"type": "text", "text": token_header(t, first_ts, now)})
+        parts.append({"type": "text", "text": token_header(t, first_ts, now, zone)})
         uri = encode_thumb(t.thumb_path, thumb_max_px)
         if uri:
             parts.append({"type": "image_url", "image_url": {"url": uri, "detail": "low"}})
@@ -274,6 +292,9 @@ class VLMReader(Reader):
         self.max_images = max(1, settings.reader_max_images)
         self.thumb_max_px = settings.reader_thumb_max_px
         self.max_retries = settings.reader_max_retries
+        self.timeout_s = settings.reader_timeout_s
+        self.deadline_s = settings.reader_deadline_s
+        self.zone = _wearer_zone(settings.wearer_tz)
         self.fallback = CaptionOnlyReader()
         self.extra_body: dict[str, Any] = json.loads(settings.reader_extra_body) if settings.reader_extra_body else {}
         self.json_mode = (
@@ -318,7 +339,7 @@ class VLMReader(Reader):
             "model": self.model,
             "messages": [
                 {"role": "system", "content": READER_SYSTEM_PROMPT},
-                {"role": "user", "content": build_user_content(query, tokens, now, self.thumb_max_px)},
+                {"role": "user", "content": build_user_content(query, tokens, now, self.thumb_max_px, self.zone)},
             ],
             "max_tokens": self.settings.reader_max_tokens,
             "temperature": 0,
@@ -335,11 +356,23 @@ class VLMReader(Reader):
         last_err: Exception | None = None
         attempt = 0
         used_fallback = False
+        # wall-clock budget for the whole chunk (all attempts): the voice turn must not wait 2x timeout
+        deadline = time.perf_counter() + self.deadline_s
         while attempt <= self.max_retries:
+            remaining = deadline - time.perf_counter()
+            if remaining < _MIN_ATTEMPT_S:
+                last_err = last_err or TimeoutError("reader deadline")
+                break
             calls += 1
             t0 = time.perf_counter()
+            budget = min(self.timeout_s, remaining)
             try:
-                r = await self.client.post("/chat/completions", json=body, headers=headers)
+                r = await self.client.post(
+                    "/chat/completions",
+                    json=body,
+                    headers=headers,
+                    timeout=httpx.Timeout(budget, connect=min(5.0, budget)),
+                )
                 if r.status_code in (408, 409, 429) or r.status_code >= 500:
                     raise httpx.HTTPStatusError(f"reader HTTP {r.status_code}", request=r.request, response=r)
                 r.raise_for_status()
@@ -379,12 +412,20 @@ class VLMReader(Reader):
                     log.warning("reader HTTP %d on %s, retrying on %s", code, self.model, self.fallback_model)
                     continue
                 if attempt < self.max_retries:
-                    await asyncio.sleep(_retry_after_s(e.response))
-            except (httpx.TransportError, httpx.TimeoutException, KeyError, ValueError, json.JSONDecodeError) as e:
+                    wait = _retry_after_s(e.response)
+                    if deadline - time.perf_counter() - wait < _MIN_ATTEMPT_S:
+                        break
+                    await asyncio.sleep(wait)
+            except httpx.TimeoutException as e:
+                last_err = e
+                if self.fallback_model and not used_fallback:
+                    # a slow primary pool: spend the retry on the fallback model rather than queueing again
+                    used_fallback, body["model"] = True, self.fallback_model
+            except (httpx.TransportError, KeyError, ValueError, json.JSONDecodeError) as e:
                 last_err = e
             attempt += 1
-            log.warning("reader attempt %d/%d failed: %s", attempt, self.max_retries + 1, last_err)
-        log.warning("reader degraded to captions after %d call(s): %s", calls, last_err)
+            log.warning("reader attempt %d/%d failed: %r", attempt, self.max_retries + 1, last_err)
+        log.warning("reader degraded to captions after %d call(s): %r", calls, last_err)
         fb = await self.fallback.read(query, tokens)
         fb.degraded, fb.calls = True, calls
         return fb
