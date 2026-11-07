@@ -19,8 +19,8 @@ research/
 |---|---|---|
 | `digest/capture.md`   | 1 | `headset/.../FrameUploader.cs`, `server/megamind/ingest/{filter,worker,router}.py` |
 | `digest/storage.md`   | 2 | `server/megamind/store/`, `ingest/enrich.py` (enricher + embedders), `models.py` token fields |
-| `digest/retrieval.md` | 3 | `server/megamind/agent/{tools,reader,claude_agent}.py`, search fusion |
-| `digest/harness.md`   | 4 | `tools/`, `server/tests/`, eval + latency harness |
+| `digest/retrieval.md` | 3 | `server/megamind/retrieval/`, `agent/{tools,reader}.py`, search fusion (reader ownership being confirmed in #5) |
+| `digest/harness.md`   | 4 | `tools/`, `server/tests/`, eval + latency harness, `agent/claude_agent.py` (per PR #8) |
 | `digest/ui.md`        | 7 | `headset/.../{ChatClient,ChatPanel}.cs`, `server/megamind/ui/`, `agent/{stt,tts}.py` |
 
 (The design doc numbers streams 1/2/3 = capture→store / retrieval / AR chat. Agent numbers above
