@@ -89,7 +89,7 @@ async def test_purge_since_and_device(client):
     assert await app.state.store.count() == 4
 
     r = await c.delete("/v1/memories", params={"since": "yesterday"})
-    assert r.status_code == 422
+    assert r.status_code == 400 and "since" in r.json()["detail"]
     assert await app.state.store.count() == 4
 
     r = await c.delete("/v1/memories", params={"device_id": "dev1", "since": "2500"})
@@ -100,3 +100,14 @@ async def test_purge_since_and_device(client):
     assert r.json() == {"deleted": 2}
     remaining = await app.state.store.range(None, None)
     assert [(t.device_id, t.ts) for t in remaining] == [("dev1", 1000.0)]
+
+
+async def test_search_bad_time_param_is_400(client):
+    c, _ = client
+    for param in ("from", "to"):
+        r = await c.get("/v1/memories", params={"q": "x", param: "not-a-date"})
+        assert r.status_code == 400 and param in r.json()["detail"]
+    r = await c.get("/v1/memories", params={"q": "x", "from": "2026-11-07T09:00:00Z"})
+    assert r.status_code == 200
+    r = await c.get("/v1/health")  # connection still usable after the 400
+    assert r.status_code == 200

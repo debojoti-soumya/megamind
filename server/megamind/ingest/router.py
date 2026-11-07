@@ -16,8 +16,13 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _iso_to_ts(s: str | None) -> float | None:
-    return datetime.fromisoformat(s).timestamp() if s else None
+def _iso_to_ts(s: str | None, param: str = "from/to") -> float | None:
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s).timestamp()
+    except ValueError:
+        raise HTTPException(400, f"{param}: expected ISO-8601, got {s!r}") from None
 
 
 @router.post("/frames", response_model=FrameAccepted, status_code=202)
@@ -84,8 +89,8 @@ async def search_memories(
         k=k,
         mode=mode,
         device_id=device_id,
-        time_from=_iso_to_ts(params.get("from")),
-        time_to=_iso_to_ts(params.get("to")),
+        time_from=_iso_to_ts(params.get("from"), "from"),
+        time_to=_iso_to_ts(params.get("to"), "to"),
     )
     return SearchResponse(results=hits)
 
@@ -97,11 +102,7 @@ def _since_to_ts(s: str | None) -> float | None:
     try:
         return float(s)
     except ValueError:
-        pass
-    try:
-        return datetime.fromisoformat(s).timestamp()
-    except ValueError:
-        raise HTTPException(422, f"since: expected ISO-8601 or unix seconds, got {s!r}") from None
+        return _iso_to_ts(s, "since")
 
 
 @router.delete("/memories", response_model=PurgeResponse)
