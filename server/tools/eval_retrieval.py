@@ -6,6 +6,7 @@
     python tools/eval_retrieval.py --misses        # also print every question whose first gold id is not rank 1
     python tools/eval_retrieval.py --grid          # sweep weight multipliers / RRF c, best configs first
     EMBED_PROVIDER=openai python tools/eval_retrieval.py --real   # use the configured real embedders
+    UCC_API_KEY=... python tools/eval_retrieval.py --backend ucc  # sync the day to a UCC corpus, rank with facets
 
 The dataset is `tools/data/retrieval_day.json`; edit it to add tokens or questions (gold = token ids).
 """
@@ -31,6 +32,9 @@ async def main() -> int:
     ap.add_argument("--grid", action="store_true", help="sweep weights / rrf_c and print the top configs")
     ap.add_argument("--real", action="store_true", help="use build_text_embedder/build_image_embedder from settings")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--backend", choices=["hybrid", "ucc"], default="hybrid")
+    ap.add_argument("--corpus", help="UCC corpus (default: megamind-eval-<dataset hash>, kept 3 days)")
+    ap.add_argument("--candidates", type=int, default=0, help="UCC: rerank the hybrid's top-N (0 = whole window)")
     args = ap.parse_args()
 
     text_emb = image_emb = None
@@ -59,7 +63,12 @@ async def main() -> int:
                 )
         return 0
 
-    rep = await evaluate(make_retriever(store, ds, text_embedder=text_emb, image_embedder=image_emb), ds, k=args.k)
+    retriever = make_retriever(store, ds, text_embedder=text_emb, image_embedder=image_emb)
+    if args.backend == "ucc":
+        retriever = await ucc_retriever(args, store, ds, retriever)
+    rep = await evaluate(retriever, ds, k=args.k)
+    if args.backend == "ucc":
+        print(f"ucc stats: {retriever.stats}", file=sys.stderr)
     if args.json:
         print(json.dumps({"summary": rep.summary(), "n": len(rep.results)}))
     else:
@@ -71,6 +80,29 @@ async def main() -> int:
             print(f"\n[{r.first_rank or '-'}] {r.case.q!r}  gold={r.case.gold}")
             print(f"     ranked={r.ranked_ids[:6]}  handoff={r.handoff_ids}")
     return 0
+
+
+async def ucc_retriever(args, store, ds, hybrid):
+    """Push the synthetic day to a UCC corpus (once per dataset version) and wrap `hybrid` with UCC ranking."""
+    import hashlib
+    import time
+
+    from megamind.config import get_settings
+    from megamind.retrieval.ucc import UCCClient, UCCConfig, UCCIndexer, UCCRetriever
+
+    s = get_settings()
+    if not s.ucc_api_key:
+        raise SystemExit("--backend ucc needs UCC_API_KEY")
+    digest = hashlib.sha256(Path(args.dataset).read_bytes()).hexdigest()[:10]
+    client = UCCClient(
+        s.ucc_api_key, args.corpus or f"megamind-eval-{digest}", base_url=s.ucc_base_url, keep_alive_s=3 * 86400
+    )
+    pushed = await UCCIndexer(client, store, tz=ds.tz).sync_once()
+    deadline = time.monotonic() + 180
+    while len(await client.token_ids()) < len([t for t in ds.tokens if t.caption]) and time.monotonic() < deadline:
+        await asyncio.sleep(3)  # uploads become queryable once the engine has read them
+    print(f"ucc corpus {client.corpus}: pushed {pushed}, ready {len(await client.token_ids())}", file=sys.stderr)
+    return UCCRetriever(client, hybrid, tz=ds.tz, config=UCCConfig(timeout_s=30.0, candidates=args.candidates))
 
 
 if __name__ == "__main__":
