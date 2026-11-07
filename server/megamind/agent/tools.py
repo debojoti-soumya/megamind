@@ -1,12 +1,18 @@
-"""The `recall_memory` tool: retrieve top-k tokens, hand them to the reader, return evidence."""
+"""The `recall_memory` tool: retrieve top-k tokens, hand them to the reader, return evidence.
+
+Ownership: stream-3 (retrieval) owns `RecallMemory.__call__` up to the ordered token list;
+stream-4 (harness) owns the reader call and the `RecallResult` mapping below it.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from megamind.agent.reader import Reader
 from megamind.ingest.enrich import ImageEmbedder, TextEmbedder
 from megamind.models import Citation, MemoryHit, RecallResult, SearchMode
+from megamind.retrieval import HybridRetriever, Retriever
 from megamind.store.base import MemoryStore
 
 RECALL_MEMORY_TOOL = {
@@ -47,11 +53,16 @@ class RecallMemory:
         text_embedder: TextEmbedder,
         image_embedder: ImageEmbedder | None,
         reader: Reader,
+        *,
+        retriever: Retriever | None = None,
+        tz: str | ZoneInfo | None = None,
     ) -> None:
         self.store = store
         self.text_embedder = text_embedder
         self.image_embedder = image_embedder
         self.reader = reader
+        # Pluggable backend (`UCCRetriever` later); default is our hybrid over the store.
+        self.retriever = retriever or HybridRetriever(store, text_embedder, image_embedder, tz=tz)
 
     async def __call__(
         self,
@@ -63,21 +74,17 @@ class RecallMemory:
         device_id: str | None = None,
     ) -> RecallResult:
         k = max(1, min(k, 24))
-        qvec = await self.text_embedder.embed(query)
-        ivec = await self.image_embedder.embed_text(query) if self.image_embedder else None
-        hits = await self.store.search(
-            qvec,
-            ivec,
-            query,
-            k=k,
-            mode=mode,
-            time_from=_ts(time_from),
-            time_to=_ts(time_to),
-            device_id=device_id,
+        # --- retrieval (stream-3): plan the query (relative times, type-dependent weights, rewrite),
+        # hybrid-rank, dedupe, add temporal context; `mode` and explicit bounds from Claude win over the plan.
+        res = await self.retriever.retrieve(
+            query, k=k, mode=mode, time_from=_ts(time_from), time_to=_ts(time_to), device_id=device_id
         )
-        if not hits:
+        # Hand-off contract (issue #5): full tokens, best-first, context tokens at the tail, <= k.
+        hits = res.hits()
+        tokens = [r.token for r in res.ranked]
+        if not tokens:
             return RecallResult(evidence="No memories match.", confidence="not_found", cited=[], all_retrieved=[])
-        tokens = [t for h in hits if (t := await self.store.get(h.id)) is not None]
+        # --- reader + result mapping (stream-4) ---
         out = await self.reader.read(query, tokens)
         by_id = {h.id: h for h in hits}
         return RecallResult(
