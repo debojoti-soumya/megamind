@@ -107,7 +107,7 @@ async def test_layout_is_chronological_interleaved_and_cited(tmp_path):
             )
         ]
     )
-    out = await s.reader().read("which locker did I use?", shuffled)
+    out = await s.reader().read("which locker did I use?", shuffled, now=NOW)
 
     assert out.evidence == "Locker 42, about 55 min ago."
     assert out.confidence == "high" and out.cited_ids == ["t01"] and out.items[0].why == "sign"
@@ -127,7 +127,7 @@ async def test_layout_is_chronological_interleaved_and_cited(tmp_path):
     headers = [t for t in texts if t.startswith("[t")]
     assert [h[1:4] for h in headers] == ["t00", "t01", "t02"]
     assert "first)" in headers[0] and "+5 min after first" in headers[1] and "+10 min after first" in headers[2]
-    assert "ago" in headers[0] and "text: LOCKER 42" in headers[1] and "entities: mug" in headers[2]
+    assert "(60 min ago, first)" in headers[0] and "text: LOCKER 42" in headers[1] and "entities: mug" in headers[2]
     assert parts[1]["type"] == "text" and parts[2]["type"] == "image_url" and parts[3]["type"] == "text"
     assert texts[-1].startswith("Question: which locker did I use?")
     uri = images[0]["image_url"]["url"]

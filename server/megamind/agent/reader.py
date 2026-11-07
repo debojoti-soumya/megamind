@@ -82,13 +82,14 @@ class ReaderOutput:
 
 class Reader(ABC):
     @abstractmethod
-    async def read(self, query: str, tokens: list[MemoryToken]) -> ReaderOutput: ...
+    async def read(self, query: str, tokens: list[MemoryToken], *, now: float | None = None) -> ReaderOutput:
+        """`now` (Unix seconds) only affects how times are humanised in the prompt; defaults to wall clock."""
 
 
 class CaptionOnlyReader(Reader):
     """Fallback with no model call: returns the top captions verbatim as evidence."""
 
-    async def read(self, query: str, tokens: list[MemoryToken]) -> ReaderOutput:
+    async def read(self, query: str, tokens: list[MemoryToken], *, now: float | None = None) -> ReaderOutput:
         top = tokens[:3]
         lines = [f"[{t.id}] {t.caption}" + (f" (text: {t.ocr_text})" if t.ocr_text else "") for t in top]
         return ReaderOutput(evidence="\n".join(lines), confidence="low", cited_ids=[t.id for t in top])
@@ -235,12 +236,13 @@ class VLMReader(Reader):
             timeout=httpx.Timeout(settings.reader_timeout_s, connect=5.0),
         )
 
-    async def read(self, query: str, tokens: list[MemoryToken]) -> ReaderOutput:
+    async def read(self, query: str, tokens: list[MemoryToken], *, now: float | None = None) -> ReaderOutput:
         if not tokens:
             return ReaderOutput(evidence="No matching memory.", confidence="not_found")
         t0 = time.perf_counter()
+        now = time.time() if now is None else now
         chunks = chunk_chronological(tokens, self.max_images)
-        outs = await asyncio.gather(*(self._read_chunk(query, c) for c in chunks))
+        outs = await asyncio.gather(*(self._read_chunk(query, c, now) for c in chunks))
         out = merge_outputs(list(outs)) if len(outs) > 1 else outs[0]
         out.latency_ms = (time.perf_counter() - t0) * 1000
         log.info(
@@ -257,8 +259,7 @@ class VLMReader(Reader):
         )
         return out
 
-    async def _read_chunk(self, query: str, tokens: list[MemoryToken]) -> ReaderOutput:
-        now = time.time()
+    async def _read_chunk(self, query: str, tokens: list[MemoryToken], now: float) -> ReaderOutput:
         body: dict[str, Any] = {
             "model": self.model,
             "messages": [
