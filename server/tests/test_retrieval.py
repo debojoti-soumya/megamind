@@ -5,7 +5,7 @@ import pytest
 from megamind.ingest.enrich import ImageEmbedder, MockTextEmbedder
 from megamind.models import MemoryToken
 from megamind.retrieval import HybridConfig, HybridRetriever
-from megamind.retrieval.adapter import StoreAdapter, bm25_scores, tokenize
+from megamind.retrieval.adapter import StoreAdapter, bm25_scores, cosine, token_text, tokenize
 from megamind.store.memory_store import InMemoryStore
 
 NOW = datetime(2026, 11, 8, 12, 0, tzinfo=UTC)
@@ -205,3 +205,101 @@ async def test_hits_and_memory_tokens_views():
     hits = r.hits()
     assert hits[0].id == r.ranked[0].token.id and hits[0].thumb_url.endswith(".jpg")
     assert [t.id for t in r.memory_tokens()] == [x.token.id for x in r.tokens]
+
+
+# --------------------------------------------------------------------------- storage primitives (#3)
+
+
+class _PrimitiveStore(InMemoryStore):
+    """A store exposing the #3 primitives: token+score rankings, neighbours include the anchor."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[str] = []
+
+    async def vector_search(
+        self, vec, k, *, field="text_vec", time_from=None, time_to=None, device_id=None, kinds=None
+    ):
+        self.calls.append(f"vector_search:{field}")
+        toks = [t for t in self._tokens.values() if t.caption and getattr(t, field)]
+        toks.sort(key=lambda t: -cosine(vec, getattr(t, field)))
+        return [(t, 0.9) for t in toks[:k]]
+
+    async def keyword_search(self, query, k, *, time_from=None, time_to=None, device_id=None, kinds=None):
+        self.calls.append("keyword_search")
+        ranked = bm25_scores(query, {t.id: token_text(t) for t in self._tokens.values() if t.caption})
+        return [(self._tokens[i], s) for i, s in ranked[:k]]
+
+    async def get_many(self, ids):
+        self.calls.append("get_many")
+        return [self._tokens[i] for i in ids if i in self._tokens]
+
+    async def range(self, time_from, time_to, limit=100, *, device_id=None, kinds=None):
+        self.calls.append("range")
+        toks = sorted(self._tokens.values(), key=lambda t: t.ts)
+        return [t for t in toks if (time_from is None or t.ts >= time_from) and (time_to is None or t.ts <= time_to)][
+            :limit
+        ]
+
+    async def neighbors(self, token_id, *, before=2, after=2):
+        self.calls.append(f"neighbors:{before}:{after}")
+        toks = sorted(self._tokens.values(), key=lambda t: t.ts)
+        idx = next(i for i, t in enumerate(toks) if t.id == token_id)
+        return toks[max(0, idx - before) : idx + 1 + after]  # includes the anchor
+
+
+async def _primitive_store() -> _PrimitiveStore:
+    src, toks = await _store()
+    store = _PrimitiveStore()
+    for t in toks:
+        await store.add(t)
+    return store
+
+
+def _tok(id_: str, ts: float, caption: str, **kw) -> MemoryToken:
+    fh = f"{abs(hash(id_)) % (1 << 64):016x}"
+    return MemoryToken(
+        id=id_, device_id="dev", ts=ts, caption=caption, thumb_path=f"/tmp/{id_}.jpg", frame_hash=fh, **kw
+    )
+
+
+async def test_adapter_delegates_to_store_primitives():
+    store = await _primitive_store()
+    ad = StoreAdapter(store)
+    ranked = await ad.keyword_search("keys", 5)
+    assert ranked and all(isinstance(i, str) for i, _ in ranked)
+    assert "keyword_search" in store.calls
+    # tokens returned by the store are cached, so get_many does not hit the store again
+    toks = await ad.get_many([i for i, _ in ranked])
+    assert [t.id for t in toks] == [i for i, _ in ranked]
+    assert "get_many" not in store.calls
+    nb = await ad.neighbors("t3", 1, 1)
+    assert "neighbors:1:1" in store.calls
+    assert "t3" not in {t.id for t in nb} and {t.id for t in nb} == {"t2", "t4"}
+    rng = await ad.range(None, None, limit=3)
+    assert "range" in store.calls and len(rng) == 3
+
+
+async def test_retriever_works_end_to_end_on_primitive_store():
+    store = await _primitive_store()
+    r = HybridRetriever(store, MockTextEmbedder(), tz="UTC")
+    res = await r.retrieve("where are my keys", k=4, now=NOW)
+    assert res.ranked[0].token.id == "t6"
+    assert any(c.startswith("vector_search") for c in store.calls)
+
+
+async def test_episode_cap_limits_hits_per_episode():
+    store = InMemoryStore()
+    base = NOW.timestamp() - 3600
+    for i in range(6):
+        await store.add(
+            _tok(f"d{i}", base + i * 300, f"laptop on the desk next to a coffee mug variant {i}", episode_id="ep-desk")
+        )
+    await store.add(_tok("k1", base + 2000, "coffee mug on the kitchen counter", episode_id="ep-kitchen"))
+    r = HybridRetriever(
+        store, MockTextEmbedder(), config=HybridConfig(episode_cap=2, expand_top=0, dedupe_window_s=0.0)
+    )
+    res = await r.retrieve("coffee mug", k=6, now=NOW)
+    ids = [t.token.id for t in res.tokens if not t.is_context]
+    assert sum(1 for i in ids if i.startswith("d")) == 2
+    assert "k1" in ids

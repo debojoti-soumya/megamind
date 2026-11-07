@@ -26,7 +26,7 @@ class Weights:
 
     text: float = 1.0
     bm25: float = 1.0
-    image: float = 0.7
+    image: float = 0.6  # CLIP-family towers are weak on dense text (research digest)
     recency: float = 0.15  # pull toward newer tokens among near-equal scores
 
 

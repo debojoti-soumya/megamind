@@ -26,6 +26,7 @@ class HybridConfig:
     recency_tau_s: float = 2 * 3600  # e^-age/tau prior (Ego4D: "where is X" = last sighting)
     dedupe_window_s: float = 120.0  # near-identical frames closer than this collapse to one
     dedupe_hamming: int = 6  # dHash distance considered "same frame"
+    episode_cap: int = 3  # max hits per episode_id (diversity; no-op until storage fills episode_id)
     expand_top: int = 3  # how many top hits get neighbours
     expand_before: int = 1
     expand_after: int = 1
@@ -161,10 +162,15 @@ class HybridRetriever(Retriever):
 
     async def _dedupe(self, fused: list[tuple[str, float, list[str]]]) -> list[RetrievedToken]:
         kept: list[RetrievedToken] = []
+        per_episode: dict[str, int] = {}
         for i, s, why in fused:
             t = self._cache[i]
             if any(self._same_frame(t, r.token) for r in kept):
                 continue
+            if t.episode_id is not None:
+                if per_episode.get(t.episode_id, 0) >= self.cfg.episode_cap:
+                    continue
+                per_episode[t.episode_id] = per_episode.get(t.episode_id, 0) + 1
             kept.append(RetrievedToken(token=t, score=s, reasons=why))
         return kept
 

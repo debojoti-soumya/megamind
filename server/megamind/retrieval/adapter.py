@@ -1,9 +1,12 @@
 """Thin adapter over `MemoryStore` exposing the primitives the retriever needs.
 
 The storage stream is adding `vector_search`, `keyword_search`, `get_many`, `range` and
-`neighbors` to `MemoryStore` (signatures agreed in issue #4). Until a store implements
-one of them, the adapter computes it here from the token list, so the retriever is
-unaffected by which store is underneath.
+`neighbors` to `MemoryStore` (signatures settled in issue #3: the search primitives return
+`list[tuple[MemoryToken, float]]`, `neighbors(token_id, *, before, after)` includes the
+anchor). Until a store implements one of them, the adapter computes it here from the token
+list, so the retriever is unaffected by which store is underneath. The adapter always
+exposes `(id, score)` rankings and caches the tokens the store already returned so
+`get_many` is free in the common case.
 """
 
 from __future__ import annotations
@@ -73,6 +76,18 @@ def bm25_scores(query: str, docs: dict[str, str], k1: float = 1.5, b: float = 0.
 class StoreAdapter:
     def __init__(self, store: MemoryStore) -> None:
         self.store = store
+        self._seen: dict[str, MemoryToken] = {}
+
+    def _rank(self, rows: list) -> list[tuple[str, float]]:
+        """Normalise a store ranking (`(token, score)` per #3, or `(id, score)`) to ids."""
+        out: list[tuple[str, float]] = []
+        for item, score in rows:
+            if isinstance(item, MemoryToken):
+                self._seen[item.id] = item
+                out.append((item.id, float(score)))
+            else:
+                out.append((str(item), float(score)))
+        return out
 
     # ------------------------------------------------------------------ primitives
 
@@ -87,9 +102,10 @@ class StoreAdapter:
         device_id: str | None = None,
     ) -> list[tuple[str, float]]:
         if hasattr(self.store, "vector_search"):
-            return await self.store.vector_search(
-                vec, k, field, time_from=time_from, time_to=time_to, device_id=device_id
+            rows = await self.store.vector_search(
+                vec, k, field=field, time_from=time_from, time_to=time_to, device_id=device_id
             )
+            return self._rank(rows)
         pool = await self._pool(time_from, time_to, device_id)
         scored = [(t.id, cosine(vec, v)) for t in pool if t.caption and (v := getattr(t, field))]
         scored = [(i, s) for i, s in scored if s > 0]
@@ -106,36 +122,40 @@ class StoreAdapter:
         device_id: str | None = None,
     ) -> list[tuple[str, float]]:
         if hasattr(self.store, "keyword_search"):
-            return await self.store.keyword_search(query, k, time_from=time_from, time_to=time_to, device_id=device_id)
+            rows = await self.store.keyword_search(query, k, time_from=time_from, time_to=time_to, device_id=device_id)
+            return self._rank(rows)
         pool = await self._pool(time_from, time_to, device_id)
         return bm25_scores(query, {t.id: token_text(t) for t in pool if t.caption})[:k]
 
     async def get_many(self, ids: list[str]) -> list[MemoryToken]:
-        if hasattr(self.store, "get_many"):
-            return await self.store.get_many(ids)
-        out = []
-        for i in ids:
-            t = await self.store.get(i)
-            if t is not None:
-                out.append(t)
-        return out
+        missing = [i for i in ids if i not in self._seen]
+        if missing:
+            if hasattr(self.store, "get_many"):
+                fetched = await self.store.get_many(missing)
+            else:
+                fetched = [t for i in missing if (t := await self.store.get(i)) is not None]
+            for t in fetched:
+                self._seen[t.id] = t
+        return [self._seen[i] for i in ids if i in self._seen]
 
     async def range(
         self,
         time_from: float | None,
         time_to: float | None,
         *,
-        limit: int = 200,
+        limit: int = 100,
         device_id: str | None = None,
     ) -> list[MemoryToken]:
         if hasattr(self.store, "range"):
-            return await self.store.range(time_from, time_to, limit=limit, device_id=device_id)
+            return await self.store.range(time_from, time_to, limit, device_id=device_id)
         pool = await self._pool(time_from, time_to, device_id)
         return sorted(pool, key=lambda t: t.ts)[:limit]
 
     async def neighbors(self, token_id: str, before: int = 1, after: int = 1) -> list[MemoryToken]:
+        """Chronological neighbours of `token_id` on the same device, *excluding* the anchor."""
         if hasattr(self.store, "neighbors"):
-            return await self.store.neighbors(token_id, before, after)
+            rows = await self.store.neighbors(token_id, before=before, after=after)
+            return [t for t in rows if t.id != token_id]
         anchor = await self.store.get(token_id)
         if anchor is None:
             return []
