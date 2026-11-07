@@ -54,7 +54,9 @@ class EnrichmentWorker:
     async def _process(self, token: MemoryToken, jpeg: bytes) -> None:
         e = await self.enricher.enrich(jpeg)
         token.caption, token.ocr_text, token.entities = e.caption, e.ocr_text, e.entities
-        token.text_vec = await self.text_embedder.embed(f"{e.caption}\n{e.ocr_text}\n{' '.join(e.entities)}")
+        token.enriched = bool(e.caption or e.ocr_text)
+        text = token.search_text()
+        token.text_vec = await self.text_embedder.embed(text) if text else None
         if self.image_embedder is not None:
             token.image_vec = await self.image_embedder.embed_image(jpeg)
         await self.store.add(token)

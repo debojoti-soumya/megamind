@@ -1,43 +1,16 @@
-"""In-memory store. Good enough for tests and the first vertical slice.
-TODO(stream-1): replace with LanceDBStore for persistence + real BM25."""
+"""In-memory store: the test double and zero-dependency dev backend. Same fusion as LanceDBStore."""
 
 from __future__ import annotations
 
-import math
-import re
-
 from megamind.models import MemoryHit, MemoryToken, SearchMode
 from megamind.store.base import MemoryStore
-
-_WORD = re.compile(r"[a-z0-9]+")
-
-
-def _cosine(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a)) or 1.0
-    nb = math.sqrt(sum(x * x for x in b)) or 1.0
-    return dot / (na * nb)
-
-
-def _keyword_score(query: str, text: str) -> float:
-    q = set(_WORD.findall(query.lower()))
-    if not q:
-        return 0.0
-    t = set(_WORD.findall(text.lower()))
-    return len(q & t) / len(q)
-
-
-def _rrf(rankings: list[list[str]], c: int = 60) -> dict[str, float]:
-    scores: dict[str, float] = {}
-    for ranking in rankings:
-        for rank, token_id in enumerate(ranking):
-            scores[token_id] = scores.get(token_id, 0.0) + 1.0 / (c + rank + 1)
-    return scores
+from megamind.store.fusion import POOL, FusionWeights, bm25_rank, cosine, diversify, weighted_rrf
 
 
 class InMemoryStore(MemoryStore):
-    def __init__(self) -> None:
+    def __init__(self, weights: FusionWeights | None = None) -> None:
         self._tokens: dict[str, MemoryToken] = {}
+        self.weights = weights or FusionWeights()
 
     async def add(self, token: MemoryToken) -> None:
         self._tokens[token.id] = token
@@ -71,38 +44,24 @@ class InMemoryStore(MemoryStore):
             if (device_id is None or t.device_id == device_id)
             and (time_from is None or t.ts >= time_from)
             and (time_to is None or t.ts <= time_to)
-            and t.caption  # unenriched tokens are not searchable yet
         ]
         if not pool:
             return []
-
-        rankings: list[list[str]] = []
+        w = self.weights
+        rankings: list[tuple[float, list[str]]] = []
         if mode in ("semantic", "hybrid"):
+            rankings.append((w.bm25, bm25_rank(query_text, {t.id: t.search_text() for t in pool})[:POOL]))
             if query_text_vec is not None:
-                sem = sorted(
-                    (t for t in pool if t.text_vec),
-                    key=lambda t: _cosine(query_text_vec, t.text_vec or []),
-                    reverse=True,
-                )
-                rankings.append([t.id for t in sem])
-            kw = sorted(
-                pool,
-                key=lambda t: _keyword_score(query_text, f"{t.caption} {t.ocr_text} {' '.join(t.entities)}"),
-                reverse=True,
-            )
-            rankings.append([t.id for t in kw])
+                sem = sorted((t for t in pool if t.text_vec), key=lambda t: -cosine(query_text_vec, t.text_vec))
+                rankings.append((w.text, [t.id for t in sem[:POOL]]))
         if mode in ("visual", "hybrid") and query_image_vec is not None:
-            vis = sorted(
-                (t for t in pool if t.image_vec),
-                key=lambda t: _cosine(query_image_vec, t.image_vec or []),
-                reverse=True,
-            )
-            rankings.append([t.id for t in vis])
+            vis = sorted((t for t in pool if t.image_vec), key=lambda t: -cosine(query_image_vec, t.image_vec))
+            rankings.append((w.image_visual_mode if mode == "visual" else w.image, [t.id for t in vis[:POOL]]))
 
-        fused = _rrf(rankings)
-        # recency tie-break: newer first among equal scores
+        fused = weighted_rrf(rankings)
         ordered = sorted(fused.items(), key=lambda kv: (kv[1], self._tokens[kv[0]].ts), reverse=True)
-        return [MemoryHit.from_token(self._tokens[i], s) for i, s in ordered[:k]]
+        picked = diversify(ordered, {i: self._tokens[i].episode_id for i, _ in ordered}, k, w.per_episode_cap)
+        return [MemoryHit.from_token(self._tokens[i], s) for i, s in picked]
 
     async def purge(self, device_id: str | None = None) -> int:
         if device_id is None:

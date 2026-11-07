@@ -16,6 +16,7 @@ dependencies = [
   "anthropic>=0.40",
   "openai>=1.50",
   "lancedb>=0.15",
+  "pyarrow>=16",
 ]
 
 [project.optional-dependencies]

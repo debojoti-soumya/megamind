@@ -63,8 +63,12 @@ Purge all memory tokens for a device. Returns `{ "deleted": 1234 }`.
 ## Memory token (stored record)
 ```
 id, device_id, ts, caption, ocr_text, entities[], pose{x,y,z,yaw}|null,
-text_vec[1024], image_vec[768], thumb_path, frame_hash, episode_id|null
+text_vec[d], image_vec[d], thumb_path, frame_hash, episode_id|null,
+transcript, source, trigger(novel|pose|heartbeat|forced), sharpness, enriched,
+tier(hot|cold|text), chunk_id|null, chunk_offset|null
 ```
+Vector dims follow the configured embedder (e.g. 1024 bge-m3/voyage, 1536 OpenAI 3-small,
+768 SigLIP-base). Search hits additionally carry `transcript`, `episode_id`, `tier`.
 
 ## Internal: `recall_memory` tool (Claude -> server)
 ```

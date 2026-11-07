@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     filter_budget_per_min: float = 6.0
     filter_budget_burst: int = 6
 
+    search_w_bm25: float = 1.0
+    search_w_text: float = 1.0
+    search_w_image: float = 0.6
+    search_w_image_visual: float = 1.5
+    search_per_episode_cap: int = 3
+
     @property
     def enrich_url(self) -> str:
         return self.enrich_base_url or self.reader_base_url
