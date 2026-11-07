@@ -26,7 +26,7 @@ class FakeReader(Reader):
     def __init__(self) -> None:
         self.calls: list[tuple[str, list[MemoryToken]]] = []
 
-    async def read(self, query: str, tokens: list[MemoryToken]) -> ReaderOutput:
+    async def read(self, query: str, tokens: list[MemoryToken], *, now: float | None = None) -> ReaderOutput:
         self.calls.append((query, tokens))
         return ReaderOutput(evidence=f"saw {tokens[0].id}", confidence="high", cited_ids=[tokens[0].id, "bogus"])
 
