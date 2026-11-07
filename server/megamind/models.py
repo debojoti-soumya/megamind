@@ -76,6 +76,10 @@ class SearchResponse(BaseModel):
     results: list[MemoryHit]
 
 
+class PurgeResponse(BaseModel):
+    deleted: int
+
+
 class Citation(BaseModel):
     id: str
     ts: float

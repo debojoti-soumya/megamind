@@ -54,8 +54,12 @@ Response:
 ## `GET /audio/{id}.wav`
 TTS output for a chat response.
 
-## `DELETE /memories?device_id=...`
-Purge all memory tokens for a device. Returns `{ "deleted": 1234 }`.
+## `DELETE /memories?device_id=...&since=...`
+Purge memory tokens (rows **and** thumbnails). Both params are optional: `device_id` limits the purge to one
+device (default: all devices); `since` deletes only tokens with `ts >= since` ("forget the last 2 hours"),
+given as ISO-8601 (`2026-11-07T09:00:00Z`; naive = server local time) or unix seconds (`1731000000.0`).
+Episode summaries whose `ts` (episode start) falls in the window are deleted too. Invalid `since` → 422.
+Returns `{ "deleted": 1234 }`. Offline equivalent: `python -m megamind.store.purge --device --since`.
 
 ## Memory token (stored record)
 ```

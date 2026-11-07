@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+from datetime import UTC, datetime
 
 from PIL import Image
 
@@ -78,3 +79,24 @@ async def test_purge(client):
     r = await c.delete("/v1/memories")
     assert r.json()["deleted"] == 1
     await asyncio.sleep(0)
+
+
+async def test_purge_since_and_device(client):
+    c, app = client
+    for i, (ts, dev) in enumerate([(1000.0, "dev1"), (2000.0, "dev1"), (3000.0, "dev1"), (3000.0, "dev2")]):
+        assert (await _post_frame(c, _noisy_jpeg(10 + i), ts, device=dev)).json()["accepted"]
+    await app.state.worker.queue.join()
+    assert await app.state.store.count() == 4
+
+    r = await c.delete("/v1/memories", params={"since": "yesterday"})
+    assert r.status_code == 422
+    assert await app.state.store.count() == 4
+
+    r = await c.delete("/v1/memories", params={"device_id": "dev1", "since": "2500"})
+    assert r.status_code == 200 and r.json() == {"deleted": 1}
+
+    iso = datetime.fromtimestamp(1500.0, tz=UTC).isoformat()
+    r = await c.delete("/v1/memories", params={"since": iso})
+    assert r.json() == {"deleted": 2}
+    remaining = await app.state.store.range(None, None)
+    assert [(t.device_id, t.ts) for t in remaining] == [("dev1", 1000.0)]
