@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from megamind.agent.stt import wav_duration
-from megamind.ingest.audio import MAX_AUDIO_BYTES
+from megamind.ingest.audio import MAX_AUDIO_BYTES, is_digital_silence
 from megamind.models import CommandMatch, SttResponse
 
 router = APIRouter()
@@ -108,6 +108,8 @@ async def stt(request: Request):
         raise HTTPException(400, "audio file is empty")
     if len(data) > MAX_AUDIO_BYTES:
         raise HTTPException(413, f"audio larger than {MAX_AUDIO_BYTES} bytes")
+    if is_digital_silence(data):  # muted mic / padding: no provider call, no made-up words
+        return SttResponse(transcript="", duration_s=wav_duration(data), model=stt_label(app.stt))
     try:
         transcript = (await app.stt.transcribe(data)).strip()
     except Exception as e:  # noqa: BLE001 - provider/network failure: tell the client, which can retry or fall back
