@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
@@ -19,6 +21,7 @@ from megamind.ingest.worker import EnrichmentWorker
 from megamind.models import HealthResponse
 from megamind.retrieval import build_retriever
 from megamind.store import build_store
+from megamind.store.consolidate import Consolidator, build_summarizer
 
 logging.basicConfig(level=logging.INFO)
 
@@ -46,12 +49,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.agent = ClaudeAgent(settings, st.recall)
         st.stt = build_stt(settings)
         st.tts = build_tts(settings)
+        st.consolidator = Consolidator(
+            st.store,
+            build_summarizer(settings),
+            st.text_embedder,
+            gap_s=settings.episode_gap_s,
+            min_tokens=settings.consolidate_min_tokens,
+        )
         await st.worker.start()
         if st.ucc_indexer is not None:
             await st.ucc_indexer.start()
+        st.consolidate_task = None
+        if settings.consolidate_enabled:
+            st.consolidate_task = asyncio.create_task(st.consolidator.run_forever(settings.consolidate_interval_s))
         yield
         if st.ucc_indexer is not None:
             await st.ucc_indexer.stop()
+        if st.consolidate_task is not None:
+            st.consolidate_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await st.consolidate_task
         await st.worker.stop()
 
     app = FastAPI(title="Megamind", version="0.1.0", lifespan=lifespan)

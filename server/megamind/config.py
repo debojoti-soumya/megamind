@@ -31,6 +31,10 @@ class Settings(BaseSettings):
 
     embed_provider: str = "mock"
     embed_model: str = "text-embedding-3-small"
+    embed_dim: int = 1024  # text-embedding-3-* Matryoshka truncation; frozen per LanceDB table
+    image_embed_provider: str = "none"  # none | mock | openclip (needs the local-embeddings extra)
+    image_embed_model: str = "ViT-B-16-SigLIP"  # 768-d; ViT-B-32 is 512-d
+    image_embed_pretrained: str = "webli"
     openai_api_key: str = ""
     voyage_api_key: str = ""
 
@@ -74,6 +78,7 @@ class Settings(BaseSettings):
     episode_split_sim: float = 0.80
     episode_rejoin_sim: float = 0.85
     episode_rejoin_last: int = 4
+    consolidate_enabled: bool = True  # background Consolidator in the server lifespan
     consolidate_interval_s: float = 600.0
     consolidate_min_tokens: int = 3
     summarizer_provider: str = "mock"
