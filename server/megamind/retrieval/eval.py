@@ -123,6 +123,8 @@ def load_dataset(path: Path | str = DEFAULT_DATASET) -> Dataset:
         )
     cases = []
     for q in raw["questions"]:
+        if not q.get("gold"):  # must-decline questions (agent_day.json schema) have nothing to retrieve
+            continue
         cases.append(
             EvalCase(
                 q=q["q"],
