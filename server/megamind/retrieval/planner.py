@@ -109,7 +109,8 @@ _RE_AGO = re.compile(rf"\b{_APPROX}{_NUM}\s+{_UNIT}\s+(?:ago|back|earlier)\b", r
 _RE_LAST_N = re.compile(rf"\b(?:in|within|over|during)?\s*the\s+(?:last|past)\s+{_NUM}?\s*{_UNIT}\b", re.I)
 _RE_LAST_UNIT = re.compile(rf"\b(?:in|within|over|during)?\s*the\s+(?:last|past)\s+{_UNIT}\b", re.I)
 _RE_CLOCK = re.compile(
-    r"\b(?:at|around|about|near|by)\s+(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ampm>am|pm|a\.m\.|p\.m\.|o'clock)?\b",
+    r"\b(?P<prep>at|around|about|near|by|(?:right |just )?(?:before|after|since|until|till))\s+"
+    r"(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ampm>am|pm|a\.m\.|p\.m\.|o'clock)?\b",
     re.I,
 )
 _RE_WEEKDAY = re.compile(
@@ -278,7 +279,14 @@ def _parse_time(q: str, now: datetime) -> TimeWindow | None:  # noqa: C901 - a l
         half = timedelta(minutes=45)
         spans = hint_parts + [mc.span()]
         lo, hi = min(s[0] for s in spans), max(s[1] for s in spans)
-        return TimeWindow((center - half).timestamp(), min(now_ts, (center + half).timestamp()), q[lo:hi], (lo, hi))
+        prep = mc.group("prep") + " "
+        if _RE_REL_AFTER.search(prep):  # "after 3 pm": from then until now, like "after lunch"
+            lo_dt, hi_dt = center, now
+        elif _RE_REL_BEFORE.search(prep):  # "before 9 am": the day up to then
+            lo_dt, hi_dt = _local_day(now, day_offset), center
+        else:
+            lo_dt, hi_dt = center - half, center + half
+        return TimeWindow(lo_dt.timestamp(), min(now_ts, hi_dt.timestamp()), q[lo:hi], (lo, hi))
 
     if md:
         start_h, end_h = _DAY_PARTS[md.group(1).lower()]

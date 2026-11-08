@@ -218,3 +218,14 @@ def test_named_event_anchor_is_not_a_time_or_a_locate_hint():
     assert plan_query("what did I eat after 3 pm", now=NOW).anchor_event is None
     assert plan_query("where are my keys after work", now=NOW).anchor_event is None  # last sighting, not a window
     assert plan_query("where were my keys after I got home", now=NOW).anchor_event == "got home"
+
+
+def test_before_after_a_clock_time_is_a_one_sided_window():
+    evening = NOW.replace(hour=19)
+    p = plan_query("what did I eat after 3 pm", now=evening)
+    assert p.search_text == "" and p.time_focus == "start" and p.anchor_event is None
+    assert datetime.fromtimestamp(p.time_from, tz=NOW.tzinfo).hour == 15 and p.time_to == evening.timestamp()
+    q = plan_query("what did I read before 9am", now=NOW)
+    assert q.search_text == "" and q.time_focus == "end"
+    assert datetime.fromtimestamp(q.time_to, tz=NOW.tzinfo).hour == 9 and q.time_from < q.time_to
+    assert plan_query("what did I eat at 3 pm", now=NOW).time_focus == "center"
