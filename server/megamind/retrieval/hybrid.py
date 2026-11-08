@@ -101,13 +101,13 @@ class HybridRetriever(Retriever):
 
         no_text = not (plan.search_text or plan.query.strip())
         if eff_mode in ("temporal", "recent") and not plan.search_text and not plan.has_time or no_text:
-            return RetrievalResult(plan=plan, tokens=await self._recent(k, device_id, now.timestamp()))
+            return RetrievalResult(plan=plan, tokens=await self._recent(k, device_id, now.timestamp(), plan.kinds))
         if eff_mode == "temporal":
             toks = await self._temporal(plan, k, device_id)
             near_now = plan.time_to is None or now.timestamp() - plan.time_to <= self.cfg.recent_fallback_s
             if not toks and anchor_ts is None and near_now and not (plan.explicit_time and plan.search_text):
                 # "what happened a minute ago" between two sparse captures: the latest frames are the answer
-                toks = await self._recent(k, device_id, now.timestamp())
+                toks = await self._recent(k, device_id, now.timestamp(), plan.kinds)
                 return RetrievalResult(plan=plan, tokens=toks, widened=bool(toks))
             return RetrievalResult(plan=plan, tokens=toks, anchor_ts=anchor_ts)
 
@@ -300,15 +300,24 @@ class HybridRetriever(Retriever):
         rows = [x for x in rows if x.caption and x.id != t.id]
         return min(rows, key=lambda x: abs(x.ts - t.ts), default=None)
 
-    async def _recent(self, k: int, device_id: str | None, now_ts: float) -> list[RetrievedToken]:
+    async def _recent(
+        self, k: int, device_id: str | None, now_ts: float, kinds: tuple[str, ...] | None = None
+    ) -> list[RetrievedToken]:
         """No content words and no time ("what did I just see?"): the device's latest k enriched frames, found by
-        widening the look-back until something is there. Newest first (best-first hand-off), scored by recency."""
+        widening the look-back until something is there. Newest first (best-first hand-off), scored by recency.
+        `kinds` ("transcript" for "what did I hear?") narrows the tokens; with none of that kind at all, any kind."""
         toks: list[MemoryToken] = []
         for back in (*self.cfg.recent_lookback_s, None):
             lo = None if back is None else now_ts - back
-            toks = [t for t in await self.adapter.range(lo, now_ts, limit=10_000, device_id=device_id) if t.caption]
+            toks = [
+                t
+                for t in await self.adapter.range(lo, now_ts, limit=10_000, device_id=device_id, kinds=kinds)
+                if t.caption
+            ]
             if toks:
                 break
+        if not toks and kinds:
+            return await self._recent(k, device_id, now_ts)
         return [
             RetrievedToken(token=t, score=1.0 / (1.0 + max(0.0, now_ts - t.ts) / 600.0), reasons=["recent"])
             for t in reversed(toks[-k:])

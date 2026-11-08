@@ -193,3 +193,14 @@ def test_generic_perception_words_alone_are_recent_mode(q):
 def test_generic_words_next_to_a_subject_keep_the_subject(q):
     p = plan_query(q, now=NOW)
     assert p.search_text and p.mode != "recent"
+
+
+@pytest.mark.parametrize("q", ["what did I hear?", "who did I talk to?", "what did someone say?", "what was said?"])
+def test_subject_free_speech_questions_are_transcript_recency(q):
+    p = plan_query(q, now=NOW)
+    assert p.search_text == "" and p.mode == "recent" and p.route == "hybrid" and p.kinds == ("transcript",)
+
+
+@pytest.mark.parametrize("q", ["what did Sam say about the budget", "who did I talk to at the cafe", "what did I see?"])
+def test_speech_with_a_subject_or_no_speech_word_is_unchanged(q):
+    assert plan_query(q, now=NOW).kinds is None
