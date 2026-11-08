@@ -39,6 +39,8 @@ Contents: [Demo-day quick card](#demo-day-quick-card) · [1. Quest 3 basics](#1-
 
 **If it breaks:** look up the symptom in the [decision table](#27-decision-table-symptom--link--2-minute-check).
 Press **A/X** to pause or resume capture (the HUD shows `capture PAUSED (press A/X)`).
+Capture pauses on its own only when the app is really backgrounded (HUD `capture PAUSED (app backgrounded)`, counter
+`bg N`). Opening the system menu or a boundary dialog does not pause it (HUD `REC … (unfocused)`, counter `unfocus N`) [D-focus].
 
 ---
 
@@ -50,7 +52,7 @@ Press **A/X** to pause or resume capture (the HUD shows `capture PAUSED (press A
 | Switch to hand tracking | Navigator → *Quick controls* → *Settings* → *Hands & body* → toggle *Hand and Body Tracking* [M-hands]. Megamind's A/X pause toggle uses the controllers. |
 | See your room (passthrough) | Navigator → *Quick settings* → *See your surroundings*. Turning on **Double Tap for Passthrough** in Passthrough settings lets you tap the side of the headset twice [M-passthrough]. |
 | Lighting | Meta recommends **≥ 50 lux** for colour passthrough [M-passthrough]. Dim rooms make the camera feed dark and the server rejects frames as `dark`/`blurry`. |
-| Boundary | The boundary is the virtual wall that appears near the edge of your play area [M-boundary]. Megamind is a mixed-reality app and you will mostly stand still, so a small stationary boundary is fine. |
+| Boundary | The boundary is the virtual wall that appears near the edge of your play area [M-boundary]. Megamind declares itself a **boundaryless** mixed-reality app (`com.oculus.feature.BOUNDARYLESS_APP` in its manifest), so the boundary should not appear while it runs and you can walk between rooms [D-boundaryless] (verify on device). This only applies to the installed APK, not over Link [D-boundaryless]. Watch where you walk: Megamind shows passthrough only, with no obstacle warnings [D-boundaryless-bp]. |
 | Wi-Fi | Navigator → *Quick controls* → *Settings* → *Wi-Fi* [M-wifi]. |
 | Battery / charging | USB-C port on the **left** side. LED orange = charging, green = full. Quest 3 needs **18 W** [M-charge]. |
 | Cast to phone / browser / PC | Navigator → *Quick controls* → *Cast* → *Mobile*, *Web*, or a nearby device → *Next* [M-cast]. |
@@ -348,7 +350,7 @@ one of the resolutions Meta documents for PCA [D-pca-unity]. Meta documents abou
 | **No permission prompt** | It was already answered. Run `adb shell dumpsys package com.megamind.quest \| grep -i camera` to check (verify on device). The app asks once per session only (`MegamindPermissions.cs`). Grant it manually (4.8). After regenerating the manifest, re-add `HEADSET_CAMERA` [D-pca-unity]. |
 | **App not in the library** | Look under *Library → Unknown Sources*, not the main grid [D-deploy]. Check that `adb shell pm list packages \| grep megamind` prints `package:com.megamind.quest`. |
 | **`App not installed` / `INSTALL_FAILED_UPDATE_INCOMPATIBLE`** | A build signed with a different key (another teammate's debug keystore) is installed. Run `adb uninstall com.megamind.quest` and reinstall. This deletes the app data (including the saved server URL / token from intent extras or the settings panel) and permission grants. |
-| **Boundary / "Guardian" blocks the view or pauses** | Redraw a small stationary boundary [M-boundary]. For bench testing, MVDH can disable the boundary [D-mvdh]. Turn it back on before anyone walks around. |
+| **Boundary / "Guardian" blocks the view or pauses capture** | Megamind is boundaryless [D-boundaryless], so the boundary should not appear (verify on device). If it still does, or logcat shows `app backgrounded (OnApplicationPause): pausing capture` / the HUD `bg N` rises as you cross it: check *Megamind → Check Project* reports `BOUNDARYLESS_APP`, and that you launched the installed APK, not a Link session [D-boundaryless]. Fallbacks: MVDH can disable the boundary system [D-mvdh]; the headset's *Developer* settings may have a boundary toggle (verify on device); or draw one large roomscale boundary covering the whole walk [M-boundary]. `app focus lost … capture keeps running` in logcat is normal: a system overlay had focus and capture continued [D-focus]. |
 | **Headset falls asleep or the app restarts when removed** | The proximity sensor suspends apps when the headset is off a head. Disable it in MVDH [D-mvdh], or keep the headset on. The commonly used adb broadcast `adb shell am broadcast -a com.oculus.vrpowermanager.prox_close` is **not** in the Meta docs checked here (verify on device). Power/sleep timeout settings are in the headset's *Settings* (exact path not verified). `SensorLockActivity` in logcat means it was idle: put it on, press power once, then relaunch. |
 | **Overheating / throttling** | Stop casting and recording, and take it off the charger and out of direct sun. Let it cool before continuing. This advice is general and not from a Meta doc. |
 | **Frames rejected (`accepted` flat, `last <reason>`)** | Reasons come from `server/megamind/ingest/filter.py` ([api.md](api.md)). `dark` means more light. `blurry` means move your head slower; the camera auto-exposes slowly after start. `duplicate` / `too_soon` are expected when the scene is static, so walk around. `budget` means the per-device kept-frames cap was hit (`filter_max_per_min`). `client:motion` / `client:backlog` / `client:backoff` (server unreachable, retrying with exponential backoff up to 30 s) are skipped on the headset and never sent. |
@@ -409,6 +411,9 @@ Meta developer docs (all accessed while writing this guide):
 - [D-unity-setup] Unity project setup: https://developers.meta.com/vr/documentation/unity/unity-project-setup/
 - [D-unity-build] Unity build configuration: https://developers.meta.com/vr/documentation/unity/unity-build/
 - [D-hw] Unity device setup (data cable): https://developers.meta.com/vr/documentation/unity/unity-env-device-setup/
+- [D-boundaryless] Boundaryless Mode for Mixed Reality in Unity (`BOUNDARYLESS_APP`, Boundary API, Link/6DOF limits): https://developers.meta.com/horizon/documentation/unity/unity-boundaryless/
+- [D-boundaryless-bp] Boundaryless and contextual-boundaryless safety best practices: https://developers.meta.com/horizon/design/boundaryless-best-practices/
+- [D-focus] Focus awareness (input focus, `OVRManager.InputFocusLost`): https://developers.meta.com/horizon/documentation/unity/unity-focus-awareness/
 - [D-before] Before you begin (Link Windows-only, simulator): https://developers.meta.com/vr/documentation/unity/unity-before-you-begin/
 
 Meta Quest Help Center:

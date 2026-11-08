@@ -61,6 +61,8 @@ namespace Megamind.EditorTools
             manager.isInsightPassthroughEnabled = true;
             ClearStartupPermissionRequests(manager);
             manager.trackingOriginType = OVRManager.TrackingOrigin.FloorLevel;
+            // The manifest's BOUNDARYLESS_APP removes the boundary app-wide; the contextual Boundary API is mutually exclusive.
+            manager.shouldBoundaryVisibilityBeSuppressed = false;
             // Meta XR SDK 85 has a single background passthrough layer beneath the eye buffer; flexible layering
             // (overlayType / compositionDepth) is obsolete, so the layer is added with its defaults.
             if (rigGo.GetComponent<OVRPassthroughLayer>() == null) rigGo.AddComponent<OVRPassthroughLayer>();
@@ -205,6 +207,7 @@ namespace Megamind.EditorTools
             Check(manifest.Contains("android.permission.CAMERA\""), "manifest declares android.permission.CAMERA (digest #0; runtime flow only asks for HEADSET_CAMERA)");
             Check(manifest.Contains("android.permission.INTERNET"), "manifest has INTERNET");
             Check(manifest.Contains("android.permission.RECORD_AUDIO"), "manifest has RECORD_AUDIO (push-to-talk + ambient audio)");
+            Check(manifest.Contains("com.oculus.feature.BOUNDARYLESS_APP"), "manifest declares com.oculus.feature.BOUNDARYLESS_APP (capture keeps running outside the boundary)");
             Check(manifest.Contains("usesCleartextTraffic=\"true\""), "manifest allows cleartext HTTP (needed for http:// server URLs)");
             Check(File.Exists(ScenePath), $"{ScenePath} exists (Megamind > 1)");
             Check(EditorBuildSettings.scenes.Any(s => s.enabled && s.path == ScenePath), "scene is in Build Settings");
@@ -220,6 +223,7 @@ namespace Megamind.EditorTools
             var projectConfig = OVRProjectConfig.CachedProjectConfig;
             Check(projectConfig != null && projectConfig.isPassthroughCameraAccessEnabled, "OVRProjectConfig: Passthrough Camera Access enabled");
             Check(projectConfig != null && projectConfig.insightPassthroughSupport != OVRProjectConfig.FeatureSupport.None, "OVRProjectConfig: Passthrough Support = Supported/Required");
+            Check(projectConfig != null && projectConfig.boundaryVisibilitySupport == OVRProjectConfig.FeatureSupport.None, "OVRProjectConfig: Boundary Visibility Support = None (BOUNDARYLESS_APP and the contextual Boundary API are mutually exclusive)");
             Debug.Log(problems == 0
                 ? "[Megamind] project check passed. Also run Meta > Tools > Project Setup Tool and fix any remaining items."
                 : $"[Megamind] {problems} item(s) to fix (see warnings above).");

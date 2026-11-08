@@ -233,8 +233,41 @@ added. Don't commit a real token.
 4. updates counters shown by `CaptureHud` (state, resolution, sent/accepted, last server
    reason, latency, JPEG size, skipped-motion/backlog) — a visible recording indicator is
    always on screen while capturing. **A / X button pauses and resumes capture.** While paused, and while
-   the app is backgrounded or unfocused (headset off, system menu open), nothing is captured and the camera
-   stream is stopped (`stopCameraWhenPaused`); it restarts on resume.
+   the app is backgrounded (`OnApplicationPause(true)`: headset off, app switched away), nothing is captured and
+   the camera stream is stopped (`stopCameraWhenPaused`); it restarts on resume. Losing focus only
+   (`OnApplicationFocus(false)` / `OVRManager.InputFocusLost`: system menu, boundary warning, Meta-button dialog)
+   does **not** pause capture unless `CaptureSettings.pauseOnFocusLoss` is on (default off). See
+   [Boundary (Guardian) and walking around](#boundary-guardian-and-walking-around).
+
+## Boundary (Guardian) and walking around
+The demo walks between rooms with capture running. Field report: crossing the boundary pulled the app out of the
+foreground and the log showed `app backgrounded: pausing capture`. Two changes:
+
+- **Boundaryless app.** `Assets/Plugins/Android/AndroidManifest.xml` declares
+  `<uses-feature android:name="com.oculus.feature.BOUNDARYLESS_APP" android:required="true"/>`, Meta's switch that
+  disables the boundary for the whole app ([Boundaryless Mode for Mixed Reality in Unity](https://developers.meta.com/horizon/documentation/unity/unity-boundaryless/)).
+  Per that doc: it only works from a standalone APK on the headset (not over Link), the app must not have
+  immersive (non-passthrough) parts, it is OS-version gated, and it is mutually exclusive with the contextual
+  Boundary API (`OVRManager.shouldBoundaryVisibilityBeSuppressed`). So Megamind leaves that API off
+  (`OculusProjectConfig` *Boundary Visibility Support* = None; the scene builder sets the OVRManager flag to false).
+  *Megamind → Check Project* checks both. *Meta → Tools → Update AndroidManifest.xml* does not generate this
+  line: re-add it after regenerating.
+- **Focus loss is not background.** Capture and ambient audio pause only on `OnApplicationPause(true)`. The app is
+  focus aware ([Focus awareness](https://developers.meta.com/horizon/documentation/unity/unity-focus-awareness/)),
+  so system UI (menu, boundary dialog) overlays it while it keeps running; capture continues and resumes on its
+  own when either event ends. Set `CaptureSettings.pauseOnFocusLoss` to restore the old pause-on-focus-loss.
+  Logcat shows which one happened: `app backgrounded (OnApplicationPause): pausing capture`,
+  `app focus lost (OnApplicationFocus: …): capture keeps running`, `OVR input focus lost (system UI overlay)`.
+  HUD: `capture PAUSED (app backgrounded)` vs `(press A/X)`, `(unfocused)` after `REC` while an overlay has focus,
+  and `bg N unfocus M` counters on line 2 once either happened.
+
+**Verify on device** (not run on a Quest yet): walk out of the boundary and into another room; the boundary
+should not appear and the HUD should stay `REC` with `bg 0`. If `bg` still rises, the OS really paused the app.
+**Fallback:** MVDH can disable the boundary system for testing ([MVDH](https://developers.meta.com/vr/documentation/unity/ts-mqdh/));
+the headset's developer settings may also have a boundary toggle (verify on device). Or draw one large roomscale
+boundary covering the walk. Meta's [boundaryless safety best practices](https://developers.meta.com/horizon/design/boundaryless-best-practices/)
+apply: keep head-locked content out of the lower and central field of view, and don't stage world-locked content on
+the Stage tracking space (it is ill-defined without a boundary).
 
 ## Ambient audio memory (stream 1)
 So *"what did I hear?"* / *"who did I talk to?"* work from the Unity app (until now only the native
@@ -254,8 +287,8 @@ panel → `megamind.json` → `MegamindConfig.asset`, see *Pointing the app at a
   back off like frames (`backoffBaseSeconds` doubling to `backoffMaxSeconds`, ±20% jitter); a chunk is dropped
   after `audioMaxAttempts` 429/5xx answers or any other 4xx.
 - **Pauses** (partial chunk ≥ 1 s is flushed, the mic is released): A/X capture pause (one button stops all
-  recording), app backgrounded/unfocused (same `OnApplicationPause`/`OnApplicationFocus` hooks as
-  `FrameUploader`), and **while push-to-talk records**: `ChatClient` calls `AmbientAudioRecorder.PushToTalkStarting()`
+  recording), app backgrounded (same `OnApplicationPause` hook as `FrameUploader`; focus loss pauses only
+  with `pauseOnFocusLoss`), and **while push-to-talk records**: `ChatClient` calls `AmbientAudioRecorder.PushToTalkStarting()`
   just before its `Microphone.Start` and `PushToTalkEnded()` after `Microphone.End`, so the two never fight over
   the device. Push-to-talk questions therefore are not also stored as ambient speech.
 - **Toggle:** `CaptureSettings.ambientAudio` (default **on**) in `Assets/Megamind/CaptureSettings.asset`, or without
@@ -364,4 +397,5 @@ Nothing in this project has run on a headset yet. Hour-0, in this order:
 | Linux editor: `MetaXRSimulator/Installer.cs(88): error CS0103 'downloadedInstallerPath'` | Meta XR Core 85 bug (variable only declared for Windows/macOS). Run `sh headset/tools/patch-metaxr-linux.sh` (patches `Library/PackageCache`; re-run after a package re-resolve). |
 | `adb devices` shows `unauthorized` / nothing | Put the headset on and accept the USB debugging dialog; enable developer mode in the Meta Horizon phone app; try another cable/port. |
 | Build fails with Gradle/JDK error | Use the Hub-installed OpenJDK/SDK/NDK (Edit → Preferences → External Tools: all "Installed with Unity" ticked). |
+| Log `app backgrounded (OnApplicationPause): pausing capture` / HUD `bg N` rising when crossing the boundary | The OS paused the app. Check *Megamind → Check Project* reports `BOUNDARYLESS_APP` and that you installed a standalone APK (not Link). Fallback: disable the boundary in MVDH or draw a large roomscale boundary (see [Boundary (Guardian)](#boundary-guardian-and-walking-around)). |
 | App restarts when the headset is taken off | Normal: Horizon OS suspends background apps. Keep the headset on or set proximity sensor off in developer settings while testing. |

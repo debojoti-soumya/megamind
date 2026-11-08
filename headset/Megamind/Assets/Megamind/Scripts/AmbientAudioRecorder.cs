@@ -8,7 +8,7 @@
 //   silence    a chunk whose loudest 100 ms window is below audioSilenceDb is dropped on the device (saves Whisper cost).
 //   uploads    one at a time, oldest first (the server merges consecutive chunks into one transcript token, so order
 //              matters); bounded in-memory queue; network error / 429 / 5xx -> exponential backoff (+-20% jitter).
-//   pauses     app backgrounded / unfocused (same hooks as FrameUploader), capture paused with A/X (one button stops
+//   pauses     app backgrounded (OnApplicationPause; focus loss only with CaptureSettings.pauseOnFocusLoss, like FrameUploader), capture paused with A/X (one button stops
 //              all recording), and while ChatClient's push-to-talk owns the microphone (PushToTalkStarting/Ended).
 using System;
 using System.Collections;
@@ -66,6 +66,7 @@ namespace Megamind
         private Pose _chunkPose;
         private float _nextMicRetry;
         private bool _appActive = true;
+        private bool _appPaused, _appUnfocused;
         private int _consecutiveFailures;
         private float _backoffUntil;
 
@@ -345,20 +346,27 @@ namespace Megamind
         /// <summary>Same clock as FrameUploader's fallback frame timestamp.</summary>
         private static double WallClock() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
 
-        private void OnApplicationPause(bool paused) => SetAppActive(!paused);
+        private void OnApplicationPause(bool paused)
+        {
+            if (paused == _appPaused) return;
+            _appPaused = paused;
+            UpdateAppActive(paused ? "backgrounded (OnApplicationPause)" : "foregrounded (OnApplicationPause)");
+        }
 
         private void OnApplicationFocus(bool focused)
         {
-#if !UNITY_EDITOR
-            SetAppActive(focused); // in the Editor, clicking another window must not pause recording
-#endif
+            if (Application.isEditor) return; // in the Editor, clicking another window must not count as focus loss
+            if (focused != _appUnfocused) return;
+            _appUnfocused = !focused;
+            UpdateAppActive(focused ? "focus regained" : "focus lost");
         }
 
-        private void SetAppActive(bool active)
+        private void UpdateAppActive(string why)
         {
+            bool active = !_appPaused && !(_appUnfocused && settings != null && settings.pauseOnFocusLoss);
             if (active == _appActive) return;
             _appActive = active;
-            Debug.Log($"[Megamind] app {(active ? "active: resuming ambient audio" : "backgrounded: pausing ambient audio")}");
+            Debug.Log($"[Megamind] app {why}: {(active ? "resuming" : "pausing")} ambient audio");
             if (!active) StopMic(flush: true); // the app may be suspended before the next Update
         }
 

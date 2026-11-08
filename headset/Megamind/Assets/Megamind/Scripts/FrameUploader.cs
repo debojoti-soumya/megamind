@@ -7,7 +7,9 @@
 //
 // Pipeline per tick:  backlog gate (pending uploads)  ->  backoff gate (server unreachable)  ->  motion gate (head deg/s)
 //                     ->  readback  ->  encode (next frame)  ->  upload.
-// Paused (A/X) or app backgrounded / unfocused: no capture and the camera stream is stopped (CaptureSettings.stopCameraWhenPaused).
+// Paused (A/X) or app backgrounded (OnApplicationPause): no capture and the camera stream is stopped (CaptureSettings.stopCameraWhenPaused).
+// Focus loss alone (system menu, boundary warning, Meta-button dialog: OnApplicationFocus(false) / OVRManager.InputFocusLost)
+// keeps capturing unless CaptureSettings.pauseOnFocusLoss; the app is focus aware and keeps running behind the overlay.
 // Everything else (dedupe, blur, scene change, budget) is the server's job (server/megamind/ingest/filter.py).
 using System;
 using System.Collections;
@@ -52,6 +54,11 @@ namespace Megamind
         public Vector2Int CameraResolution => cameraAccess != null ? cameraAccess.CurrentResolution : Vector2Int.zero;
         public string ServerBaseUrl => settings.ServerBaseUrl(config);
         public string DeviceId => settings.DeviceId(config);
+        /// <summary>Why capture is paused: "A/X", "background", "focus lost"; null while capture is allowed.</summary>
+        public string PauseReason => !Capturing ? "A/X" : _appPaused ? "background" : PausedByFocus ? "focus lost" : null;
+        public bool AppFocused => !_appUnfocused;
+        public int BackgroundCount { get; private set; } // OnApplicationPause(true) events since launch
+        public int FocusLossCount { get; private set; }  // OnApplicationFocus(false) events since launch
 
         private Texture2D _scratch;
         private int _pending;
@@ -61,7 +68,10 @@ namespace Megamind
         private float _nextCaptureTime;
         private float _nextCameraRetry;
         private bool _loggedPlaying;
-        private bool _appActive = true; // false while the app is paused (headset off) or unfocused (system menu)
+        private bool _appActive = true;  // false while backgrounded, or unfocused with pauseOnFocusLoss
+        private bool _appPaused;         // OnApplicationPause(true): really backgrounded (headset off, app switched away)
+        private bool _appUnfocused;      // OnApplicationFocus(false): system overlay / boundary warning / Meta-button dialog
+        private bool PausedByFocus => _appUnfocused && settings != null && settings.pauseOnFocusLoss;
         private float _backoffUntil;
 
         private void Awake()
@@ -184,20 +194,52 @@ namespace Megamind
             else StopCameraWhilePaused();
         }
 
-        private void OnApplicationPause(bool paused) => SetAppActive(!paused);
+        private void OnEnable()
+        {
+            OVRManager.InputFocusLost += OnInputFocusLost;
+            OVRManager.InputFocusAcquired += OnInputFocusAcquired;
+        }
+
+        private void OnDisable()
+        {
+            OVRManager.InputFocusLost -= OnInputFocusLost;
+            OVRManager.InputFocusAcquired -= OnInputFocusAcquired;
+        }
+
+        // Diagnostics only: input focus moves to system UI (menu, boundary dialog) while the app keeps running.
+        private void OnInputFocusLost() => Debug.Log("[Megamind] OVR input focus lost (system UI overlay): capture keeps running");
+        private void OnInputFocusAcquired() => Debug.Log("[Megamind] OVR input focus acquired");
+
+        private void OnApplicationPause(bool paused)
+        {
+            if (paused == _appPaused) return;
+            _appPaused = paused;
+            if (paused) BackgroundCount++;
+            Debug.Log(paused
+                ? "[Megamind] app backgrounded (OnApplicationPause): pausing capture"
+                : "[Megamind] app foregrounded (OnApplicationPause): resuming capture");
+            UpdateAppActive();
+        }
 
         private void OnApplicationFocus(bool focused)
         {
-#if !UNITY_EDITOR
-            SetAppActive(focused); // in the Editor, clicking another window must not pause capture
-#endif
+            if (Application.isEditor) return; // in the Editor, clicking another window must not count as focus loss
+            if (focused != _appUnfocused) return;
+            _appUnfocused = !focused;
+            if (!focused) FocusLossCount++;
+            bool pause = settings != null && settings.pauseOnFocusLoss;
+            Debug.Log(focused
+                ? "[Megamind] app focus regained (OnApplicationFocus)" + (pause ? ": resuming capture" : "")
+                : "[Megamind] app focus lost (OnApplicationFocus: system menu / boundary / dialog): " +
+                  (pause ? "pausing capture (pauseOnFocusLoss)" : "capture keeps running"));
+            UpdateAppActive();
         }
 
-        private void SetAppActive(bool active)
+        private void UpdateAppActive()
         {
+            bool active = !_appPaused && !PausedByFocus;
             if (active == _appActive) return;
             _appActive = active;
-            Debug.Log($"[Megamind] app {(active ? "active: resuming capture" : "backgrounded: pausing capture")}");
             if (active) _nextCaptureTime = 0f;
             else StopCameraWhilePaused();
         }

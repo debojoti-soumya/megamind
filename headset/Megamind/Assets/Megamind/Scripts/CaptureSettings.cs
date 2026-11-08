@@ -28,8 +28,10 @@ namespace Megamind
         [Tooltip("After a network error / 5xx / 429, skip captures for this long, doubling per consecutive failure (with +-20% jitter) up to backoffMaxSeconds. Saves encode + radio while the server is unreachable; there is no offline queue (frames are only useful live).")]
         public float backoffBaseSeconds = 1f;
         public float backoffMaxSeconds = 30f;
-        [Tooltip("Stop the passthrough camera stream while capture is paused (A/X) or the app is backgrounded / loses focus; restarted on resume (battery + thermals).")]
+        [Tooltip("Stop the passthrough camera stream while capture is paused (A/X or app backgrounded); restarted on resume (battery + thermals).")]
         public bool stopCameraWhenPaused = true;
+        [Tooltip("Also pause capture + ambient audio when the app only loses focus (system menu, boundary warning, Meta-button dialog). Off: only a real background (OnApplicationPause) pauses, so recording continues behind system overlays.")]
+        public bool pauseOnFocusLoss = false;
         [Tooltip("Optional client-side motion gate: skip the frame when the head rotates faster than this (deg/s). 0 = off (the server's blur filter handles motion blur).")]
         public float maxHeadDegPerSec = 0f;
         [Tooltip("Start capturing automatically once the camera permission is granted.")]
