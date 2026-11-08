@@ -147,6 +147,7 @@ class ReaderOutput:
     latency_ms: float = 0.0
     calls: int = 0
     usage: dict[str, int] = field(default_factory=dict)
+    images: list[tuple[str, str]] = field(default_factory=list)  # (token id, data URI) for Claude
 
 
 class Reader(ABC):
@@ -284,7 +285,7 @@ def build_user_content(
         parts.append({"type": "text", "text": token_header(t, first_ts, now, zone)})
         uri = images.get(t.id) if images is not None else encode_thumb(t.thumb_path, thumb_max_px)
         if uri:
-            parts.append({"type": "image_url", "image_url": {"url": uri, "detail": "low"}})
+            parts.append({"type": "image_url", "image_url": {"url": uri}})
         else:
             parts.append({"type": "text", "text": "(image unavailable)"})
     parts.append({"type": "text", "text": f"Question: {query}\nReply with the JSON object only."})
@@ -351,6 +352,62 @@ def merge_outputs(outs: list[ReaderOutput]) -> ReaderOutput:
     return merged
 
 
+async def load_images(
+    loader: ImageLoader, tokens: list[MemoryToken], max_px: int, budget_s: float
+) -> dict[str, str | None]:
+    """Data URIs via `loader`, concurrently, within `budget_s` (cold decodes are the slow case); whatever is not
+    ready by then maps to None ("(image unavailable)")."""
+
+    async def one(t: MemoryToken) -> tuple[str, str | None]:
+        try:
+            data = await loader(t)
+            return t.id, await asyncio.to_thread(encode_jpeg, data, max_px) if data else None
+        except (OSError, ValueError) as e:
+            log.warning("image for %s unreadable: %s", t.id, e)
+            return t.id, None
+
+    tasks = [asyncio.create_task(one(t)) for t in tokens]
+    done, pending = await asyncio.wait(tasks, timeout=max(0.5, budget_s)) if tasks else (set(), set())
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+        log.warning("reader: %d/%d images not loaded within the budget", len(pending), len(tokens))
+    out: dict[str, str | None] = {t.id: None for t in tokens}
+    for task in done:
+        if not task.cancelled() and task.exception() is None:
+            tid, uri = task.result()
+            out[tid] = uri
+    return out
+
+
+class ClaudeVisionReader(Reader):
+    """No reader model: the top hits' captions/OCR as evidence plus their images, which the orchestrator (Claude)
+    looks at itself in the tool result. Saves the reader round trip (~3 s on Sail) per recall."""
+
+    def __init__(self, settings: Settings, image_loader: ImageLoader | None = None) -> None:
+        self.image_loader = image_loader
+        self.max_images = max(1, settings.reader_max_images)
+        self.thumb_max_px = settings.reader_thumb_max_px
+        self.budget_s = settings.reader_deadline_s * _IMAGE_LOAD_SHARE
+        self.captions = CaptionOnlyReader(top=None, zone=_wearer_zone(settings.wearer_tz))
+
+    async def read(self, query: str, tokens: list[MemoryToken], *, now: float | None = None) -> ReaderOutput:
+        if not tokens:
+            return ReaderOutput(evidence="No matching memory.", confidence="not_found")
+        t0 = time.perf_counter()
+        shown = tokens[: self.max_images]
+        if self.image_loader is not None:
+            uris = await load_images(self.image_loader, shown, self.thumb_max_px, self.budget_s)
+        else:
+            uris = {t.id: await asyncio.to_thread(encode_thumb, t.thumb_path, self.thumb_max_px) for t in shown}
+        out = await self.captions.read(query, tokens, now=now)
+        out.confidence = "medium"
+        out.images = [(t.id, u) for t in shown if (u := uris.get(t.id))]
+        out.latency_ms = (time.perf_counter() - t0) * 1000
+        return out
+
+
 class VLMReader(Reader):
     """OpenAI-compatible chat.completions reader with image inputs (Qwen3.6 on Sail by default)."""
 
@@ -411,32 +468,8 @@ class VLMReader(Reader):
         return out
 
     async def _load_images(self, tokens: list[MemoryToken]) -> dict[str, str | None]:
-        """Data URIs via `image_loader`, concurrently, within part of the deadline (cold decodes are the
-        slow case); whatever is not ready by then is sent as "(image unavailable)"."""
         assert self.image_loader is not None
-        loader = self.image_loader
-
-        async def one(t: MemoryToken) -> tuple[str, str | None]:
-            try:
-                data = await loader(t)
-                return t.id, await asyncio.to_thread(encode_jpeg, data, self.thumb_max_px) if data else None
-            except (OSError, ValueError) as e:
-                log.warning("image for %s unreadable: %s", t.id, e)
-                return t.id, None
-
-        tasks = [asyncio.create_task(one(t)) for t in tokens]
-        done, pending = await asyncio.wait(tasks, timeout=max(0.5, self.deadline_s * _IMAGE_LOAD_SHARE))
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-            log.warning("reader: %d/%d images not loaded within the budget", len(pending), len(tokens))
-        out: dict[str, str | None] = {t.id: None for t in tokens}
-        for task in done:
-            if not task.cancelled() and task.exception() is None:
-                tid, uri = task.result()
-                out[tid] = uri
-        return out
+        return await load_images(self.image_loader, tokens, self.thumb_max_px, self.deadline_s * _IMAGE_LOAD_SHARE)
 
     async def _read_chunk(
         self,
@@ -601,6 +634,10 @@ def build_reader(settings: Settings, image_loader: ImageLoader | None = None) ->
     provider = settings.reader_provider.lower()
     if provider == "mock":
         return CaptionOnlyReader()
+    if provider == "claude":
+        return ClaudeVisionReader(settings, image_loader=image_loader)
+    if provider == "auto" and settings.anthropic_api_key:
+        return ClaudeVisionReader(settings, image_loader=image_loader)
     has_key = bool(settings.reader_api_key) and settings.reader_api_key != "none"
     if provider == "vlm" or (provider == "auto" and has_key):
         return VLMReader(settings, image_loader=image_loader)

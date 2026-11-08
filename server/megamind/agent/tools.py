@@ -165,4 +165,5 @@ class RecallMemory:
             confidence=out.confidence,
             cited=[_cite(by_id[i]) for i in out.cited_ids if i in by_id],
             all_retrieved=[_cite(h) for h in hits],
+            images=[(i, uri) for i, uri in out.images if i in by_id],
         )

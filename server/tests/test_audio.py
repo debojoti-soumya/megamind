@@ -414,3 +414,33 @@ async def test_transcript_sink_bounds_token_text():
     assert b.id != a.id
     c = await sink.add("d", T0 + 22, T0 + 22, "and these")
     assert c.id == b.id
+
+
+def _pcm_wav(samples: list[int], rate: int = 16000) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+    return buf.getvalue()
+
+
+async def test_audio_zero_length_and_silent_chunks_store_nothing(client):
+    """#79: a header-only WAV or an all-but-zero chunk never reaches STT and stores no token."""
+    c, app = client
+    for wav in (_pcm_wav([]), _pcm_wav([0] * 32000), _pcm_wav([5, -7, 0, 31] * 8000)):
+        r = await _post_audio(c, wav)
+        assert r.status_code == 200, r.text
+        assert r.json()["token_ids"] == [] and r.json()["transcript"] == ""
+    assert await app.state.store.count() == 0
+    r = await _post_audio(c, _pcm_wav([0, 2000, 0, -2000] * 8000))  # quiet but real signal still goes to STT
+    assert r.json()["token_ids"]
+
+
+def test_is_digital_silence_edges():
+    from megamind.ingest.audio import is_digital_silence
+
+    assert is_digital_silence(_pcm_wav([]))
+    assert not is_digital_silence(_pcm_wav([0, 33]))
+    assert not is_digital_silence(b"not a wav")

@@ -22,6 +22,7 @@ from megamind.devices import router as devices_router
 from megamind.ingest.audio import TranscriptSink
 from megamind.ingest.audio import router as audio_router
 from megamind.ingest.enrich import build_enricher
+from megamind.ingest.episodes_route import router as episodes_router
 from megamind.ingest.filter import KeyframeFilter
 from megamind.ingest.privacy import build_face_blur
 from megamind.ingest.recent import router as recent_router
@@ -127,7 +128,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.worker.media = st.media
         st.reader = build_reader(settings, image_loader=st.media.read)
         st.retriever, st.ucc_indexer = build_retriever(settings, st.store, st.text_embedder, st.image_embedder)
-        hier = st.retriever if isinstance(st.retriever, HierRetriever) else None
+        hier = st.retriever if isinstance(st.retriever, HierRetriever) else getattr(st.retriever, "hier", None)
         st.retriever = wrap_live_retriever(st, settings, st.retriever)  # NOW items for "right now" questions
         st.recall = RecallMemory(
             st.store, st.text_embedder, st.image_embedder, st.reader, retriever=st.retriever, tz=settings.wearer_tz
@@ -176,6 +177,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Megamind", version="0.1.0", lifespan=lifespan)
     app.include_router(recent_router, prefix="/v1")  # GET /v1/memories/recent
+    app.include_router(episodes_router, prefix="/v1")  # GET /v1/episodes
     app.include_router(ingest_router, prefix="/v1")
     app.include_router(audio_router, prefix="/v1")
     app.include_router(agent_router, prefix="/v1")
@@ -205,7 +207,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "claude": settings.claude_model
                 if st.agent.enabled
                 else f"fallback ({settings.claude_model} configured, no key)",
-                "reader": active_provider(
+                "reader": f"claude ({settings.claude_model} reads the snapshots)"
+                if type(st.reader).__name__ == "ClaudeVisionReader"
+                else active_provider(
                     settings,
                     "vlm" if settings.reader_provider.lower() == "auto" else settings.reader_provider,
                     st.reader,

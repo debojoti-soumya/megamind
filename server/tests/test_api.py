@@ -166,7 +166,7 @@ async def test_health_reports_mocks_when_keys_are_missing(tmp_path):
         tts_provider="mock",
     )
     assert models == {
-        "claude": "fallback (claude-sonnet-4-6 configured, no key)",
+        "claude": "fallback (claude-sonnet-5-5 configured, no key)",
         "reader": "mock (vlm configured, no key)",
         "embed": "mock (openai configured, no key)",
         "enrich": "mock (auto: no enrich/reader key, no image embedder)",
@@ -186,8 +186,8 @@ async def test_health_reports_live_providers_and_unwired_ones(tmp_path):
         tts_provider="elevenlabs",
         elevenlabs_api_key="k",
     )
-    assert models["claude"] == "claude-sonnet-4-6"
-    assert models["reader"] == "google/gemma-4-31B-it"
+    assert models["claude"] == "claude-sonnet-5-5"
+    assert models["reader"] == "claude (claude-sonnet-5-5 reads the snapshots)"  # auto: Claude key wins
     assert models["embed"] == "openai:text-embedding-3-small"  # real builder from store.embeddings (#71)
     # ElevenLabs TTS is wired (agent/tts.py), so a key makes it the live provider
     assert models["tts"] == "elevenlabs"

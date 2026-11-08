@@ -23,7 +23,9 @@ import asyncio
 import logging
 import re
 import threading
+import warnings
 from collections.abc import Iterable, Sequence
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +72,8 @@ _MIGRATIONS = (
 )
 _INDEXED_COLUMNS = [*_SCALAR_COLUMNS, "text_vec", "image_vec"]
 _TS_ORDER = [("ts", "ascending"), ("id", "ascending")]
+# every write is a table version and LanceDB keeps old versions (and the rows they reference) for 7 days by default
+_KEEP_VERSIONS = timedelta(minutes=5)
 
 
 def _sql_str(value: str) -> str:
@@ -310,7 +314,7 @@ class LanceDBStore(MemoryStore):
                     self._create_vector_index(table, col, n)
         if self._writes_since_optimize >= self._optimize_every:
             self._writes_since_optimize = 0
-            table.optimize()
+            table.optimize(cleanup_older_than=_KEEP_VERSIONS)
 
     @staticmethod
     def _create_vector_index(table: lancedb.table.Table, col: str, n: int) -> None:
@@ -338,7 +342,7 @@ class LanceDBStore(MemoryStore):
         with self._lock:
             assert self._table is not None
             self._writes_since_optimize = 0
-            self._table.optimize()
+            self._table.optimize(cleanup_older_than=_KEEP_VERSIONS)
 
     # ------------------------------------------------------------------ reads
 
@@ -471,6 +475,27 @@ class LanceDBStore(MemoryStore):
         where = self._where(time_from=time_from, time_to=time_to, device_id=device_id, kinds=kinds, extra=extra)
         cols = _INDEXED_COLUMNS if vectors else _SCALAR_COLUMNS
         return await asyncio.to_thread(self._range_sync, where, None, cols)
+
+    async def episode_spans(
+        self,
+        *,
+        time_from: float | None = None,
+        time_to: float | None = None,
+        device_id: str | None = None,
+        kinds: Sequence[str] | None = None,
+    ) -> dict[str, tuple[int, float, float]]:
+        where = self._where(time_from=time_from, time_to=time_to, device_id=device_id, kinds=kinds,
+                            extra=("episode_id IS NOT NULL", "episode_id != ''"))  # fmt: skip
+        return await asyncio.to_thread(self._episode_spans_sync, where)
+
+    def _episode_spans_sync(self, where: str | None) -> dict[str, tuple[int, float, float]]:
+        tbl = self._scan_arrow(where, ["episode_id", "ts"])
+        if tbl is None or tbl.num_rows == 0:
+            return {}
+        g = tbl.group_by("episode_id").aggregate([("ts", "count"), ("ts", "min"), ("ts", "max")])
+        g = g.take(pc.sort_indices(g, sort_keys=[("ts_min", "ascending"), ("episode_id", "ascending")]))
+        cols = (g.column(c).to_pylist() for c in ("episode_id", "ts_count", "ts_min", "ts_max"))
+        return {ep: (n, lo, hi) for ep, n, lo, hi in zip(*cols, strict=True)}
 
     async def tier_counts(self, kinds: Sequence[str] | None = ("frame",)) -> dict[str, int]:
         if self._table is None:
@@ -606,9 +631,22 @@ class LanceDBStore(MemoryStore):
                     if p.is_file():
                         p.unlink(missing_ok=True)
             self._table.delete(where or "id IS NOT NULL")
+            self._erase_deleted()
             if self.degraded is not None:
                 self._check_table_dims()  # a full purge recreates a mis-sized table
             return len(rows)
+
+    def _erase_deleted(self) -> None:
+        """A delete only hides rows: their bytes stay in data files that older versions (time travel) still read.
+        Rewrite every fragment with deletions and drop all older versions so a purge really erases the data.
+        A query still scanning an older version at this instant can fail; purges are rare and user-initiated."""
+        assert self._table is not None
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)  # "cleanup_older_than=0 removes every version"
+            self._table.optimize(
+                cleanup_older_than=timedelta(0), compaction_options={"materialize_deletions_threshold": 0.0}
+            )
+        self._writes_since_optimize = 0
 
     async def purge(
         self, device_id: str | None = None, *, since_ts: float | None = None, delete_thumbs: bool = True

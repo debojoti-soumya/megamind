@@ -389,3 +389,25 @@ def test_blank_chunk_dir_means_default(monkeypatch, tmp_path):
     s = Settings(thumb_dir=tmp_path / "thumbs", _env_file=None)
     assert s.chunk_dir is None
     assert MediaStore(s, InMemoryStore()).chunk_dir == tmp_path / "chunks"
+
+
+def test_decode_all_falls_back_to_vsync_on_old_ffmpeg(tmp_path, monkeypatch):
+    """ffmpeg < 5.1 has no `-fps_mode`: retry once with `-vsync passthrough`, then skip the probe (#114)."""
+    settings = Settings(thumb_dir=tmp_path / "thumbs", chunk_dir=tmp_path / "chunks")
+    media = MediaStore(settings, InMemoryStore())
+    media._ffmpeg = "ffmpeg"
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if "-fps_mode" in cmd:
+            err = b"Unrecognized option 'fps_mode'."
+            return SimpleNamespace(returncode=1, stderr=err, check_returncode=lambda: None)
+        Path(cmd[-1].replace("%06d", "000001")).write_bytes(b"jpg")
+        return SimpleNamespace(returncode=0, stderr=b"", check_returncode=lambda: None)
+
+    monkeypatch.setattr(media_mod.subprocess, "run", fake_run)
+    assert media._decode_all(tmp_path / "ck.mp4") == [b"jpg"]
+    assert media._decode_all(tmp_path / "ck.mp4") == [b"jpg"]
+    assert ["-fps_mode" in c for c in calls] == [True, False, False]
+    assert all("-vsync" in c for c in calls[1:])

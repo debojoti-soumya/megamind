@@ -51,8 +51,8 @@ class PassthroughCamera(
     private const val TARGET_W = 1280
     private const val TARGET_H = 960
     private const val JPEG_QUALITY = 80
-    /** docs/api.md recommends <= 960 px wide for /v1/frames; the camera streams 1280x960. */
-    const val MAX_UPLOAD_WIDTH = 960
+    /** Full camera width: the server stores the upload as-is (small text on signs/receipts stays legible). */
+    const val MAX_UPLOAD_WIDTH = 1280
     private const val REOPEN_DELAY_MS = 3_000L
     /** Camera (and video) frame rate with the encoder on. AE target ranges on Quest 3 are [15,15], [30,30], [60,60]. */
     const val TARGET_FPS = 30
@@ -330,7 +330,7 @@ class PassthroughCamera(
     }
   }
 
-  /** Re-encodes [jpeg] at [MAX_UPLOAD_WIDTH] wide (1280x960 -> 960x720). Falls back to the original. */
+  /** Re-encodes [jpeg] at [MAX_UPLOAD_WIDTH] wide (a no-op for the 1280x960 camera). Falls back to the original. */
   private fun downscale(jpeg: ByteArray, w: Int, h: Int): ByteArray {
     if (w <= MAX_UPLOAD_WIDTH) return jpeg
     return try {

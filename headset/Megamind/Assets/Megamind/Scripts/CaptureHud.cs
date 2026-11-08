@@ -1,7 +1,11 @@
-// Small head-locked status line: capture state, accepted/sent, last server reason, latency, server URL,
-// plus the ambient-audio line (mic: chunks sent/accepted).
-// Also the visible "recording" indicator (privacy: capture is never silent).
-// Builds its own world-space Canvas at runtime so no prefab is needed; assign `target` to use your own Text instead.
+// Capture status data source + the A/X / middle-pinch capture toggle.
+//
+// `ShortStatus()` is the one-line strip in the chat panel header ("REC 1 fps · 143 sent · mic 9 · url:intent") and
+// `FullReport()` the multi-line debug text (state, accepted/sent, last server reason, latency, skipped counters,
+// bg/unfocus, ambient-audio line, server URL + source). ChatPanel / PanelMenu read these; the always-visible
+// recording dot lives in the chat panel header (privacy: capture is never silent).
+//
+// The old separate head-locked HUD canvas is still available for debugging: set `showOwnCanvas` (or assign `target`).
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -14,7 +18,9 @@ namespace Megamind
         public AmbientAudioRecorder audioRecorder;
         [Tooltip("CenterEyeAnchor; the HUD is parented here. Found automatically when empty.")]
         public Transform head;
-        [Tooltip("Optional existing UI Text. When empty a canvas is created under `head`.")]
+        [Tooltip("Legacy head-locked HUD canvas (off: the chat panel header shows the status instead).")]
+        public bool showOwnCanvas = false;
+        [Tooltip("Optional existing UI Text that receives FullReport(); set automatically by showOwnCanvas.")]
         public Text target;
         public Vector3 localOffset = new Vector3(0f, -0.22f, 1.0f);
         public float widthMeters = 0.55f;
@@ -46,7 +52,7 @@ namespace Megamind
                     else if (rightHand == null && h.GetHand() == OVRPlugin.Hand.HandRight) rightHand = h;
                 }
             }
-            if (target == null) BuildCanvas();
+            if (target == null && showOwnCanvas) BuildCanvas();
         }
 
         private static bool IsMiddlePinching(OVRHand hand)
@@ -112,6 +118,21 @@ namespace Megamind
             return f;
         }
 
+        /// <summary>True while passthrough frames are being captured and uploaded (drives the REC dot).</summary>
+        public bool IsPaused => uploader != null && uploader.CurrentState == FrameUploader.State.Paused;
+        /// <summary>Short state word for the footer: "camera starting…", "camera permission…", "PAUSED (background)"…</summary>
+        public string StateLabel => uploader == null ? "no FrameUploader" : StateText(uploader);
+
+        public bool IsCapturing => uploader != null && uploader.CurrentState == FrameUploader.State.Capturing;
+
+        /// <summary>Blink phase for the REC dot (on 70 % of each second); false when not capturing.</summary>
+        public bool RecDotOn => IsCapturing && (Time.unscaledTime % 1f) < 0.7f;
+
+        /// <summary>Toggle capture (same as A/X / middle pinch). Bound to the panel's Record/Pause control and voice.</summary>
+        public void ToggleCapture() { if (uploader != null) uploader.ToggleCapturing(); }
+
+        public void SetCapturing(bool on) { if (uploader != null) uploader.SetCapturing(on); }
+
         private void Update()
         {
             bool middlePinch = IsMiddlePinching(leftHand) || IsMiddlePinching(rightHand);
@@ -121,14 +142,45 @@ namespace Megamind
                 (OVRInput.GetDown(OVRInput.Button.One) || OVRInput.GetDown(OVRInput.Button.Three) || middlePinchDown))
                 uploader.ToggleCapturing();
 
-            if (Time.unscaledTime < _next || target == null) return;
+            if (target == null || Time.unscaledTime < _next) return;
             _next = Time.unscaledTime + refreshSeconds;
-            if (uploader == null)
+            target.text = FullReport();
+            if (_dot != null) _dot.enabled = RecDotOn;
+        }
+
+        /// <summary>One line for the chat panel header, e.g. "REC 1 fps · 143 sent · mic 9 · url:intent".</summary>
+        static string StateText(FrameUploader u)
+        {
+            var cfg = u.settings;
+            return u.CurrentState switch
             {
-                target.text = "Megamind: no FrameUploader";
-                return;
-            }
+                FrameUploader.State.Capturing => $"REC {cfg.captureFps:0.#} fps" + (u.AppFocused ? "" : " (unfocused)"),
+                FrameUploader.State.WaitingForPermission => "camera permission…",
+                FrameUploader.State.WaitingForCamera => "camera starting…",
+                FrameUploader.State.Paused => u.PauseReason == "background" ? "PAUSED (background)" : "PAUSED",
+                FrameUploader.State.Unsupported => "camera unsupported",
+                FrameUploader.State.NoCameraComponent => "no camera component",
+                _ => u.CurrentState.ToString(),
+            };
+        }
+
+        public string ShortStatus()
+        {
             var u = uploader;
+            if (u == null) return "no FrameUploader";
+            var cfg = u.settings;
+            string state = StateText(u);
+            string sent = u.Accepted == u.Sent ? $"{u.Sent} sent" : $"{u.Accepted}/{u.Sent} sent";
+            string mic = audioRecorder != null ? $" · mic {audioRecorder.Sent}" : "";
+            string net = u.Failed > 0 && !u.ServerReachable ? " · NET ERR" : "";
+            return $"{state} · {sent}{mic} · url:{cfg.overrideSource}{net}";
+        }
+
+        /// <summary>Everything the old HUD showed, as multi-line text for the Debug view.</summary>
+        public string FullReport()
+        {
+            var u = uploader;
+            if (u == null) return "Megamind: no FrameUploader";
             var res = u.CameraResolution;
             var cfg = u.settings;
             string line1 = u.CurrentState switch
@@ -147,18 +199,13 @@ namespace Megamind
                 _ => u.CurrentState.ToString(),
             };
             string net = u.Failed > 0 && !u.ServerReachable ? $"  NET ERR: {u.LastError}" : "";
-            target.text =
+            return
                 $"{line1}\n" +
                 $"sent {u.Sent}  accepted {u.Accepted}  last {u.LastReason}  {u.LastLatencyMs:0} ms  {u.LastJpegBytes / 1024} KB" +
                 (u.SkippedMotion + u.SkippedBacklog + u.SkippedBackoff > 0 ? $"  skipped m{u.SkippedMotion}/b{u.SkippedBacklog}/r{u.SkippedBackoff}" : "") +
                 (u.BackgroundCount + u.FocusLossCount > 0 ? $"  bg {u.BackgroundCount} unfocus {u.FocusLossCount}" : "") + "\n" +
                 MicLine() +
                 $"{u.ServerBaseUrl}  [{u.DeviceId}, url:{cfg.overrideSource}]{net}";
-            if (_dot != null)
-            {
-                bool rec = u.CurrentState == FrameUploader.State.Capturing;
-                _dot.enabled = rec && (Time.unscaledTime % 1f) < 0.7f;
-            }
         }
 
         private string MicLine()

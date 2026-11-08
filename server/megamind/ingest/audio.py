@@ -16,8 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import json
 import logging
+import sys
+import wave
+from array import array
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
@@ -35,6 +39,25 @@ router = APIRouter()
 
 CAPTION_PREFIX = "Speech heard nearby: "
 MAX_AUDIO_BYTES = 25 * 1024 * 1024  # OpenAI transcription upload cap; ~13 min of 16 kHz mono s16
+
+
+SILENCE_PEAK = 32  # 16-bit sample magnitude (about -60 dBFS); quieter chunks hold no speech
+
+
+def is_digital_silence(wav: bytes) -> bool:
+    """True for a 16-bit PCM WAV whose every sample is within `SILENCE_PEAK` of zero (muted mic, padding).
+    Other sample widths and unparsable WAVs are never called silent, so they still reach STT."""
+    try:
+        with wave.open(io.BytesIO(wav)) as w:
+            if w.getsampwidth() != 2:
+                return False
+            frames = w.readframes(w.getnframes())
+    except (wave.Error, EOFError, ValueError):
+        return False
+    samples = array("h", frames[: len(frames) // 2 * 2])
+    if sys.byteorder == "big":
+        samples.byteswap()
+    return not samples or max(max(samples), -min(samples)) <= SILENCE_PEAK
 
 
 def merge_segments(segments: list[Segment], window_s: float) -> list[Segment]:
@@ -196,11 +219,15 @@ async def post_audio(request: Request, audio: UploadFile = File(...), meta: str 
     wav = await asyncio.to_thread(transcribe.ensure_wav, data)
     if wav is None:
         raise HTTPException(415, "audio is not a WAV and ffmpeg is unavailable or could not decode it")
-    duration = await asyncio.to_thread(wav_duration, wav) or 0.0
+    measured = await asyncio.to_thread(wav_duration, wav)
+    duration = measured or 0.0
     if duration > transcribe.MAX_AUDIO_S:
         raise HTTPException(413, f"audio chunk longer than {transcribe.MAX_AUDIO_S:g} s; send shorter chunks")
 
     audio_id = str(ULID())
+    # no samples / digital silence: documented as `token_ids: []`, and STT (mock or real) would invent words
+    if measured == 0.0 or await asyncio.to_thread(is_digital_silence, wav):
+        return AudioAccepted(audio_id=audio_id, duration_s=duration, transcript="", token_ids=[])
     try:
         segments = await app.audio_stt.transcribe_segments(wav)
     except Exception as exc:  # noqa: BLE001

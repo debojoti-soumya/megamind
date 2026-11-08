@@ -33,12 +33,12 @@ Contents: [Demo-day quick card](#demo-day-quick-card) · [1. Quest 3 basics](#1-
 5. Laptop: `adb devices` should list the headset as `device`. Then start `adb logcat -s Unity | grep -i megamind` in a spare terminal.
 6. Wipe old memories if you want a clean demo: `curl -X DELETE http://<server-ip>:8000/v1/memories`.
 7. Launch: Meta button → *Library* → *Unknown Sources* → **Megamind** [D-deploy].
-8. HUD line 1 should show `REC 1 fps  1280x960`. Line 2 should show `sent … accepted …` rising roughly once a second.
+8. The chat panel header should show a blinking red REC dot and `REC 1 fps · N sent · mic M · url:<source>` with `sent` rising roughly once a second (Menu → *Debug* shows the full stats: resolution, accepted, last reason, latency). "HUD" below means this header strip / Debug view.
 9. Start casting for the audience: Navigator → *Quick controls* → *Cast* → phone/computer [M-cast]. **Cast or record, not both**, because Meta lists doing both at once as a known issue [M-cast-ts].
 10. Plug the headset into a power bank or charger between runs. Keep it worn or face-up and still. Taking it off can suspend the app (see [7](#7-troubleshooting)).
 
 **If it breaks:** look up the symptom in the [decision table](#27-decision-table-symptom--link--2-minute-check).
-Press **A/X**, or pinch thumb + **middle** finger with hand tracking, to pause or resume capture (the HUD shows `capture PAUSED (press A/X or middle-pinch)`).
+Press **A/X**, or pinch thumb + **middle** finger with hand tracking, to pause or resume capture (the header shows `PAUSED`, the REC dot turns grey; Debug: `capture PAUSED (press A/X or middle-pinch)`). Or say **"pause recording"** / **"start recording"** while holding the trigger.
 Capture pauses on its own only when the app is really backgrounded (HUD `capture PAUSED (app backgrounded)`, counter
 `bg N`). Opening the system menu or a boundary dialog does not pause it (HUD `REC … (unfocused)`, counter `unfocus N`) [D-focus].
 
@@ -51,6 +51,9 @@ Capture pauses on its own only when the app is really backgrounded (HUD `capture
 | Open the menu ("Navigator") | Press the **Meta button** on the right controller [M-update]. Hold it to recenter the view [M-record]. |
 | Switch to hand tracking | Enable it once: *Settings → Movement tracking → Hand tracking* (older Horizon OS: Navigator → *Quick controls* → *Settings* → *Hands & body* → *Hand and Body Tracking* [M-hands]) (verify on device). Then put the controllers down. In Megamind: **index pinch** = push-to-talk (hold, release to send), **middle pinch** = capture pause/resume (like A/X), and the right hand draws the panel ray (pinch to click) (verify on device). |
 | Panel UI ray | The **right controller** draws a ray + cursor on the chat/settings panel; pull the trigger to click (verify on device). |
+| Chat panel footer | **Record / Pause** toggles continuous capture (state line: *Recording continuously* / *Paused*). **Hold to talk**: point at it, hold the trigger or index pinch, speak, release. **Type** opens the system keyboard for a typed question. **Hide / Show** (header) collapses the panel to the header strip; the REC dot stays. Pointing the ray at the panel and pressing the trigger is a click only — it no longer starts a recording (hold the trigger away from the panel, or use Hold to talk). |
+| Chat panel menu | **Menu** (top right of the panel) drops down Settings, Debug (capture/mic stats, server URL), Pin/Unpin panel, Text size, Controls (all button/hand mappings + voice phrases), New session, Purge memory. Click anywhere else to close it. Voice: hold the trigger and say **"open menu"**, **"open settings"**, **"show debug"**, **"close menu"**, **"pause recording"**, **"start recording"**, **"bigger text"**, **"smaller text"**, **"pin panel"**, **"unpin panel"** — short commands are executed instead of being answered (verify on device). |
+| Chat panel placement | The panel follows you lazily: it sits at eye height 1 m ahead and glides back in front of you when you turn more than ~25° or walk more than 0.5 m. **Pin** (header button) world-locks it, **Unpin** lets it follow again; hold **B/Y** for 0.5 s to drag it with your gaze. **A-** / **A+** in the header make the whole panel (text and thumbnails) 1x–2x; the choice is remembered (verify on device). |
 | See your room (passthrough) | Navigator → *Quick settings* → *See your surroundings*. Turning on **Double Tap for Passthrough** in Passthrough settings lets you tap the side of the headset twice [M-passthrough]. |
 | Lighting | Meta recommends **≥ 50 lux** for colour passthrough [M-passthrough]. Dim rooms make the camera feed dark and the server rejects frames as `dark`/`blurry`. |
 | Boundary | The boundary is the virtual wall that appears near the edge of your play area [M-boundary]. Megamind declares itself a **boundaryless** mixed-reality app (`com.oculus.feature.BOUNDARYLESS_APP` in its manifest), so the boundary should not appear while it runs and you can walk between rooms [D-boundaryless] (verify on device). This only applies to the installed APK, not over Link [D-boundaryless]. Watch where you walk: Megamind shows passthrough only, with no obstacle warnings [D-boundaryless-bp]. |
@@ -60,7 +63,7 @@ Capture pauses on its own only when the app is really backgrounded (HUD `capture
 | Record a video in the headset | Navigator → *Camera* → *Record video*. A red dot appears while recording; select *Stop* to end. Shortcut: hold the Meta button and then hold the right trigger. Videos are in *Files* (Media/Recents) or *Gallery* [M-record]. |
 | Screenshot or record from a laptop | Meta VR Developer Hub (MVDH, formerly MQDH) can capture screenshots and video, and can cast the headset view to the computer [D-mvdh]. |
 
-Megamind draws its own **REC** indicator and HUD (`CaptureHud.cs`). Your casts and recordings will show it, which is intended.
+Megamind draws its own **REC** dot and status strip in the chat panel header (`CaptureHud.cs` is the data source). Your casts and recordings will show it, which is intended.
 
 ---
 
@@ -339,7 +342,7 @@ On the server, watch the uvicorn output for `POST /v1/frames ... 200` and (ambie
 | 12 | "What did I hear?" (verify on device) | After ~30 s of talking, hold the trigger and ask *"what did I hear?"*. The answer cites a speech memory (`Speech heard nearby: "…"`; with mock STT the words are `[mock transcript]`, real words need `AUDIO_STT_PROVIDER=openai` or `faster-whisper` on the server). Laptop check: `curl 'http://<server>:8000/v1/memories/recent?kind=transcript&k=5'` | `not_found` / only frames → no `POST /v1/audio 200` yet (step 11), or a different `deviceId` than the chat uses |
 
 Expected camera numbers: the app requests **1280×960** with a max of **30 fps** from the camera (`CaptureSettings.cs`).
-It then samples and uploads only **1 frame/s**, as a JPEG downscaled to a width of 960 px at quality 75. 1280×960 is
+It then samples and uploads only **1 frame/s**, as a full-size 1280×960 JPEG at quality 80. 1280×960 is
 one of the resolutions Meta documents for PCA [D-pca-unity]. Meta documents about 20–40 ms latency [D-pca].
 
 ---

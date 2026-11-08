@@ -20,7 +20,7 @@ Response bodies are unchanged: `thumb_url`/`replay_url`/`audio_url` stay token-f
 ## `GET /health`
 ```json
 { "status": "ok", "store_count": 1234,
-  "models": { "claude": "claude-sonnet-4-6", "reader": "google/gemma-4-31B-it",
+  "models": { "claude": "claude-sonnet-5-5", "reader": "google/gemma-4-31B-it",
               "embed": "mock (openai configured, no key)", "enrich": "vlm:google/gemma-4-31B-it",
               "stt": "mock", "tts": "mock", "store": "lancedb" } }
 ```
@@ -37,7 +37,7 @@ logs an error, `status` becomes `"degraded"` and `store` reads `lancedb (degrade
 
 ## `POST /frames`  (headset / feeder -> server)
 `multipart/form-data`
-- `image`: JPEG bytes (<= 960 px wide recommended)
+- `image`: JPEG bytes (the headset sends the full 1280x960 camera frame; stored as-is)
 - `meta`: JSON string
   ```json
   { "device_id": "quest3-abc", "ts": 1731000000.123,
@@ -82,7 +82,7 @@ Speech that starts ≤ `SPEECH_MERGE_S` (10 s) after the device's last transcrip
 utterance cut by a chunk boundary stays one token. Only the first window of a chunk can continue the previous chunk;
 so `token_ids` may start with an **existing** (merged-into) token id. The merge target is kept per device in server
 memory (no merge across a restart) and dropped by `DELETE /memories`.
-Silence → `token_ids: []`. Bad `meta` (same limits as `POST /frames`) / empty body → 400; > 25 MB or > 600 s → 413;
+Silence (incl. a 0-sample or digitally silent 16-bit chunk, which skips STT) → `token_ids: []`, `transcript: ""`. Bad `meta` (same limits as `POST /frames`) / empty body → 400; > 25 MB or > 600 s → 413;
 undecodable audio → 415; STT provider error → 502.
 
 ## `POST /video`  (headset -> server; optional)
@@ -130,6 +130,17 @@ Query: `k` (int, 1–200, default 24), `device_id` (optional), `kind` (repeatabl
 `&kind=frame&kind=transcript`). Same body as `GET /memories` (`SearchResponse`), newest first, every `score` is `0.0`
 (not ranked). Unenriched tokens may appear with an empty `caption`. Used by the Memory Theater (`GET /xr`) for
 its cards. `GET /memories` stays a ranked search that drops hits unrelated to `q`, so it can't list "recent".
+
+## `GET /episodes`  (the day as episodes, no query)
+Query: `from`/`to` (ISO-8601, optional; unparseable → 400), `k` (int, 1–500, default 50), `device_id` (optional).
+Newest first. Episodes come from the frames' `episode_id` (span and size within the window), plus the consolidator's
+`kind="episode"` summary token when one has been written (`summary_id` is `null` and `summary` empty until then).
+```json
+{ "episodes": [ { "episode_id": "...", "device_id": "quest3-01", "start_ts": 1731000000.1, "end_ts": 1731000420.7,
+                  "n_frames": 37, "summary": "Made coffee in the kitchen", "entities": ["mug","kettle"],
+                  "thumb_url": "/v1/thumbs/....jpg", "summary_id": "..." } ] }
+```
+Debug / companion-app route: the headset does not call it, so it has no `Dto.cs` counterpart.
 
 ## `GET /thumbs/{id}.jpg`
 Keyframe thumbnail (JPEG) on every media tier: hot frames are served from their JPEG, cold frames are decoded

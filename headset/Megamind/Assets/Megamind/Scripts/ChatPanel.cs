@@ -1,15 +1,15 @@
 // Stream 3: world-locked transcript panel with cited memory thumbnails + status HUD.
 //
 // Prefab layout (see headset/README.md):
-//   Canvas (World Space, 0.6 m wide)  <- PanelAnchor
-//     Header: statusLine (Text), settings button
+//   Canvas (World Space, 0.6 m wide x uiScale)  <- PanelAnchor (tag-along / pinned, A-/A+ scale)
+//     Header: recDot (always visible), statusLine (CaptureHud.ShortStatus), Menu button -> PanelMenu dropdown
 //     ScrollRect -> Viewport -> Content (VerticalLayoutGroup + ContentSizeFitter)   <- `content`
 //     Indicators: listeningIndicator, thinkingIndicator
 // Message prefabs:
 //   userBubblePrefab      : Text inside a right-aligned bubble
 //   assistantBubblePrefab : Text inside a left-aligned bubble
 //   thumbnailRowPrefab    : HorizontalLayoutGroup; thumbnails are instantiated under it
-//   thumbnailPrefab       : RawImage (132x99 px canvas units) with optional child Text for "n min ago"
+//   thumbnailPrefab       : RawImage (180x135 px canvas units) with optional child Text for "n min ago"
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -31,14 +31,19 @@ namespace Megamind
         public GameObject thinkingIndicator;
         public GameObject emptyHint;        // "hold the trigger and ask…" shown until the first message
 
-        [Header("Status HUD")]
-        public FrameUploader uploader;      // optional, for the capture line
+        [Header("Status strip")]
+        public FrameUploader uploader;      // optional, for the capture line (fallback when `hud` is empty)
+        public CaptureHud hud;              // optional: header strip = hud.ShortStatus()
         public ChatClient client;           // optional, for latency
         public Text statusLine;
-        public Image serverDot;
+        public Image serverDot;             // server health (green/red); with `recDot` set it doubles as the REC dot
+        public Image recDot;                // always-visible recording indicator (privacy); blinks while capturing
         public Color okColor = new Color(0.22f, 0.84f, 0.48f);
         public Color errColor = new Color(1f, 0.36f, 0.42f);
+        public Color recColor = new Color(1f, 0.25f, 0.25f);
+        public Color recOffColor = new Color(0.45f, 0.48f, 0.52f);
         public Color errorTextColor = new Color(1f, 0.70f, 0.73f);
+        public Color systemTextColor = new Color(0.62f, 0.67f, 0.74f);
 
         private readonly Queue<GameObject> _messages = new Queue<GameObject>();
         private bool _serverOk;
@@ -105,6 +110,17 @@ namespace Megamind
                           + (!string.IsNullOrEmpty(confidence) ? "  " + confidence.Replace('_', ' ') : "");
                 Track(meta.gameObject);
             }
+        }
+
+        /// <summary>Small dim centred line, e.g. a recognised voice command ("open menu" -> menu opened).</summary>
+        public void AddSystemMessage(string text)
+        {
+            var t = Instantiate(assistantBubblePrefab, content);
+            t.text = text;
+            t.fontSize = Mathf.Max(8, assistantBubblePrefab.fontSize * 3 / 4);
+            t.color = systemTextColor;
+            t.alignment = TextAnchor.MiddleCenter;
+            Track(t.gameObject);
         }
 
         public void Clear()
@@ -174,7 +190,20 @@ namespace Megamind
         private void Update()
         {
             if (serverDot) serverDot.color = _serverOk ? okColor : errColor;
+            if (recDot)
+            {
+                bool capturing = hud ? hud.IsCapturing : uploader && uploader.CurrentState == FrameUploader.State.Capturing;
+                recDot.color = capturing ? recColor : recOffColor;
+                recDot.enabled = !capturing || (Time.unscaledTime % 1f) < 0.7f; // blink while recording, solid grey when paused
+            }
             if (!statusLine) return;
+            if (hud)
+            {
+                // one line: "REC 1 fps · 143 sent · mic 9 · url:intent" (+ "OFFLINE" when /v1/health fails)
+                statusLine.text = (_serverOk ? "" : "OFFLINE · ") + hud.ShortStatus();
+                statusLine.color = _serverOk ? systemTextColor : errorTextColor;
+                return;
+            }
             string srv = _serverOk ? _serverHost : "offline";
             string mem = _storeCount >= 0 ? _storeCount + " memories" : "";
             string cap = uploader ? $"capture {uploader.Accepted}/{uploader.Sent} ({uploader.LastReason})" : "capture off";

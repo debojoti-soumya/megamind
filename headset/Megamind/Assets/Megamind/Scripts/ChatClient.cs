@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.Networking;
 
 namespace Megamind
@@ -19,6 +20,8 @@ namespace Megamind
         public MegamindConfig config;
         public ChatPanel panel;
         public AudioSource speaker;
+        [Tooltip("Optional: short spoken commands (\"open menu\", \"pause recording\", ...) are executed instead of shown as an answer.")]
+        public PanelMenu menu;
 
         [Header("Push-to-talk")]
         public OVRInput.Button pushToTalk = OVRInput.Button.PrimaryIndexTrigger;
@@ -26,6 +29,9 @@ namespace Megamind
         [Tooltip("Optional: OVRHand components for pinch-to-talk (stretch).")]
         public OVRHand leftHand, rightHand;
         public float minRecordSeconds = 0.3f;
+        [Tooltip("Trigger/pinch while the UI ray is over the panel is a click, not push-to-talk (#146 quirk).")]
+        public bool ignorePushToTalkOverUi = true;
+        public PanelHover panelHover;
 
         public event Action<ChatResponse> OnResponse;
         public float LastLatencySeconds { get; private set; }
@@ -46,8 +52,22 @@ namespace Megamind
             bool pinchDown = pinch && !_pinchHeld, pinchUp = !pinch && _pinchHeld;
             _pinchHeld = pinch;
 
-            if (OVRInput.GetDown(pushToTalk, controllers) || pinchDown) BeginRecording();
+            if ((OVRInput.GetDown(pushToTalk, controllers) || pinchDown) && !RayOverUi()) BeginRecording();
             if ((OVRInput.GetUp(pushToTalk, controllers) || pinchUp) && _recordingActive) StartCoroutine(EndRecordingAndSend());
+        }
+
+        private bool RayOverUi()
+        {
+            if (!ignorePushToTalkOverUi) return false;
+            if (panelHover != null && panelHover.IsHovered) return true;
+            var es = EventSystem.current;
+            return es != null && es.IsPointerOverGameObject();
+        }
+
+        /// <summary>Footer "Hold to talk" release: same send path as the trigger release; no-op when not recording.</summary>
+        public void EndRecordingAndSendNow()
+        {
+            if (_recordingActive) StartCoroutine(EndRecordingAndSend());
         }
 
         private static bool IsPinching(OVRHand hand)
@@ -150,6 +170,10 @@ namespace Megamind
                 panel?.AddAssistantMessage("(bad response: " + e.Message + ")", null, true);
                 return;
             }
+            // STT happens inside /v1/chat, so voice commands can only be recognised from the returned transcript.
+            // The server has already run the agent (LLM + TTS) on the utterance; a matched command discards that answer.
+            // A future STT-only endpoint (e.g. /v1/stt) would let commands skip the agent turn.
+            if (echoTranscript && menu != null && menu.TryVoiceCommand(resp.transcript)) return;
             if (echoTranscript && !string.IsNullOrEmpty(resp.transcript)) panel?.AddUserMessage(resp.transcript);
             panel?.AddAssistantMessage(resp.answer, resp.cited, false, resp.Confidence(), LastLatencySeconds);
             OnResponse?.Invoke(resp);

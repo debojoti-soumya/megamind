@@ -1,6 +1,7 @@
 """Megamind server on Modal: public HTTPS for the headset, no hotspot / Tailscale / firewall (deploy/README.md).
 
     modal deploy deploy/modal_app.py                         # live (secrets megamind-providers + megamind-auth)
+    MEGAMIND_MIN_CONTAINERS=1 modal deploy deploy/modal_app.py   # live, one container kept warm (demo window)
     MEGAMIND_PROFILE=mock modal deploy deploy/modal_app.py   # keyless smoke test (secret megamind-auth only)
 
 One CPU container (`max_containers=1`): the in-process workers (enrichment, consolidator, UCC sync, media aging) and
@@ -22,6 +23,10 @@ DATA = "/data"
 PROFILE = os.environ.get("MEGAMIND_PROFILE", "live")
 if PROFILE not in ("live", "mock"):
     raise SystemExit(f"MEGAMIND_PROFILE must be live or mock, not {PROFILE!r}")
+# Warm containers kept even when idle: 0 = scale to zero (cold start ~10-15 s); 1 for a demo window (~1 vCPU-h per h).
+MIN_CONTAINERS = int(os.environ.get("MEGAMIND_MIN_CONTAINERS", "0"))
+if MIN_CONTAINERS not in (0, 1):
+    raise SystemExit("MEGAMIND_MIN_CONTAINERS must be 0 or 1 (max_containers=1)")
 
 COMMON_ENV = {
     "MEGAMIND_PROFILE": PROFILE,
@@ -35,6 +40,7 @@ PROFILE_ENV = {
     # mirrors server/.env.example; keys come from the megamind-providers secret
     "live": {
         "EMBED_PROVIDER": "openai",
+        "RETRIEVER_BACKEND": "hybrid",  # combo/hier are opt-in: on a 9k-memory week UCC timed out and hier took 16 s p50
         "READER_PROVIDER": "auto",
         "READER_BASE_URL": "https://api.sailresearch.com/v1",
         "ENRICH_PROVIDER": "auto",
@@ -54,6 +60,7 @@ PROFILE_ENV = {
     # no paid calls at all, even if a key leaks into the environment
     "mock": {
         "EMBED_PROVIDER": "mock",
+        "RETRIEVER_BACKEND": "hybrid",
         "READER_PROVIDER": "mock",
         "ENRICH_PROVIDER": "mock",
         "STT_PROVIDER": "mock",
@@ -96,7 +103,7 @@ app = modal.App("megamind")
     secrets=secrets,
     cpu=1.0,
     memory=2048,
-    min_containers=0,  # 1 = no cold start during a demo (~$0.06/h idle); set it for the demo window only
+    min_containers=MIN_CONTAINERS,  # MEGAMIND_MIN_CONTAINERS=1 for a demo window, 0 afterwards
     max_containers=1,  # single writer: LanceDB + in-process background workers
     scaledown_window=600,
     timeout=600,  # per request; /v1/chat/stream and replay renders stay well below this

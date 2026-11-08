@@ -157,6 +157,24 @@ class SearchResponse(BaseModel):
     results: list[MemoryHit]
 
 
+class EpisodeHit(BaseModel):
+    """One episode (a contiguous activity segment) and its consolidated summary, if written yet."""
+
+    episode_id: str
+    device_id: str
+    start_ts: float
+    end_ts: float
+    n_frames: int
+    summary: str = ""
+    entities: list[str] = Field(default_factory=list)
+    thumb_url: str = ""
+    summary_id: str | None = None
+
+
+class EpisodeListResponse(BaseModel):
+    episodes: list[EpisodeHit]
+
+
 class PurgeResponse(BaseModel):
     deleted: int
 
@@ -174,6 +192,7 @@ class RecallResult(BaseModel):
     confidence: Confidence
     cited: list[Citation]
     all_retrieved: list[Citation]
+    images: list[tuple[str, str]] = Field(default_factory=list, exclude=True)  # (token id, data URI), best first
 
 
 class ToolCallRecord(BaseModel):

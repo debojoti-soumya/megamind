@@ -155,6 +155,24 @@ class MemoryStore(ABC):
         toks = await self.range(time_from, time_to, limit=10**9, device_id=device_id, kinds=kinds)
         return [t for t in toks if (tier is None or t.tier == tier) and (chunk_id is None or t.chunk_id == chunk_id)]
 
+    async def episode_spans(
+        self,
+        *,
+        time_from: float | None = None,
+        time_to: float | None = None,
+        device_id: str | None = None,
+        kinds: Sequence[str] | None = None,
+    ) -> dict[str, tuple[int, float, float]]:
+        """{episode_id: (n_tokens, first_ts, last_ts)} over the matching tokens that have an episode, in order of
+        first_ts (consolidator planning). Optional; the default scans `list_tokens(vectors=False)`."""
+        out: dict[str, tuple[int, float, float]] = {}
+        for t in await self.list_tokens(time_from=time_from, time_to=time_to, device_id=device_id, kinds=kinds,
+                                        vectors=False):  # fmt: skip
+            if t.episode_id:
+                n, lo, _ = out.get(t.episode_id, (0, t.ts, t.ts))
+                out[t.episode_id] = (n + 1, lo, t.ts)
+        return out
+
     async def devices(self) -> list[DeviceInfo]:
         """Every device with stored tokens, most recently active (`last_ts`) first. Optional; the default scans
         `list_tokens(vectors=False)`."""

@@ -213,29 +213,26 @@ class Consolidator:
         self.lookback_s = lookback_s
 
     async def pending(self, now: float, device_id: str | None = None) -> list[list[MemoryToken]]:
-        """Closed, un-summarised episodes as chronological frame lists."""
-        since = now - self.lookback_s
-        # Plan on vector-less rows (this runs every interval over the whole lookback), then load full rows
-        # only for the episodes that will actually be summarised.
-        scan = dict(time_from=since, time_to=now, device_id=device_id, vectors=False)
-        frames = await self.store.list_tokens(kinds=("frame",), **scan)
-        done = {t.episode_id for t in await self.store.list_tokens(kinds=("episode",), **scan)}
-        groups: dict[str, list[MemoryToken]] = {}
-        for t in frames:
-            if t.episode_id:
-                groups.setdefault(t.episode_id, []).append(t)
-        ready = [
-            g
-            for ep, g in groups.items()
-            if ep not in done and len(g) >= self.min_tokens and g[-1].ts <= now - self.gap_s
-        ]
+        """Closed, un-summarised episodes as chronological frame lists. Planning reads only (episode, ts) spans;
+        full tokens are loaded just for the episodes about to be summarised."""
+        scan = dict(time_from=now - self.lookback_s, time_to=now, device_id=device_id)
+        spans = await self.store.episode_spans(kinds=("frame",), **scan)
+        if not spans:
+            return []
+        done = await self.store.episode_spans(kinds=("episode",), **scan)
+        ready = {
+            ep: lo
+            for ep, (n, lo, hi) in spans.items()
+            if ep not in done and n >= self.min_tokens and hi <= now - self.gap_s
+        }
         if not ready:
             return []
-        # one time-window scan, not `get_many`: an `id IN (...)` over thousands of ids is the slow path
-        lo, hi = min(g[0].ts for g in ready), max(g[-1].ts for g in ready)
-        rows = await self.store.list_tokens(time_from=lo, time_to=hi, device_id=device_id, kinds=("frame",))
-        full = {t.id: t for t in rows}
-        return [[full[t.id] for t in g if t.id in full] for g in ready]
+        lo, hi = min(ready.values()), max(spans[ep][2] for ep in ready)
+        groups: dict[str, list[MemoryToken]] = {}
+        for t in await self.store.list_tokens(time_from=lo, time_to=hi, device_id=device_id, kinds=("frame",)):
+            if t.episode_id in ready:
+                groups.setdefault(t.episode_id, []).append(t)
+        return [groups[ep] for ep in sorted(groups, key=lambda e: (ready[e], e))]
 
     async def summarize_episode(self, frames: list[MemoryToken]) -> MemoryToken:
         frames = sorted(frames, key=lambda t: (t.ts, t.id))

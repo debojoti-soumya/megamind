@@ -246,9 +246,11 @@ async def test_consolidator_plans_without_vectors_and_returns_full_rows(make_sto
     (group,) = await job.pending(now=1520)
     assert [t.id for t in group] == ["f0000", "f0001", "f0002"]
     assert all(t.image_vec is not None for t in group)  # full rows are reloaded for summarising
-    assert calls == [False, False, True]
+    assert calls[-1] is True and not any(calls[:-1])  # planning never loads vectors (LanceDB: no token scan)
 
     calls.clear()
     await job.run_once(now=1520)
     assert await job.pending(now=1520) == []
-    assert calls[-2:] == [False, False]  # steady state: nothing to summarise, no vectors loaded
+    calls.clear()
+    assert await job.pending(now=1520) == []
+    assert not any(calls)  # steady state: nothing to summarise, no vectors loaded
