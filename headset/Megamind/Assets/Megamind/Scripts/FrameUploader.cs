@@ -52,7 +52,7 @@ namespace Megamind
         public double LastUploadTs { get; private set; }
         public bool ServerReachable => Sent > 0 && _consecutiveFailures == 0;
         public Vector2Int CameraResolution => cameraAccess != null ? cameraAccess.CurrentResolution : Vector2Int.zero;
-        public int poseHistory = 600; // camera poses of the last N uploaded frames, for ObjectMarkers
+        public int poseHistory = 1800; // ~30 min at 1 fps, matching the server LOCATE_MAX_AGE_S; camera poses for ObjectMarkers
         public string ServerBaseUrl => settings.ServerBaseUrl(config);
         public string DeviceId => settings.DeviceId(config);
         /// <summary>Why capture is paused: "A/X", "background", "focus lost"; null while capture is allowed.</summary>
