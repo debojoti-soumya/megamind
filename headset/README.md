@@ -334,7 +334,8 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | `ChatBubble.cs` | 3 | one transcript row: `ChatBubble` (label + background, `Append` for streaming) and `ChatBubbleFit` (shrink-wraps the bubble to its text up to a max width) |
 | `PanelAnchor.cs` | 3 | tag-along panel: eye height, `panelDistance` m ahead, glides back when the head leaves a 25° / 0.5 m dead zone; Pin/Unpin (world-lock), hold B/Y 0.5 s to drag; A-/A+ UI scale (PlayerPrefs `megamind.uiScale`) |
 | `SettingsPanel.cs` | 3 | runtime server URL / device id, new session, purge memory |
-| `PanelMenu.cs` | 3 | header **Menu** dropdown (Settings, Debug, Pin/Unpin, Text size, New session, Purge) + voice-command execution |
+| `PanelMenu.cs` | 3 | the right-side drawer's actions (New chat, Settings, Debug, Pin/Unpin, Text size, Controls, Purge) + voice-command execution |
+| `PanelDrawer.cs` | 3 | slides the drawer down the right edge of the panel (150 ms ease-out, `CanvasGroup` fade, chevron rotates) |
 | `VoiceCommands.cs` | 3 | normalized-string matcher for short spoken commands (no wake word, no dependencies) |
 | `PanelControls.cs` | 3 | footer Record/Pause toggle + state text, Type (TouchScreenKeyboard → `ChatClient.SendText`), Hide/Show (collapse to header) |
 | `HoldToTalkButton.cs` | 3 | footer Hold-to-talk: pointer down/up → `ChatClient.BeginRecording` / `EndRecordingAndSendNow` |
@@ -353,14 +354,15 @@ field on `ChatPanel`/`ChatClient`/`PanelAnchor`/`SettingsPanel`, finds `CenterEy
 ray) when the SDK provides them:
 ```
 MegamindPanel (Canvas + CanvasScaler)  + PanelAnchor + ChatPanel + ChatClient + SettingsPanel + PanelMenu + PanelControls + PanelHover + AudioSource
-  Background, Header (RecDot, ServerDot, StatusLine, Hide/Show button, Menu button)
+  Background, Header (RecDot, ServerDot, StatusLine, Hide/Show button, MenuTab = bars + chevron in the corner)
   Scroll -> Viewport -> Content (VerticalLayoutGroup)        = ChatPanel.content
   EmptyHint (push-to-talk + voice phrases)
   Footer: StateLabel, Indicators (ListeningIndicator, ThinkingIndicator), Buttons (RecordButton + Knob, HoldToTalkButton, TypeButton)
   Settings (inactive): ServerUrl, DeviceId, Save / New session / Purge, Reset / Close, Feedback
   Debug (inactive): Title, Close, Scroll -> Viewport -> Text (CaptureHud.FullReport)
   Controls (inactive): Title, Close, Text (controller / hand / panel / voice cheat-sheet)
-  MenuBackdrop (inactive, click = close), MenuDropdown (inactive): Settings, Debug, Pin panel, Text size, Controls, New session, Purge
+  MenuBackdrop (inactive, click = close), DrawerClip (RectMask2D) -> Drawer (216 px column, slides in from above): Chats, + New chat,
+    Sessions (scroll list), divider, Settings, Debug stats, Pin panel, Text size, Controls, Purge memory
 ```
 Re-running the menu item replaces a previous `MegamindPanel`; tweak the result in the Inspector and save.
 
@@ -388,9 +390,9 @@ Push-to-talk: hold the controller trigger (or index pinch); hold B/Y 0.5 s to dr
   run like spoken ones. The Quest keyboard renders as a system overlay in front of the app — how it looks next to a
   World-Space canvas, and whether `TouchScreenKeyboard.Status` reports `Done` on the Quest IME, has **not** been
   checked here (no device).
-- **Hide / Show** (header, left of Menu): collapses the panel to the header strip — REC dot, status line and the two
-  buttons stay — and closes any open overlay. Show restores it. Not persisted.
-- **Menu → Controls**: a cheat-sheet of every mapping (trigger = talk, trigger on a button = click, A/X = record toggle,
+- **Hide / Show** (header, left of the corner tab): collapses the panel to the header strip — REC dot, status line, Hide
+  and the corner tab stay — and closes any open overlay. Show restores it. Not persisted.
+- **Tab → Controls**: a cheat-sheet of every mapping (trigger = talk, trigger on a button = click, A/X = record toggle,
   B/Y hold = move panel, index pinch = talk, middle pinch = record toggle, the footer buttons, the voice phrases).
   Voice: "show controls" / "controls" / "help".
 - **No push-to-talk while clicking** (the #146 quirk): `PanelHover` on the panel root receives uGUI pointer enter/exit
@@ -398,7 +400,7 @@ Push-to-talk: hold the controller trigger (or index pinch); hold B/Y 0.5 s to dr
   the panel (`ignorePushToTalkOverUi`, plus `EventSystem.current.IsPointerOverGameObject()` as a fallback). A trigger
   press on a button is now only a click; recording from the panel goes through Hold to talk.
 
-### Header status strip, Menu dropdown and voice commands (verify on device)
+### Header status strip, corner tab + drawer and voice commands (verify on device)
 
 The separate head-locked `CaptureHud` canvas is gone from the default scene (`CaptureHud.showOwnCanvas` now defaults to
 false, and menu 1b sets it explicitly). A scene that is **not** rebuilt with 1b after pulling has neither the old HUD nor
@@ -410,11 +412,16 @@ toggle. The chat panel header shows:
 - **Status strip**: `CaptureHud.ShortStatus()`, one line — `REC 1 fps · 143 sent · mic 9 · url:intent` (`143/150 sent`
   when some frames were rejected, `PAUSED`, `camera starting…`, `· NET ERR`), prefixed with `OFFLINE ·` when `/v1/health`
   fails (the small server dot next to the REC dot is green/red too).
-- **Menu** (right): a dropdown over the panel with *Settings* (the existing settings sub-panel), *Debug* (everything
-  the old HUD showed — state, resolution, head °/s, sent/accepted/last reason/latency/KB, skipped and bg/unfocus
-  counters, the `mic:` line, server URL + `url:<source>` — as a scrollable text block refreshed 4x/s), *Pin panel* /
-  *Unpin panel*, *Text size 1x → 1.25x → 1.5x → 2x*, *New session*, *Purge memory*. Only one overlay is open at a time;
-  the dropdown closes on the Menu button, on any menu entry, or by clicking anywhere else on the panel.
+- **Corner tab** (top-right: three bars + a chevron, 72x40 px, visible even when the panel is Hidden): click / trigger /
+  pinch or say "open menu" and a **drawer** slides down the right edge of the panel (216 px ≈ 35 % of the width,
+  `PanelDrawer`: 150 ms ease-out on `anchoredPosition`, `CanvasGroup` fade, the chevron turns upside down; clipped by a
+  `RectMask2D` while it moves). Top to bottom: **Chats** — *+ New chat* (coral) and the sessions list (filled by the
+  session store; empty hint until then) — then a divider and the actions, each with a coloured one-letter disc:
+  *Settings* (the settings sheet), *Debug stats* (everything the old HUD showed — state, resolution, head °/s,
+  sent/accepted/last reason/latency/KB, skipped and bg/unfocus counters, the `mic:` line, server URL + `url:<source>` —
+  as a scrollable mono block refreshed 4x/s), *Pin panel* / *Unpin panel*, *Text size 1x → 1.25x → 1.5x → 2x*,
+  *Controls*, *Purge memory* (red on hover). Only one overlay is open at a time; the drawer closes on the tab, on any
+  entry, by clicking anywhere else on the panel, or by voice ("close menu").
 
 **Voice commands.** STT runs inside `POST /v1/chat` (there is no STT-only endpoint), so `ChatClient` hands the returned
 `transcript` to `PanelMenu.TryVoiceCommand` before showing the answer: a short utterance (≤ 6 words after dropping

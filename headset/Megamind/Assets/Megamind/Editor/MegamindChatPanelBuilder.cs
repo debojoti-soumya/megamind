@@ -1,7 +1,7 @@
 // Editor-only. Stream 3: adds the voice-first chat panel to the capture scene made by MegamindSceneBuilder
 // (Megamind > 1), creates the bubble/thumbnail prefabs and the generated sprites (Assets/Megamind/Art), and wires every
 // public reference on ChatPanel / ChatClient / PanelAnchor / SettingsPanel / PanelMenu (header status strip + REC dot fed
-// by CaptureHud, top-right Menu dropdown: Settings / Debug / Pin / Text size / Controls / New session / Purge; footer
+// by CaptureHud, corner tab -> right-side drawer: New chat, sessions, Settings / Debug / Pin / Text size / Controls / Purge; footer
 // Record|Pause / Hold to talk / Type / Hide controls, PanelControls + PanelHover). Run Megamind > 1, then 1b, then build.
 //
 // Look & feel comes from Scripts/MegamindTheme.cs (palette, type scale, 8-pt grid, radii, button states): change it
@@ -36,6 +36,7 @@ namespace Megamind.EditorTools
         // 3 thumbnails per row: 3 * 176 + 2 * 8 spacing = 544 < 600 - 2 * 16 padding. 4:3 like the 1280x960 capture.
         const float ThumbW = 176f, ThumbH = 132f;
         const float ContentPad = Space2;
+        const float DrawerW = 216f, TabW = 72f, TabH = 40f;   // drawer ≈ 35 % of the panel; tab hugs the top-right corner
         const float AvatarSize = 32f;
         static readonly float BubbleMaxW = Mathf.Round((PanelW - 2f * ContentPad - AvatarSize - Space1) * BubbleMaxWidthFraction);
 
@@ -115,11 +116,9 @@ namespace Megamind.EditorTools
             dot.type = Image.Type.Simple; dot.AnchorLeftCentre(Space2 + 24f, 10f, 10f);
             var statusLine = MakeLabel(header.transform, "StatusLine", "connecting…", FontCaption, TextDim, TextAnchor.MiddleLeft);
             statusLine.horizontalOverflow = HorizontalWrapMode.Overflow; statusLine.verticalOverflow = VerticalWrapMode.Truncate;
-            statusLine.rectTransform.Fill(new Vector2(Space2 + 44f, 0f), new Vector2(-(Space2 + 88f + Space1 + 80f + Space1), 0f));
-            var menuButton = MakeButton(header.transform, "MenuButton", "Menu", FontCaption, sprite: RoundedS);
-            menuButton.GetComponent<RectTransform>().AnchorRightCentre(Space2, 88f, 40f);
+            statusLine.rectTransform.Fill(new Vector2(Space2 + 44f, 0f), new Vector2(-(Space2 + TabW + Space1 + 80f + Space1), 0f));
             var minimizeButton = MakeButton(header.transform, "MinimizeButton", "Hide", FontCaption, sprite: RoundedS);
-            minimizeButton.GetComponent<RectTransform>().AnchorRightCentre(Space2 + 88f + Space1, 80f, 40f);
+            minimizeButton.GetComponent<RectTransform>().AnchorRightCentre(Space2 + TabW + Space1, 80f, TabH);
 
             // Scroll view with the transcript
             var scrollGo = new GameObject("Scroll", typeof(RectTransform), typeof(ScrollRect));
@@ -241,27 +240,56 @@ namespace Megamind.EditorTools
             controlsText.rectTransform.Fill(new Vector2(Space3, Space2), new Vector2(-Space3, -(Space3 + 40f + Space2)));
             controlsText.verticalOverflow = VerticalWrapMode.Truncate;
 
-            // Dropdown: transparent backdrop (click anywhere = close) + list under the Menu button. Built last so it draws on top.
+            // Drawer: transparent backdrop (click anywhere = close) + a column down the right edge that PanelDrawer slides
+            // in from above (clipped by DrawerClip). Built after the sheets so it draws on top of them.
             var backdrop = MakeImage(go.transform, "MenuBackdrop", new Color(0f, 0f, 0f, 0f), null);
             backdrop.raycastTarget = true;
             backdrop.rectTransform.Stretch();
             var backdropButton = backdrop.gameObject.AddComponent<Button>();
             backdropButton.transition = Selectable.Transition.None;
-            var menuRoot = MakeImage(go.transform, "MenuDropdown", SurfaceRaised, RoundedM);
+            var drawerClip = new GameObject("DrawerClip", typeof(RectTransform), typeof(RectMask2D));
+            drawerClip.transform.SetParent(go.transform, false);
+            drawerClip.GetComponent<RectTransform>().Stretch();
+            var menuRoot = MakeImage(drawerClip.transform, "Drawer", SurfaceRaised, RoundedL);
+            menuRoot.raycastTarget = true; // swallow rays so the transcript underneath is not clickable through gaps
             var mrt = menuRoot.rectTransform;
-            mrt.anchorMin = mrt.anchorMax = new Vector2(1f, 1f); mrt.pivot = new Vector2(1f, 1f);
-            mrt.anchoredPosition = new Vector2(-Space1, -HeaderH); mrt.sizeDelta = new Vector2(296f, 0f);
+            mrt.anchorMin = new Vector2(1f, 0f); mrt.anchorMax = new Vector2(1f, 1f); mrt.pivot = new Vector2(1f, 1f);
+            mrt.anchoredPosition = Vector2.zero; mrt.sizeDelta = new Vector2(DrawerW, 0f);
+            var drawerGroup = menuRoot.gameObject.AddComponent<CanvasGroup>();
             var mvlg = menuRoot.gameObject.AddComponent<VerticalLayoutGroup>();
-            mvlg.padding = new RectOffset((int)Space1, (int)Space1, (int)Space1, (int)Space1); mvlg.spacing = 4f;
-            mvlg.childControlWidth = true; mvlg.childControlHeight = true; mvlg.childForceExpandHeight = false;
-            menuRoot.gameObject.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
-            var miSettings = MenuEntry(menuRoot.transform, "Settings", "Settings");
-            var miDebug = MenuEntry(menuRoot.transform, "Debug", "Debug");
-            var miPin = MenuEntry(menuRoot.transform, "Pin", "Pin panel");
-            var miTextSize = MenuEntry(menuRoot.transform, "TextSize", "Text size 1x");
-            var miControls = MenuEntry(menuRoot.transform, "Controls", "Controls");
-            var miNewSession = MenuEntry(menuRoot.transform, "NewSession", "New session");
-            var miPurge = MenuEntry(menuRoot.transform, "Purge", "Purge memory", DangerButton);
+            mvlg.padding = new RectOffset((int)Space1 + 4, (int)Space1 + 4, (int)HeaderH, (int)Space2); mvlg.spacing = 4f;
+            mvlg.childControlWidth = true; mvlg.childControlHeight = true; mvlg.childForceExpandWidth = true; mvlg.childForceExpandHeight = false;
+            MakeLabel(menuRoot.transform, "SessionsTitle", "Chats", FontCaption, TextMuted, TextAnchor.MiddleLeft).PreferredHeight(24f);
+            var miNewSession = DrawerEntry(menuRoot.transform, "NewSession", "+", Accent, "New chat", AccentButton);
+            var sessionsList = DrawerList(menuRoot.transform, "Sessions");
+            MakeLabel(sessionsList, "Empty", "Earlier chats will show up here.", FontCaption, TextMuted, TextAnchor.UpperLeft);
+            HairlineRow(menuRoot.transform);
+            var miSettings = DrawerEntry(menuRoot.transform, "Settings", "S", Secondary, "Settings");
+            var miDebug = DrawerEntry(menuRoot.transform, "Debug", "D", Warning, "Debug stats");
+            var miPin = DrawerEntry(menuRoot.transform, "Pin", "P", Success, "Pin panel");
+            var miTextSize = DrawerEntry(menuRoot.transform, "TextSize", "A", Accent, "Text size 1x");
+            var miControls = DrawerEntry(menuRoot.transform, "Controls", "?", TextDim, "Controls");
+            var miPurge = DrawerEntry(menuRoot.transform, "Purge", "!", Error, "Purge memory", DangerButton);
+
+            // Corner tab: hamburger glyph + chevron, glued to the top-right corner of the header. Last so it draws on top of
+            // the backdrop (a click on it toggles instead of just closing) and stays visible when the panel is Hidden.
+            var tab = MakeButton(header.transform, "MenuTab", "", FontCaption, sprite: RoundedM);
+            tab.GetComponent<RectTransform>().AnchorRightCentre(Space2, TabW, TabH);
+            var bars = new GameObject("Bars", typeof(RectTransform));
+            bars.transform.SetParent(tab.transform, false);
+            var barsRt = bars.GetComponent<RectTransform>();
+            barsRt.anchorMin = barsRt.anchorMax = new Vector2(0f, 0.5f); barsRt.pivot = new Vector2(0f, 0.5f);
+            barsRt.anchoredPosition = new Vector2(14f, 0f); barsRt.sizeDelta = new Vector2(18f, 14f);
+            for (int i = 0; i < 3; i++)
+            {
+                var bar = MakeImage(bars.transform, "Bar" + i, TextMain, null);
+                var brt2 = bar.rectTransform;
+                brt2.anchorMin = new Vector2(0f, 1f); brt2.anchorMax = new Vector2(1f, 1f); brt2.pivot = new Vector2(0.5f, 1f);
+                brt2.anchoredPosition = new Vector2(0f, -i * 6f); brt2.sizeDelta = new Vector2(0f, 2f);
+            }
+            var chevron = Chevron(tab.transform, TextMain);
+            chevron.anchorMin = chevron.anchorMax = new Vector2(1f, 0.5f); chevron.pivot = new Vector2(0.5f, 0.5f);
+            chevron.anchoredPosition = new Vector2(-20f, 0f); chevron.sizeDelta = new Vector2(16f, 16f);
 
             // Components
             var speaker = go.AddComponent<AudioSource>();
@@ -305,8 +333,11 @@ namespace Megamind.EditorTools
             settings.root = settingsRoot.gameObject; settings.serverUrlField = serverField; settings.deviceIdField = deviceField;
             settings.feedback = feedback;
 
+            var drawer = go.AddComponent<PanelDrawer>();
+            drawer.drawer = mrt; drawer.group = drawerGroup; drawer.backdrop = backdrop.gameObject; drawer.chevron = chevron;
+            drawer.hiddenOffset = PanelH;
             var menu = go.AddComponent<PanelMenu>();
-            menu.root = menuRoot.gameObject; menu.backdrop = backdrop.gameObject;
+            menu.root = menuRoot.gameObject; menu.backdrop = backdrop.gameObject; menu.drawer = drawer;
             menu.debugRoot = debugRoot.gameObject; menu.debugText = debugText; menu.controlsRoot = controlsRoot.gameObject;
             menu.pinLabel = miPin.GetComponentInChildren<Text>(); menu.textSizeLabel = miTextSize.GetComponentInChildren<Text>();
             menu.hud = hud; menu.settings = settings; menu.anchor = anchor; menu.chatPanel = chatPanel;
@@ -325,7 +356,7 @@ namespace Megamind.EditorTools
             holdToTalk.background.color = holdToTalk.idleColor;
             talkButton.transition = Selectable.Transition.None; // HoldToTalkButton colours it (red while recording)
 
-            UnityEventTools.AddPersistentListener(menuButton.onClick, new UnityAction(menu.Toggle));
+            UnityEventTools.AddPersistentListener(tab.onClick, new UnityAction(menu.Toggle));
             UnityEventTools.AddPersistentListener(backdropButton.onClick, new UnityAction(menu.Close));
             UnityEventTools.AddPersistentListener(miSettings.onClick, new UnityAction(menu.OpenSettings));
             UnityEventTools.AddPersistentListener(miDebug.onClick, new UnityAction(menu.OpenDebug));
@@ -349,6 +380,8 @@ namespace Megamind.EditorTools
             debugRoot.gameObject.SetActive(false);
             controlsRoot.gameObject.SetActive(false);
             menuRoot.gameObject.SetActive(false);
+            drawerGroup.alpha = 0f; drawerGroup.interactable = drawerGroup.blocksRaycasts = false;
+            mrt.anchoredPosition = new Vector2(0f, PanelH); // PanelDrawer slides it down from here
             backdrop.gameObject.SetActive(false);
             listening.gameObject.SetActive(false);
             thinking.gameObject.SetActive(false);
@@ -671,16 +704,73 @@ namespace Megamind.EditorTools
             "  Hold to talk  point, hold trigger or pinch, speak, release\n" +
             "  Type  on-screen keyboard for a typed question\n" +
             "  Hide / Show  collapse to the header (REC dot stays)\n" +
-            "  Menu  Settings, Debug, Pin, Text size, Controls, New session, Purge\n\n" +
+            "  Tab (top-right)  drawer: New chat, chats, Settings, Debug, Pin, Text size, Controls, Purge\n\n" +
             "Voice (hold trigger, say):\n  " + VoiceCommands.Hint;
 
-        static Button MenuEntry(Transform parent, string name, string caption, ColorBlock? colors = null)
+        // Drawer row: small coloured disc with a one-letter glyph, then the caption. 48 px tall, left aligned.
+        static Button DrawerEntry(Transform parent, string name, string glyph, Color glyphColor, string caption, ColorBlock? colors = null)
         {
-            var b = MakeButton(parent, name, caption, FontButton, colors, RoundedS);
-            b.GetComponentInChildren<Text>().alignment = TextAnchor.MiddleLeft;
-            var lrt = b.GetComponentInChildren<Text>().rectTransform; lrt.offsetMin = new Vector2(Space2, 0f);
-            b.gameObject.AddComponent<LayoutElement>().preferredHeight = ControlH;
+            var b = MakeButton(parent, name, caption, FontCaption, colors, RoundedS);
+            var label = b.GetComponentInChildren<Text>();
+            label.alignment = TextAnchor.MiddleLeft;
+            label.horizontalOverflow = HorizontalWrapMode.Overflow; label.verticalOverflow = VerticalWrapMode.Truncate;
+            label.rectTransform.offsetMin = new Vector2(Space1 + 28f + Space1 + 2f, 0f);
+            b.gameObject.AddComponent<LayoutElement>().preferredHeight = 48f;
+            bool accent = (colors ?? GhostButton).normalColor.a > 0.9f;
+            var icon = MakeImage(b.transform, "Icon", accent ? TextOnAccent : new Color(glyphColor.r, glyphColor.g, glyphColor.b, 0.22f), Circle);
+            icon.type = Image.Type.Simple; icon.AnchorLeftCentre(Space1 + 2f, 28f, 28f);
+            var g = MakeLabel(icon.transform, "Glyph", glyph, 15, accent ? Accent : glyphColor, TextAnchor.MiddleCenter);
+            g.fontStyle = FontStyle.Bold; g.rectTransform.Stretch();
             return b;
+        }
+
+        // Scrollable list that takes whatever height the drawer has left (sessions, PR 3). Returns the content transform.
+        static Transform DrawerList(Transform parent, string name)
+        {
+            var scrollGo = new GameObject(name, typeof(RectTransform), typeof(ScrollRect), typeof(RectMask2D), typeof(LayoutElement));
+            scrollGo.transform.SetParent(parent, false);
+            var le = scrollGo.GetComponent<LayoutElement>(); le.flexibleHeight = 1f; le.minHeight = 48f;
+            var scroll = scrollGo.GetComponent<ScrollRect>();
+            scroll.horizontal = false; scroll.movementType = ScrollRect.MovementType.Clamped; scroll.scrollSensitivity = 30f;
+            var content = new GameObject("Content", typeof(RectTransform), typeof(VerticalLayoutGroup), typeof(ContentSizeFitter));
+            content.transform.SetParent(scrollGo.transform, false);
+            var crt = content.GetComponent<RectTransform>();
+            crt.anchorMin = new Vector2(0f, 1f); crt.anchorMax = Vector2.one; crt.pivot = new Vector2(0.5f, 1f);
+            crt.offsetMin = Vector2.zero; crt.offsetMax = Vector2.zero;
+            var vlg = content.GetComponent<VerticalLayoutGroup>();
+            vlg.padding = new RectOffset(0, 0, 4, 4); vlg.spacing = 4f;
+            vlg.childControlWidth = true; vlg.childControlHeight = true; vlg.childForceExpandWidth = true; vlg.childForceExpandHeight = false;
+            content.GetComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            scroll.viewport = scrollGo.GetComponent<RectTransform>(); scroll.content = crt;
+            return content.transform;
+        }
+
+        // Hairline as a layout row (1 px line with 8 px of air around it).
+        static void HairlineRow(Transform parent)
+        {
+            var go = new GameObject("Divider", typeof(RectTransform), typeof(LayoutElement));
+            go.transform.SetParent(parent, false);
+            go.GetComponent<LayoutElement>().preferredHeight = Space2;
+            var line = MakeImage(go.transform, "Hairline", Divider, null);
+            line.rectTransform.anchorMin = new Vector2(0f, 0.5f); line.rectTransform.anchorMax = new Vector2(1f, 0.5f);
+            line.rectTransform.offsetMin = new Vector2(Space1, -0.5f); line.rectTransform.offsetMax = new Vector2(-Space1, 0.5f);
+        }
+
+        // "v" chevron from two 2 px bars; PanelDrawer rotates it 180° while the drawer is open.
+        static RectTransform Chevron(Transform parent, Color color)
+        {
+            var go = new GameObject("Chevron", typeof(RectTransform));
+            go.transform.SetParent(parent, false);
+            for (int i = 0; i < 2; i++)
+            {
+                var bar = MakeImage(go.transform, i == 0 ? "Left" : "Right", color, null);
+                var rt = bar.rectTransform;
+                rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f); rt.pivot = new Vector2(0.5f, 0.5f);
+                rt.sizeDelta = new Vector2(10f, 2f);
+                rt.anchoredPosition = new Vector2(i == 0 ? -3f : 3f, 0f);
+                rt.localRotation = Quaternion.Euler(0f, 0f, i == 0 ? -40f : 40f);
+            }
+            return go.GetComponent<RectTransform>();
         }
 
         static InputField MakeInputField(Transform parent, string name, string placeholder)
