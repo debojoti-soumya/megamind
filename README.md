@@ -60,22 +60,52 @@ headset/    Unity project for Quest 3 — setup README + C# scripts
 
 ## Quick start (no headset required)
 
+Needs Python >= 3.11. If `python --version` is older, create the venv with a newer interpreter
+instead: `python3.12 -m venv .venv` or `~/.pyenv/versions/3.12.x/bin/python -m venv .venv`.
+
+**Terminal 1: server** (from `server/`)
+
 ```bash
-# 1. server
-cd server
-python3.12 -m venv .venv            # any Python >= 3.11 && source .venv/bin/activate
+git clone https://github.com/debojoti-soumya/megamind.git && cd megamind/server
+python -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev,tools]"
-cp .env.example .env                       # optional: add API keys; mocks work without any
+cp .env.example .env        # optional: API keys; everything runs on mocks without any
 uvicorn megamind.main:app --reload --port 8000
-curl -s localhost:8000/v1/health
-
-# 2. feed frames from your laptop webcam (or a video file) in a second terminal
-python tools/feeder.py --server http://localhost:8000 --source 0 --fps 1
-
-# 3. ask
-python tools/ask.py --server http://localhost:8000 "what did I just see?"
-curl -s "localhost:8000/v1/memories?q=keys&k=5"
 ```
+
+**Terminal 2: feed frames, query, ask** (from the repo root; `tools/` lives there, not in `server/`)
+
+```bash
+source server/.venv/bin/activate
+curl localhost:8000/v1/health
+
+# a video file (--realtime stamps frames with their position in the video), or --source 0 for the webcam
+python tools/feeder.py --server http://localhost:8000 --source walk.mp4 --fps 1 --realtime
+
+curl "localhost:8000/v1/memories?q=frame&k=5"
+python tools/ask.py --server http://localhost:8000 "what did I just see?"   # prints cited ids + thumbnail URLs
+python tools/ask.py --server http://localhost:8000 "frame"                  # mock mode: see below
+curl -o t.jpg localhost:8000/v1/thumbs/<id>.jpg
+curl -X DELETE "localhost:8000/v1/memories?device_id=feeder"
+```
+
+Gotchas:
+
+- **`--realtime` for video files.** Without it, the feeder sends frames as fast as it can decode them and stamps them
+  all with the current time, so the keyframe filter (`FILTER_MIN_GAP_S=2`) drops ~90% as `too_soon` (shown in the feeder's `last=` field). The webcam
+  (`--source 0`) is paced in real time and doesn't need it.
+- **Mock captions.** With no `READER_API_KEY` the enricher writes `mock caption for frame …`, so `q=keys` finds
+  nothing, and without `ANTHROPIC_API_KEY` "what did I just see?" answers "I don't have a memory of that". Search
+  or ask `frame` to see the loop work, or configure real keys (below) to get searchable captions.
+- **Persistence.** The default `STORE_BACKEND=memory` loses everything on restart. Set `STORE_BACKEND=lancedb` in
+  `server/.env` to keep memories in `server/data/lancedb` (gitignored).
+- **Timestamps in URLs.** Use `Z`, not `+00:00`, e.g. `since=2026-11-07T18:00:00Z`. An unencoded `+` decodes to a
+  space and the server returns 400.
+- **Episodes.** An episode gets its `kind="episode"` summary token only once it has >= 3 frames, its last frame is
+  `EPISODE_GAP_S=120` s in the past, and the consolidator has run (every `CONSOLIDATE_INTERVAL_S=600` s). For a demo,
+  set both low in `server/.env` (e.g. `EPISODE_GAP_S=20`, `CONSOLIDATE_INTERVAL_S=30`). With `--realtime`, a
+  video's frames are stamped forward from when the feeder started, so wait until the video's length has passed.
 
 With no API keys configured the server runs entirely on deterministic mocks (mock captions,
 hashing embeddings, caption-only reader, no STT/TTS), so the whole loop is exercisable on a

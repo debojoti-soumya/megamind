@@ -101,8 +101,15 @@ async def recall():
     return RecallMemory(store, MockTextEmbedder(), None, CaptionOnlyReader())
 
 
+def _settings(**cfg) -> Settings:
+    # Pin the latency flags so RECALL_PREFETCH / READER_SKIP_ON_OCR in the shell env can't change these tests.
+    cfg.setdefault("recall_prefetch", True)
+    cfg.setdefault("reader_skip_on_ocr", True)
+    return Settings(_env_file=None, **cfg)
+
+
 def _agent(recall: RecallMemory, script: ScriptedAnthropic | None, key: str = "k") -> ClaudeAgent:
-    settings = Settings(anthropic_api_key=key, _env_file=None)
+    settings = _settings(anthropic_api_key=key)
     return ClaudeAgent(settings, recall, client=script.client() if script else None)
 
 
@@ -296,7 +303,7 @@ class SpyRecall:
 
 
 def _spy_agent(spy: SpyRecall, script: ScriptedAnthropic, **cfg) -> ClaudeAgent:
-    return ClaudeAgent(Settings(anthropic_api_key="k", _env_file=None, **cfg), spy, client=script.client())
+    return ClaudeAgent(_settings(anthropic_api_key="k", **cfg), spy, client=script.client())
 
 
 def test_prefetch_reusable():

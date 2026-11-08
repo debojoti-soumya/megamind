@@ -88,6 +88,18 @@ class Settings(BaseSettings):
     consolidate_min_tokens: int = 3
     summarizer_provider: str = "mock"
 
+    def provider_key(self, provider: str) -> str | None:
+        """The API key `provider` authenticates with ("" if unset), or None for keyless/unknown providers."""
+        keys = {
+            "anthropic": self.anthropic_api_key,
+            "openai": self.openai_api_key,
+            "voyage": self.voyage_api_key,
+            "deepgram": self.deepgram_api_key,
+            "elevenlabs": self.elevenlabs_api_key,
+            "vlm": "" if self.reader_api_key == "none" else self.reader_api_key,
+        }
+        return keys.get(provider.lower())
+
     @property
     def enrich_url(self) -> str:
         return self.enrich_base_url or self.reader_base_url

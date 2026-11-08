@@ -6,8 +6,13 @@ and the C# DTOs in `headset/` must match it.
 
 ## `GET /health`
 ```json
-{ "status": "ok", "store_count": 1234, "models": { "claude": "...", "reader": "...", "embed": "..." } }
+{ "status": "ok", "store_count": 1234,
+  "models": { "claude": "claude-sonnet-4-6", "reader": "google/gemma-4-31B-it",
+              "embed": "mock (openai configured, no key)", "stt": "mock", "tts": "mock" } }
 ```
+`models` names what is actually serving each role. When the configured provider has no key, or isn't wired up yet,
+the value is `mock (<provider> configured, no key | not implemented)`. Claude without a key reports
+`fallback (<model> configured, no key)`, meaning the no-LLM caption path.
 
 ## `POST /frames`  (headset / feeder -> server)
 `multipart/form-data`
