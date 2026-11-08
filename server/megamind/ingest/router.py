@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import math
 from datetime import datetime
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -96,13 +97,18 @@ async def search_memories(
 
 
 def _since_to_ts(s: str | None) -> float | None:
-    """ISO-8601 (naive = server local time) or unix seconds."""
-    if not s:
+    """ISO-8601 (naive = server local time) or unix seconds. Absent → None; present-but-blank → 400."""
+    if s is None:
         return None
+    if not s.strip():
+        raise HTTPException(400, "since: empty value; omit the parameter to purge all time")
     try:
-        return float(s)
+        ts = float(s)
     except ValueError:
-        return _iso_to_ts(s, "since")
+        return _iso_to_ts(s.strip(), "since")
+    if not math.isfinite(ts):
+        raise HTTPException(400, f"since: expected a finite unix timestamp, got {s!r}")
+    return ts
 
 
 @router.delete("/memories", response_model=PurgeResponse)
