@@ -172,6 +172,7 @@ async def test_health_reports_mocks_when_keys_are_missing(tmp_path):
         "enrich": "mock (auto: no enrich/reader key, no image embedder)",
         "stt": "mock (deepgram configured, no key)",
         "tts": "mock",
+        "store": "memory",
     }
 
 
