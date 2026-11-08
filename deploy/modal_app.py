@@ -29,13 +29,13 @@ COMMON_ENV = {
     "LANCEDB_PATH": f"{DATA}/lancedb",
     "THUMB_DIR": f"{DATA}/thumbs",  # chunks / replay / montages default to siblings of this dir, i.e. on the Volume
     "AUDIO_DIR": f"{DATA}/audio",
-    "RETRIEVER_BACKEND": "hybrid",
     "IMAGE_EMBED_PROVIDER": "none",  # SigLIP needs CPU torch (~1 GB image, slow cold start); opt-in by editing here
 }
 PROFILE_ENV = {
     # mirrors server/.env.example; keys come from the megamind-providers secret
     "live": {
         "EMBED_PROVIDER": "openai",
+        "RETRIEVER_BACKEND": "combo",  # per question: hybrid / UCC / hier (falls back to hybrid without keys)
         "READER_PROVIDER": "auto",
         "READER_BASE_URL": "https://api.sailresearch.com/v1",
         "ENRICH_PROVIDER": "auto",
@@ -46,6 +46,7 @@ PROFILE_ENV = {
     # no paid calls at all, even if a key leaks into the environment
     "mock": {
         "EMBED_PROVIDER": "mock",
+        "RETRIEVER_BACKEND": "hybrid",
         "READER_PROVIDER": "mock",
         "ENRICH_PROVIDER": "mock",
         "STT_PROVIDER": "mock",

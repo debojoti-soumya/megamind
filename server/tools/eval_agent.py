@@ -351,9 +351,12 @@ async def run(
         agent.recall = RecallMemory(store, text_emb, image_emb, reader, retriever=retriever)
 
     turns: list[Turn] = []
+    routes: list[str] = []
     for i, case in enumerate(day.cases[: limit or None]):
         resp, stats = await agent.chat_with_stats(f"eval-{i}", case.q, day.device_id, now=day.now)
         outs = reader.drain()
+        if retriever is not None:
+            routes.append(f"{i + 1}:{getattr(retriever, 'last_route', '') or type(retriever).__name__}")
         cited = [c.id for c in resp.cited]
         p, r = citation_scores(cited, case.gold)
         reader_tokens = sum(o.usage.get("total_tokens", 0) for o in outs)
@@ -383,6 +386,13 @@ async def run(
                 error=stats.error,
                 extra=dict(stats.extra),
             )
+        )
+    if retriever is not None:
+        ucc = getattr(retriever, "ucc", None) or retriever
+        print(f"routes: {' '.join(routes)}", file=sys.stderr)
+        print(
+            f"retriever stats: {dict(getattr(retriever, 'stats', {}))} ucc: {getattr(ucc, 'stats', None)}",
+            file=sys.stderr,
         )
     return turns
 
