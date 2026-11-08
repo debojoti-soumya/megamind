@@ -4,7 +4,7 @@
 // the camera was (PassthroughCameraAccess.ViewportPointToRay), hit-tested against the real room
 // (EnvironmentRaycastManager = Depth API; needs com.oculus.permission.USE_SCENE, see MegamindPermissions).
 // No hit yet (depth not ready, or that spot is out of view now): the pin waits on the ray at fallbackDistance and
-// re-casts until it lands. The ring under the arrow is sized to the box, so a loose box reads as "around here".
+// re-casts until it lands. The golden halo under the arrow is sized to the box, so a loose box reads as "around here".
 // When the marker is outside the view (behind you, off to a side), a head-locked arrow at the edge of the view points
 // toward it.
 // Self-installs at scene load (next to FrameUploader) so scenes built before this component get it too.
@@ -42,6 +42,7 @@ namespace Megamind
         {
             public GameObject root;
             public RectTransform ring, stem, arrow, label;
+            public Image halo;
             public float arrowY;
             public Ray ray;
             public float halfAngleRad, until, nextTry;
@@ -136,6 +137,9 @@ namespace Megamind
                 }
                 if (!p.landed && Time.time >= p.nextTry) TryLand(p);
                 p.arrow.anchoredPosition = new Vector2(0f, p.arrowY + bobAmplitude * (0.5f + 0.5f * Mathf.Sin(Time.time * 4f)));
+                float pulse = 0.5f + 0.5f * Mathf.Sin(Time.time * 2.5f);
+                p.ring.localScale = Vector3.one * (0.95f + 0.1f * pulse);
+                p.halo.color = new Color(color.r, color.g, color.b, color.a * (0.6f + 0.4f * pulse));
                 if (head != null)
                 {
                     var away = p.root.transform.position - head.position;
@@ -189,7 +193,7 @@ namespace Megamind
         {
             p.root.transform.position = p.ray.GetPoint(distance);
             float d = Mathf.Max(minRingDiameter, 2f * distance * Mathf.Tan(p.halfAngleRad)) * 1000f; // canvas units = mm
-            p.ring.sizeDelta = new Vector2(d, d);
+            p.ring.sizeDelta = new Vector2(d, d) * HaloScale; // the halo's bright band sits at the box edge, glow spills past
             p.stem.anchoredPosition = new Vector2(0f, d * 0.5f);
             p.arrowY = d * 0.5f + 6f;
             p.label.anchoredPosition = new Vector2(0f, p.arrowY + p.stem.sizeDelta.y + bobAmplitude);
@@ -206,9 +210,10 @@ namespace Megamind
             rt.localScale = Vector3.one * 0.001f;
             p.root = root;
 
-            var ring = NewImage("Ring", rt, color);
-            ring.sprite = RingSprite();
-            p.ring = ring.rectTransform;
+            var halo = NewImage("Halo", rt, color);
+            halo.sprite = HaloSprite();
+            p.ring = halo.rectTransform;
+            p.halo = halo;
 
             var stem = NewImage("Stem", rt, color);
             p.stem = stem.rectTransform;
@@ -249,18 +254,23 @@ namespace Megamind
             return img;
         }
 
-        private static Sprite RingSprite()
+        private const float HaloScale = 1.6f, HaloBand = 1f / HaloScale; // band radius as a fraction of the sprite radius
+
+        // Soft golden orb: a glowing band at the box edge (gaussian falloff both ways) over a faint radial fill.
+        private static Sprite HaloSprite()
         {
             if (s_ring != null) return s_ring;
             const int n = 128;
             var tex = new Texture2D(n, n, TextureFormat.RGBA32, false) { wrapMode = TextureWrapMode.Clamp };
             var px = new Color32[n * n];
-            float r0 = n * 0.5f - 1f, r1 = r0 - n * 0.07f, c = (n - 1) * 0.5f;
+            float c = (n - 1) * 0.5f;
             for (int y = 0; y < n; y++)
                 for (int x = 0; x < n; x++)
                 {
-                    float d = Mathf.Sqrt((x - c) * (x - c) + (y - c) * (y - c));
-                    float a = Mathf.Clamp01(r0 - d + 0.5f) * Mathf.Clamp01(d - r1 + 0.5f);
+                    float r = Mathf.Sqrt((x - c) * (x - c) + (y - c) * (y - c)) / (n * 0.5f); // 0 centre .. 1 edge
+                    float band = (r - HaloBand) / 0.16f;
+                    float a = 0.85f * Mathf.Exp(-band * band) + 0.2f * (1f - r) * (1f - r);
+                    a *= Mathf.Clamp01((1f - r) * 5f);
                     px[y * n + x] = new Color32(255, 255, 255, (byte)(a * 255));
                 }
             tex.SetPixels32(px);
