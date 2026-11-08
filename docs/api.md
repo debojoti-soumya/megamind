@@ -184,9 +184,13 @@ cites a frame with pixels: then a vision model (`LOCATE_PROVIDER=openai` GPT by 
 looks at the newest cited frames (live `now_*` first) and reports X's box in one of them. `token_id` is that
 `cited[].id`; `device_id` + `ts` identify the uploaded frame (`FrameMeta.ts`). `x`/`y` (box centre) and `box`
 (`[x_min, y_min, x_max, y_max]`) are normalized to the frame, origin top-left. The headset projects `(x, y)`
-through the camera pose it had at `ts` and depth-raycasts it into the room to point an arrow at X (headset `ObjectMarkers`; an edge-of-view arrow guides you when X is out of view);
-`/ui` outlines the box on the thumbnail. Best effort: no key, a timeout (`LOCATE_TIMEOUT_S`), "not visible" or a
-low confidence (`LOCATE_MIN_CONFIDENCE`) gives `[]` and the turn still answers. Opt out with `LOCATE_ENABLED=false`.
+through the camera pose it had at `ts` and depth-raycasts it into the room to point an arrow at X (headset
+`ObjectMarkers`; an edge-of-view arrow points toward X when it is out of view); `/ui` outlines the box on the
+thumbnail. With the `locate-refine` extra installed (`LOCATE_REFINE=auto|owlv2|none`), an OWLv2 detector redraws the
+box in the chosen frame from the model's label, so `box` is much tighter; the vision model still decides whether and
+where X is. Best effort: no key, a timeout (`LOCATE_TIMEOUT_S`), "not visible" or a low confidence
+(`LOCATE_MIN_CONFIDENCE`) gives `[]` and the turn still answers; a refiner failure keeps the model's box. Opt out
+with `LOCATE_ENABLED=false`.
 
 ## `POST /chat/stream`
 The same turn as `POST /chat` (same request body, JSON or multipart, same 400/415/422 errors before the stream

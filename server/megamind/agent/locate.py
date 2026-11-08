@@ -8,6 +8,12 @@ and returns the box of the asked-about object. The box goes out as a
 `ts`. The headset keeps the camera pose of every frame it uploaded, turns the box centre into a world ray from that
 pose and hit-tests it against the room (docs/api.md, headset ObjectMarkers.cs).
 
+Box refinement: vision LLM boxes are loose (13% median centre error for gpt-4.1 on COCO val vs 1.2% for OWLv2), so
+when the optional ``locate-refine`` extra (torch + transformers) is installed, an open-vocabulary detector
+(`OwlRefiner`, OWLv2) redraws the box in the frame the LLM chose, using the LLM's label as the text query and its
+box as a hint (`pick_box`). The LLM still decides whether the object is there and in which frame.
+``LOCATE_REFINE=none`` turns it off; a refiner error or timeout keeps the LLM's box.
+
 Runs concurrently with TTS in the chat router, and never fails a turn: no key, a timeout or a bad reply means no
 markers. Opt out with ``LOCATE_ENABLED=false``; other knobs are ``LOCATE_*``.
 """
@@ -20,6 +26,7 @@ import io
 import json
 import logging
 import re
+import threading
 import time
 
 import anthropic
@@ -42,6 +49,10 @@ class LocateSettings(BaseSettings):
     max_px: int = 1024  # longest side sent (we must know the exact size the model sees)
     timeout_s: float = 8.0
     min_confidence: float = 0.5
+    refine: str = "auto"  # auto (OWLv2 if torch + transformers are installed) | owlv2 | none
+    refine_model: str = "google/owlv2-base-patch16-ensemble"
+    refine_timeout_s: float = 8.0  # on top of timeout_s; ~0.1 s on a GPU, ~4-7 s on 8 CPU cores
+    refine_min_score: float = 0.1  # detector score below which the LLM's box is kept
 
 
 _WHERE_RE = re.compile(
@@ -107,13 +118,96 @@ def _fit(jpeg: bytes, max_px: int) -> tuple[bytes, int, int]:
         return buf.getvalue(), im.size[0], im.size[1]
 
 
+Box = tuple[float, float, float, float]
+
+
+def _iou(a: Box, b: Box) -> float:
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - ix * iy
+    return ix * iy / union if union > 0 else 0.0
+
+
+def pick_box(cands: list[tuple[Box, float]], hint: Box, min_score: float) -> Box | None:
+    """Detector candidate for the object the LLM pointed at: score boosted by overlap with the LLM's (loose) box."""
+    best = max(
+        ((score * (0.5 + _iou(box, hint)), box) for box, score in cands if score >= min_score),
+        default=None,
+    )
+    return best[1] if best else None
+
+
+class OwlRefiner:
+    """OWLv2 open-vocabulary detector (transformers). `detect(jpeg, query)` -> [(box px, score)], blocking."""
+
+    def __init__(self, model_name: str, *, threads: int | None = None) -> None:
+        import torch
+        from transformers import Owlv2ForObjectDetection, Owlv2Processor
+
+        self.torch = torch
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if threads:
+            torch.set_num_threads(threads)
+        self.processor = Owlv2Processor.from_pretrained(model_name)
+        self.model = Owlv2ForObjectDetection.from_pretrained(model_name).to(self.device).eval()
+        self.model_name = model_name
+        self._lock = threading.Lock()
+
+    def detect(self, jpeg: bytes, query: str, top_k: int = 8) -> list[tuple[Box, float]]:
+        with Image.open(io.BytesIO(jpeg)) as im:
+            im = im.convert("RGB")
+            w, h = im.size
+            with self._lock, self.torch.no_grad():
+                inp = self.processor(text=[[f"a photo of a {query}"]], images=im, return_tensors="pt").to(self.device)
+                out = self.model(**inp)
+                p = self.processor
+                post = (
+                    p.post_process_grounded_object_detection  # transformers >= 5
+                    if hasattr(p, "post_process_grounded_object_detection")
+                    else p.post_process_object_detection
+                )
+                side = max(w, h)  # OWLv2 pads to a square, so boxes come back in padded-square coordinates
+                r = post(out, threshold=0.0, target_sizes=self.torch.tensor([[side, side]]))[0]
+        order = r["scores"].argsort(descending=True)[:top_k]
+        return [
+            (
+                (
+                    max(0.0, float(r["boxes"][i][0])),
+                    max(0.0, float(r["boxes"][i][1])),
+                    min(float(w), float(r["boxes"][i][2])),
+                    min(float(h), float(r["boxes"][i][3])),
+                ),
+                float(r["scores"][i]),
+            )
+            for i in order.tolist()
+        ]
+
+
+def build_refiner(cfg: LocateSettings):
+    """OwlRefiner per `LOCATE_REFINE`, or None (auto: only if torch + transformers are importable)."""
+    mode = cfg.refine.lower()
+    if mode in ("none", "off", "false", "") or not cfg.enabled:
+        return None
+    try:
+        return OwlRefiner(cfg.refine_model)
+    except ImportError as e:
+        if mode != "auto":
+            log.warning("LOCATE_REFINE=%s but torch/transformers missing (%s); using the LLM's boxes", mode, e)
+        return None
+    except Exception as e:  # noqa: BLE001  (e.g. the model download failed: fall back to the LLM's boxes)
+        log.warning("box refiner unavailable (%s: %s); using the LLM's boxes", type(e).__name__, e)
+        return None
+
+
 class Locator:
     """Finds the asked-about object in the turn's cited frames. `load(citation)` -> (jpeg, device_id) or None.
 
-    `client` is an `anthropic.AsyncAnthropic` or `openai.AsyncOpenAI` matching `cfg.provider` (tests inject one)."""
+    `client` is an `anthropic.AsyncAnthropic` or `openai.AsyncOpenAI` matching `cfg.provider` (tests inject one).
+    `refiner` has `detect(jpeg, query) -> [(box px, score)]` (`OwlRefiner`), or is None for the LLM's boxes."""
 
-    def __init__(self, settings, cfg: LocateSettings, load, client=None) -> None:
+    def __init__(self, settings, cfg: LocateSettings, load, client=None, refiner=None) -> None:
         self.cfg = cfg
+        self.refiner = refiner
         self.provider = cfg.provider.lower()
         self.model = cfg.model or (settings.claude_model if self.provider == "anthropic" else "gpt-4.1")
         self.load = load
@@ -153,6 +247,7 @@ class Locator:
 
     async def _locate(self, question: str, answer: str, cands: list[Citation]) -> list[Marker]:
         shown: list[tuple[Citation, str | None, int, int]] = []
+        jpegs: list[bytes] = []
         images: list[tuple[str, str]] = []  # (header, base64 jpeg)
         for c in cands:
             got = await self.load(c)
@@ -161,6 +256,7 @@ class Locator:
             jpeg, device_id = got
             data, w, h = await asyncio.to_thread(_fit, jpeg, self.cfg.max_px)
             images.append((f"snapshot {len(shown)} ({w}x{h} px):", base64.b64encode(data).decode()))
+            jpegs.append(data)
             shown.append((c, device_id, w, h))
         if not shown:
             return []
@@ -170,7 +266,37 @@ class Locator:
         out = await call(images, prompt)
         log.info("locate[%s]: %r -> %s (%.0f ms)", self.provider, question, out, (time.perf_counter() - t0) * 1000)
         m = _to_marker(out, shown, self.cfg.min_confidence)
+        if m is not None and self.refiner is not None:
+            m = await self._refine(m, shown, jpegs)
         return [m] if m is not None else []
+
+    async def _refine(self, m: Marker, shown, jpegs: list[bytes]) -> Marker:
+        """Redraw `m.box` with the detector in the same frame; any failure keeps the LLM's box."""
+        idx = next(i for i, s in enumerate(shown) if s[0].id == m.token_id)
+        _, _, w, h = shown[idx]
+        hint = (m.box[0] * w, m.box[1] * h, m.box[2] * w, m.box[3] * h)
+        t0 = time.perf_counter()
+        try:
+            cands = await asyncio.wait_for(
+                asyncio.to_thread(self.refiner.detect, jpegs[idx], m.label), self.cfg.refine_timeout_s
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("box refine failed (%s: %s); keeping the LLM's box", type(e).__name__, e)
+            return m
+        box = pick_box(cands, hint, self.cfg.refine_min_score)
+        log.info("refine %r: %s -> %s (%.0f ms)", m.label, m.box, box, (time.perf_counter() - t0) * 1000)
+        if box is None:
+            return m
+        x0, y0, x1, y1 = (min(max(v / d, 0.0), 1.0) for v, d in zip(box, (w, h, w, h)))
+        if x1 - x0 <= 0 or y1 - y0 <= 0:
+            return m
+        return m.model_copy(
+            update={
+                "x": round((x0 + x1) / 2, 4),
+                "y": round((y0 + y1) / 2, 4),
+                "box": [round(x0, 4), round(y0, 4), round(x1, 4), round(y1, 4)],
+            }
+        )
 
     async def _ask_anthropic(self, images: list[tuple[str, str]], prompt: str) -> dict | None:
         content: list[dict] = []
@@ -234,7 +360,7 @@ def _to_marker(out, shown, min_confidence: float) -> Marker | None:
     )
 
 
-def build_locator(state, settings, cfg: LocateSettings | None = None, client=None) -> Locator:
+def build_locator(state, settings, cfg: LocateSettings | None = None, client=None, refiner=None) -> Locator:
     """Lifespan hook. Frames: live NOW frames from the live cache, stored frames via media (as the reader sees them)."""
     cfg = cfg or LocateSettings()
 
@@ -250,7 +376,19 @@ def build_locator(state, settings, cfg: LocateSettings | None = None, client=Non
         data = await state.media.read(token)
         return (data, token.device_id) if data else None
 
-    return Locator(settings, cfg, load, client=client)
+    loc = Locator(settings, cfg, load, client=client, refiner=refiner)
+    if refiner is None and client is None and loc.enabled:  # load the detector off the startup path
+        threading.Thread(target=lambda: setattr(loc, "refiner", build_refiner(cfg)), daemon=True).start()
+    return loc
 
 
-__all__ = ["LOCATE_TOOL", "LocateSettings", "Locator", "build_locator", "is_where_question"]
+__all__ = [
+    "LOCATE_TOOL",
+    "LocateSettings",
+    "Locator",
+    "OwlRefiner",
+    "build_locator",
+    "build_refiner",
+    "is_where_question",
+    "pick_box",
+]

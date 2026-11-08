@@ -11,7 +11,15 @@ from openai import AsyncOpenAI
 from test_claude_agent import ScriptedAnthropic, _message
 from test_live_memory import _fallback_agent, _post_burst
 
-from megamind.agent.locate import LocateSettings, Locator, _to_marker, build_locator, is_where_question
+from megamind.agent.locate import (
+    LocateSettings,
+    Locator,
+    _to_marker,
+    build_locator,
+    build_refiner,
+    is_where_question,
+    pick_box,
+)
 from megamind.config import Settings
 from megamind.live import _frame_id
 from megamind.models import Citation
@@ -22,7 +30,7 @@ def report(**kw) -> dict:
 
 
 def _cfg(**kw) -> LocateSettings:
-    return LocateSettings(_env_file=None, **{"provider": "anthropic", **kw})
+    return LocateSettings(_env_file=None, **{"provider": "anthropic", "refine": "none", **kw})
 
 
 class ScriptedOpenAI:
@@ -220,3 +228,70 @@ def test_provider_needs_its_own_key():
     s = Settings(_env_file=None, anthropic_api_key="", openai_api_key="sk-oa")
     assert Locator(s, LocateSettings(_env_file=None), load=None).enabled
     assert not Locator(s, LocateSettings(_env_file=None, enabled=False), load=None).enabled
+
+
+def test_pick_box_prefers_detections_overlapping_the_llm_box():
+    hint = (100, 100, 200, 200)
+    far_strong, near_weaker = ((400, 400, 450, 450), 0.6), ((120, 110, 170, 160), 0.4)
+    assert pick_box([far_strong, near_weaker], hint, 0.1) == near_weaker[0]
+    assert pick_box([((400, 400, 450, 450), 0.9), near_weaker], hint, 0.1) == (400, 400, 450, 450)
+    assert pick_box([((120, 110, 170, 160), 0.05)], hint, 0.1) is None
+    assert pick_box([], hint, 0.1) is None
+
+
+class FakeRefiner:
+    def __init__(self, result):
+        self.result, self.calls = result, []
+
+    def detect(self, jpeg, query):
+        self.calls.append(query)
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def _jpeg(w=320, h=240) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), "white").save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+async def _locate_with(refiner):
+    async def load(c):
+        return _jpeg(), "dev1"
+
+    fake = ScriptedAnthropic([report(found=True, image=0, label="pen", box=[0, 0, 160, 120], confidence=0.9)])
+    loc = Locator(_settings(), _cfg(), load, client=fake.client(), refiner=refiner)
+    return await loc.markers("where is my pen?", "On the desk.", [_cit()], now=100.0)
+
+
+async def test_refiner_redraws_the_box_with_the_llm_label():
+    ref = FakeRefiner([((32, 24, 96, 72), 0.7), ((200, 200, 300, 230), 0.8)])
+    (m,) = await _locate_with(ref)
+    assert ref.calls == ["pen"]
+    assert m.box == [0.1, 0.1, 0.3, 0.3] and (m.x, m.y) == (0.2, 0.2) and m.label == "pen"
+
+
+@pytest.mark.parametrize("result", [RuntimeError("boom"), [], [((32, 24, 96, 72), 0.01)]])
+async def test_refiner_failure_or_no_detection_keeps_llm_box(result):
+    (m,) = await _locate_with(FakeRefiner(result))
+    assert m.box == [0.0, 0.0, 0.5, 0.5]
+
+
+def test_build_refiner_none_and_missing_deps(monkeypatch):
+    assert build_refiner(_cfg(refine="none")) is None
+    import builtins
+
+    real = builtins.__import__
+
+    def no_torch(name, *a, **kw):
+        if name in ("torch", "transformers"):
+            raise ImportError(name)
+        return real(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", no_torch)
+    assert build_refiner(_cfg(refine="auto")) is None
