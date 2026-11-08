@@ -86,3 +86,28 @@ async def test_enricher_sharing_the_embedder_means_one_image_pass():
     await EnrichmentWorker(store, _SharingEnricher(img), MockTextEmbedder(), img)._process(_tok(), b"jpeg")
     got = await store.get("t1")
     assert img.calls == 1 and got is not None and got.image_vec == [0.0, 1.0, 0.0, 0.0]
+
+
+async def test_lag_stats_track_submit_to_store_and_pending():
+    store = InMemoryStore()
+    w = EnrichmentWorker(store, _Enricher(), MockTextEmbedder(), None, concurrency=3)
+    assert w.lag_stats() == {"n": 0, "p50": None, "max": None, "oldest_pending": None}
+    await w.submit(_tok(), b"jpeg")
+    assert w.lag_stats()["oldest_pending"] is not None
+    await w.start()
+    try:
+        assert len(w._tasks) == 3
+        await asyncio.wait_for(w.queue.join(), timeout=2)
+    finally:
+        await w.stop()
+    st = w.lag_stats()
+    assert st["n"] == 1 and st["p50"] is not None and st["p50"] >= 0
+    assert st["oldest_pending"] is None
+    assert await store.count() == 1
+
+
+async def test_discarded_frames_leave_no_pending_lag():
+    w = EnrichmentWorker(InMemoryStore(), _Enricher(), MockTextEmbedder(), None)
+    await w.submit(_tok(), b"jpeg")
+    assert w.discard() == 1
+    assert w.lag_stats()["oldest_pending"] is None
