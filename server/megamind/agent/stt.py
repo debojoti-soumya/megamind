@@ -3,6 +3,7 @@
 Input is always a 16 kHz mono WAV from the headset / browser panel. Providers:
   openai   -> `audio.transcriptions` (whisper-1 / gpt-4o-mini-transcribe)
   deepgram -> REST `listen` endpoint (nova-2)
+  faster-whisper -> local, keyless (the ambient-audio backend; `local-stt` extra + ffmpeg)
   mock     -> fixed string, used in tests and before keys are configured
 """
 
@@ -120,6 +121,17 @@ def build_stt(settings: Settings) -> STT:
         return OpenAISTT(settings)
     if p == "deepgram" and settings.deepgram_api_key:
         return DeepgramSTT(settings)
+    if p in ("faster-whisper", "faster_whisper", "local"):
+        # keyless voice questions: reuse the ambient-audio faster-whisper backend (same cached model)
+        from megamind.ingest.transcribe import FasterWhisperSTT, have_ffmpeg  # lazy: transcribe imports this module
+
+        try:
+            if have_ffmpeg():
+                return FasterWhisperSTT(settings.audio_stt_model or "small.en", enhance=settings.audio_enhance)
+            log.warning("STT_PROVIDER=%s needs ffmpeg on PATH; using MockSTT", p)
+        except ImportError:
+            log.warning('STT_PROVIDER=%s but faster-whisper is not installed (pip install -e ".[local-stt]")', p)
+        return MockSTT()
     if p != "mock":
         log.warning("STT_PROVIDER=%s but no API key configured; using MockSTT", p)
     return MockSTT()
