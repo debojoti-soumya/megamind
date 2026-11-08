@@ -12,6 +12,8 @@
 //   metaLinePrefab        : caption under an answer (latency, confidence)
 //   thumbnailRowPrefab    : HorizontalLayoutGroup; thumbnails are instantiated under it
 //   thumbnailPrefab       : rounded frame with a RawImage (180x135 px canvas units) and a child Text for "n min ago"
+//   collagePrefab         : legacy-only frame with a RawImage for photo montages (default: thumbnailPrefab); with
+//                           cardPrefab set, a collage is a CitationCard (opens the Lightbox) sized collageWidth
 // Colours come from MegamindTheme (applied by the builder; the state colours below default to it).
 using System.Collections;
 using System.Collections.Generic;
@@ -32,6 +34,9 @@ namespace Megamind
         public RectTransform metaLinePrefab;
         public RectTransform thumbnailRowPrefab;  // legacy thumbnails (used when cardPrefab is empty)
         public RectTransform thumbnailPrefab;
+        public RectTransform collagePrefab;
+        public float collageWidth = 420f;     // canvas units; height follows the image's aspect ratio
+        public float collageMaxHeight = 360f;
         public RectTransform cardStripPrefab;     // horizontal ScrollRect of CitationCards (candidates / cited)
         public CitationCard cardPrefab;
         public RectTransform turnActionsPrefab;   // meta caption + Copy + Retry under an answer
@@ -116,16 +121,21 @@ namespace Megamind
         public void AddAssistantMessage(string text, List<Citation> cited, bool isError) => AddAssistantMessage(text, cited, isError, null, 0f);
 
         public void AddAssistantMessage(string text, List<Citation> cited, bool isError, string confidence, float latencySeconds)
-            => AddAssistantMessage(text, cited, isError, confidence, latencySeconds, 0f);
+            => AddAssistantMessage(text, cited, isError, confidence, latencySeconds, 0f, null);
+
+        /// <summary>`collage` (photo montage) replaces the thumbnail row: it already shows every cited photo.</summary>
+        public void AddAssistantMessage(string text, List<Citation> cited, bool isError, string confidence, float latencySeconds,
+                                        CollageResponse collage)
+            => AddAssistantMessage(text, cited, isError, confidence, latencySeconds, 0f, collage: collage);
 
         /// <summary>firstTextSeconds &gt; 0 (streamed answers): the meta line shows time to the first words too.</summary>
         public void AddAssistantMessage(string text, List<Citation> cited, bool isError, string confidence, float latencySeconds,
-                                        float firstTextSeconds, List<Marker> markers = null)
+                                        float firstTextSeconds, List<Marker> markers = null, CollageResponse collage = null)
         {
             var b = AddAssistantBubble(text);
             if (isError) b.SetError(errorTextColor, errorBubbleColor);
             if (isError) ClearCandidates();
-            else AddAnswerDetails(text, cited, confidence, latencySeconds, firstTextSeconds, markers);
+            else AddAnswerDetails(text, cited, confidence, latencySeconds, firstTextSeconds, markers, collage);
             if (!isError) Record("assistant", text, cited);
         }
 
@@ -155,19 +165,19 @@ namespace Megamind
         /// <summary>The final answer replaces the draft text (it is authoritative) and gets the usual thumbnails and
         /// meta line; without a draft this is AddAssistantMessage.</summary>
         public void FinishDraft(string text, List<Citation> cited, string confidence, float latencySeconds, float firstTextSeconds,
-                                List<Marker> markers = null)
+                                List<Marker> markers = null, CollageResponse collage = null)
         {
             var b = _draft;
             _draft = null;
             if (b == null)
             {
-                AddAssistantMessage(text, cited, false, confidence, latencySeconds, firstTextSeconds, markers);
+                AddAssistantMessage(text, cited, false, confidence, latencySeconds, firstTextSeconds, markers, collage);
                 return;
             }
             b.gameObject.SetActive(true);
             b.transform.SetAsLastSibling(); // thumbnails/meta go right under it even if a system chip came in between
             b.Text = text;
-            AddAnswerDetails(text, cited, confidence, latencySeconds, firstTextSeconds, markers);
+            AddAnswerDetails(text, cited, confidence, latencySeconds, firstTextSeconds, markers, collage);
             Record("assistant", text, cited);
             RequestScroll();
         }
@@ -180,10 +190,10 @@ namespace Megamind
         }
 
         private void AddAnswerDetails(string answer, List<Citation> cited, string confidence, float latencySeconds, float firstTextSeconds,
-                                      List<Marker> markers)
+                                      List<Marker> markers, CollageResponse collage)
         {
             ClearCandidates(); // the answer's own citations replace the retrieval preview
-            AddCitations(cited, markers);
+            if (!AddCollage(collage)) AddCitations(cited, markers);
             AddTurnActions(answer, confidence, latencySeconds, firstTextSeconds);
         }
 
@@ -226,6 +236,64 @@ namespace Megamind
                         if (m.token_id == withImage[i].id) AddBox(card.image.rectTransform, m);
             }
             return strip;
+        }
+
+        /// <summary>The collage as one tappable card (CitationCard style) sized by its aspect ratio; a tap opens the
+        /// Lightbox on the collage, then its photos one by one. Legacy prefabs (no cardPrefab): a plain thumbnail.</summary>
+        private bool AddCollage(CollageResponse collage)
+        {
+            if (collage == null || string.IsNullOrEmpty(collage.url)) return false;
+            float aspect = collage.width > 0 && collage.height > 0 ? (float)collage.height / collage.width : 0.75f;
+            float w = collageWidth, h = Mathf.Min(collageWidth * aspect, collageMaxHeight);
+            if (cardPrefab != null && cardStripPrefab != null)
+            {
+                var set = CollageSet(collage);
+                var strip = Instantiate(cardStripPrefab, content);
+                var stripScroll = strip.GetComponent<ScrollRect>();
+                Transform row = stripScroll != null && stripScroll.content != null ? stripScroll.content : strip.transform;
+                var card = Instantiate(cardPrefab, row);
+                card.Bind(set[0], set, 0, lightbox);
+                if (card.age) card.age.text = collage.images.Count + (collage.images.Count == 1 ? " photo" : " photos");
+                float extra = 76f; // card chrome under/around the image (caption area + padding), as in the builder
+                var cardLe = card.GetComponent<LayoutElement>();
+                if (cardLe) { cardLe.preferredWidth = cardLe.minWidth = w + 2f * MegamindTheme.Space1; cardLe.preferredHeight = h + extra; }
+                var stripLe = strip.GetComponent<LayoutElement>();
+                if (stripLe) stripLe.preferredHeight = h + extra;
+                if (card.image && card.image.transform.parent is RectTransform frameRt)
+                    frameRt.offsetMin = new Vector2(frameRt.offsetMin.x, -(MegamindTheme.Space1 + h));
+                Track(strip.gameObject);
+                if (card.image) StartCoroutine(LoadThumb(card.image, config.Url(collage.url)));
+                return true;
+            }
+            var pre = collagePrefab != null ? collagePrefab : thumbnailPrefab;
+            if (pre == null) return false;
+            var frame = Instantiate(pre, content);
+            var img = frame.GetComponentInChildren<RawImage>();
+            var label = frame.GetComponentInChildren<Text>();
+            if (label) label.text = "";
+            frame.sizeDelta = new Vector2(w, h);
+            var le = frame.GetComponent<LayoutElement>();
+            if (le == null) le = frame.gameObject.AddComponent<LayoutElement>();
+            le.preferredWidth = w;
+            le.preferredHeight = h;
+            Track(frame.gameObject);
+            if (img) StartCoroutine(LoadThumb(img, config.Url(collage.url)));
+            return true;
+        }
+
+        /// <summary>Lightbox set: the collage JPEG first, then each photo in it (chronological).</summary>
+        private static List<Citation> CollageSet(CollageResponse collage)
+        {
+            double newest = 0;
+            foreach (var im in collage.images) if (im != null && im.ts > newest) newest = im.ts;
+            var set = new List<Citation>
+            {
+                new Citation { id = collage.id, ts = newest, caption = collage.title, thumb_url = collage.url, replay_url = "" }
+            };
+            foreach (var im in collage.images)
+                if (im != null && !string.IsNullOrEmpty(im.thumb_url))
+                    set.Add(new Citation { id = im.token_id, ts = im.ts, caption = im.title, thumb_url = im.thumb_url, replay_url = "" });
+            return set;
         }
 
         public void AddCitations(List<Citation> cited, List<Marker> markers = null)

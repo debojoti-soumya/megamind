@@ -82,6 +82,41 @@
   #lbwrap { position: relative; line-height: 0; }
   .thumb .ts { position: absolute; left: 6px; bottom: 5px; font-size: 11px; padding: 1px 6px; border-radius: 6px;
     background: rgba(0,0,0,0.6); color: #fff; font-variant-numeric: tabular-nums; }
+  .memcard { width: min(100%, 560px); border-radius: 18px; overflow: hidden; background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.10); }
+  .mc-hero { position: relative; margin: 0; aspect-ratio: 16 / 10; cursor: zoom-in; background: #000; }
+  .mc-hero img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .mc-hero figcaption { position: absolute; inset: auto 0 0 0; padding: 40px 16px 14px;
+    background: linear-gradient(transparent, rgba(0,0,0,0.78)); display: flex; flex-direction: column; gap: 3px; }
+  .mc-hero b { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
+  .mc-hero .sub { font-size: 12px; color: rgba(255,255,255,0.75); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .mc-hero .cap { font-size: 13px; color: rgba(255,255,255,0.9); }
+  .mc-chip { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: rgba(255,196,0,0.16); color: #ffcd5a; }
+  .mc-pill { position: absolute; top: 8px; left: 8px; font-size: 11px; padding: 2px 8px; border-radius: 10px;
+    background: rgba(0,0,0,0.55); color: #ffd678; font-variant-numeric: tabular-nums; backdrop-filter: blur(6px); }
+  .mc-day { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 10px 10px 0; }
+  .mc-grid { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; }
+  .mc-grid.many::after { content: ''; flex-grow: 999; }  /* keeps a short last row from stretching */
+  .mc-tile { position: relative; height: 112px; flex-grow: 1.33; flex-basis: 150px; border-radius: 10px; overflow: hidden;
+    cursor: zoom-in; background: rgba(0,0,0,0.4); padding: 0; border: 0; }
+  .mc-tile img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.25s ease; }
+  .mc-tile:hover img { transform: scale(1.04); }
+  .mc-tile .cap { position: absolute; inset: auto 0 0 0; padding: 18px 8px 6px; font-size: 11px; text-align: left; color: #fff;
+    background: linear-gradient(transparent, rgba(0,0,0,0.7)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    opacity: 0; transition: opacity 0.2s; }
+  .mc-tile:hover .cap, .mc-tile:focus-visible .cap { opacity: 1; }
+  .mc-foot { display: flex; justify-content: space-between; padding: 6px 12px 10px; font-size: 12px; color: var(--muted); }
+  .mc-foot a { color: var(--accent); text-decoration: none; }
+  #lbstrip { position: absolute; bottom: 2.5vh; left: 50%; transform: translateX(-50%); display: none; gap: 6px; max-width: 86vw;
+    overflow-x: auto; padding: 4px; }
+  #lightbox.gallery #lbstrip { display: flex; }
+  #lbstrip img { height: 46px; width: auto; max-width: none; max-height: none; border-radius: 6px; opacity: 0.5; cursor: pointer; border: 2px solid transparent; }
+  #lbstrip img.on { opacity: 1; border-color: #ffd678; }
+  #lightbox .nav { position: absolute; top: 50%; transform: translateY(-50%); width: 48px; height: 48px; border-radius: 24px; border: 0;
+    background: var(--glass); color: #fff; font-size: 26px; cursor: pointer; display: none; }
+  #lightbox.gallery .nav { display: block; }
+  #lbprev { left: 4vw; } #lbnext { right: 4vw; }
+  #lightbox .count { position: absolute; top: 6vh; left: 50%; transform: translateX(-50%); font-size: 13px; color: var(--muted); }
   .empty { margin: auto; text-align: center; color: var(--muted); font-size: 14px; max-width: 320px; }
   .empty kbd { background: rgba(255,255,255,0.1); border-radius: 5px; padding: 1px 6px; font-family: inherit; }
 
@@ -130,7 +165,7 @@
   #lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: none; align-items: center; justify-content: center; z-index: 10; cursor: zoom-out; }
   #lightbox.show { display: flex; }
   #lightbox img { max-width: 80vw; max-height: 70vh; border-radius: 14px; border: 1px solid var(--glass-border); }
-  #lightbox .cap { position: absolute; bottom: 8vh; left: 50%; transform: translateX(-50%); max-width: 70vw; text-align: center;
+  #lightbox .cap { position: absolute; bottom: 12vh; left: 50%; transform: translateX(-50%); max-width: 70vw; text-align: center;
     background: var(--glass); padding: 10px 16px; border-radius: 12px; font-size: 14px; }
 
   #capturedot { position: fixed; top: 14px; right: 16px; display: none; align-items: center; gap: 8px; font-size: 12px; color: #fff;
@@ -200,7 +235,7 @@
   </div>
 </section>
 
-<div id="lightbox"><div id="lbwrap"><img id="lbimg" alt=""></div><div class="cap" id="lbcap"></div></div>
+<div id="lightbox"><button class="nav" id="lbprev" aria-label="previous">&#8249;</button><div id="lbwrap"><img id="lbimg" alt=""></div><button class="nav" id="lbnext" aria-label="next">&#8250;</button><div class="count" id="lbcount"></div><div class="cap" id="lbcap"></div><div id="lbstrip"></div></div>
 
 <script>
 (() => {
@@ -326,7 +361,7 @@
   // ---------- transcript ----------
   const transcript = $('transcript');
   const fmtTime = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  const ago = (ts) => { const s = Math.max(0, Date.now() / 1000 - ts); if (s < 60) return `${Math.round(s)}s ago`; if (s < 3600) return `${Math.round(s / 60)} min ago`; return `${(s / 3600).toFixed(1)} h ago`; };
+  const ago = (ts) => { const s = Math.max(0, Date.now() / 1000 - ts); if (s < 60) return `${Math.round(s)}s ago`; if (s < 3600) return `${Math.round(s / 60)} min ago`; if (s < 172800) return `${(s / 3600).toFixed(1)} h ago`; return `${Math.round(s / 86400)} days ago`; };
   function scrollEnd() { transcript.scrollTop = transcript.scrollHeight; }
   function addUser(text) {
     $('empty')?.remove();
@@ -342,11 +377,13 @@
     const s = document.createElement('span'); s.textContent = m.label; d.appendChild(s);
     return d;
   }
-  function addAssistant(text, cited, toolCalls, isError, ms, markers) {
+  function addAssistant(text, cited, toolCalls, isError, ms, markers, collage) {
     $('empty')?.remove();
     const el = document.createElement('div'); el.className = 'msg assistant';
     const b = document.createElement('div'); b.className = 'bubble' + (isError ? ' error' : ''); b.textContent = text; el.appendChild(b);
-    if (cited && cited.length) {
+    if (collage?.url) {
+      el.appendChild(memCard(collage));
+    } else if (cited && cited.length) {
       const row = document.createElement('div'); row.className = 'thumbs';
       for (const c of cited) {
         const t = document.createElement('div'); t.className = 'thumb'; t.title = c.caption || '';
@@ -354,11 +391,7 @@
         t.querySelector('img').src = media(c.thumb_url);
         const marks = (markers || []).filter(m => m.token_id === c.id && m.box?.length === 4);
         if (marks.length) { t.classList.add('marked'); for (const m of marks) t.appendChild(markerBox(m)); }
-        t.onclick = () => {
-          $('lbimg').src = media(c.thumb_url); $('lbcap').textContent = `${fmtTime(c.ts)} (${ago(c.ts)}) — ${c.caption || ''}`;
-          $('lbwrap').querySelectorAll('.mbox').forEach(e => e.remove()); for (const m of marks) $('lbwrap').appendChild(markerBox(m));
-          $('lightbox').classList.add('show');
-        };
+        t.onclick = () => openGallery([{ src: media(c.thumb_url), cap: `${fmtTime(c.ts)} (${ago(c.ts)}) — ${c.caption || ''}`, marks }], 0);
         row.appendChild(t);
       }
       el.appendChild(row);
@@ -372,7 +405,85 @@
     }
     el.appendChild(meta); transcript.appendChild(el); scrollEnd();
   }
-  $('lightbox').onclick = () => $('lightbox').classList.remove('show');
+  // ---- collage: Memories-style card (lead photo, the rest by day), the JPEG stays one click away ----
+  const fmtDay = (ts) => new Date(ts * 1000).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+  const fmtClock = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const dayKey = (ts) => new Date(ts * 1000).toDateString();
+  function memCard(collage) {
+    const card = document.createElement('div'); card.className = 'memcard';
+    const imgs = collage.images || [];
+    if (!imgs.length) {  // nothing to lay out: show the rendered collage itself
+      const img = document.createElement('img'); img.style.cssText = 'width:100%;display:block;cursor:zoom-in'; img.alt = collage.title || '';
+      img.src = media(collage.url); img.onclick = () => openGallery([{ src: img.src, cap: collage.narration || '' }], 0);
+      card.appendChild(img); return card;
+    }
+    const days = new Set(imgs.map(p => dayKey(p.ts))).size;
+    const items = imgs.map(p => ({ src: media(p.thumb_url), cap: `${fmtDay(p.ts)} · ${fmtClock(p.ts)} (${ago(p.ts)})${p.title ? ' — ' + p.title : ''}` }));
+    const hi = Math.min(Math.max(collage.hero || 0, 0), imgs.length - 1), lead = imgs[hi];
+    const first = imgs[0].ts, last = imgs[imgs.length - 1].ts;
+    const span = days > 1 ? `${fmtDay(first)} – ${fmtDay(last)}` : `${fmtDay(first)} · ${fmtClock(first)}${imgs.length > 1 ? '–' + fmtClock(last) : ''}`;
+    const hero = document.createElement('figure'); hero.className = 'mc-hero';
+    hero.innerHTML = '<img alt=""><span class="mc-pill"></span><figcaption><b></b><span class="sub"></span><span class="cap"></span></figcaption>';
+    hero.querySelector('img').src = items[hi].src;
+    hero.querySelector('.mc-pill').textContent = days > 1 ? `${fmtDay(lead.ts)} · ${fmtClock(lead.ts)}` : fmtClock(lead.ts);
+    hero.querySelector('b').textContent = collage.title || 'Your photos';
+    const sub = hero.querySelector('.sub'); sub.textContent = `${imgs.length} moment${imgs.length === 1 ? '' : 's'} · ${span}`;
+    if (!collage.verified) { const c = document.createElement('span'); c.className = 'mc-chip'; c.textContent = 'not visually checked'; sub.appendChild(c); }
+    hero.querySelector('.cap').textContent = lead.title || '';
+    hero.onclick = () => openGallery(items, hi);
+    card.appendChild(hero);
+    let grid = null, day = null;
+    imgs.forEach((p, i) => {
+      if (i === hi) return;
+      if (days > 1 && dayKey(p.ts) !== day) {
+        day = dayKey(p.ts); const d = document.createElement('div'); d.className = 'mc-day'; d.textContent = fmtDay(p.ts); card.appendChild(d); grid = null;
+      }
+      if (!grid) { grid = document.createElement('div'); grid.className = 'mc-grid'; card.appendChild(grid); }
+      if (grid.children.length >= 3) grid.classList.add('many');
+      const t = document.createElement('button'); t.className = 'mc-tile'; t.title = items[i].cap;
+      t.innerHTML = '<img alt="" loading="lazy"><span class="mc-pill"></span><span class="cap"></span>';
+      const im = t.querySelector('img');
+      im.onload = () => { const a = Math.min(Math.max(im.naturalWidth / Math.max(im.naturalHeight, 1), 0.6), 2.2); t.style.flexGrow = a; t.style.flexBasis = `${Math.round(a * 112)}px`; };
+      im.src = items[i].src;
+      t.querySelector('.mc-pill').textContent = fmtClock(p.ts);
+      t.querySelector('.cap').textContent = p.title || '';
+      t.onclick = () => openGallery(items, i);
+      grid.appendChild(t);
+    });
+    const foot = document.createElement('div'); foot.className = 'mc-foot';
+    foot.innerHTML = `<span></span><a target="_blank" rel="noopener">collage image ↗</a>`;
+    foot.querySelector('span').textContent = collage.matches > imgs.length ? `best ${imgs.length} of ${collage.matches} moments` : '';
+    foot.querySelector('a').href = media(collage.url);
+    card.appendChild(foot);
+    return card;
+  }
+  // gallery: full-size photos with a filmstrip; arrows, keys and swipes step through
+  let gal = null;
+  function showGallery() {
+    const it = gal.items[gal.i]; $('lbimg').src = it.src; $('lbcap').textContent = it.cap;
+    $('lbwrap').querySelectorAll('.mbox').forEach(e => e.remove()); for (const m of it.marks || []) $('lbwrap').appendChild(markerBox(m));
+    $('lbcount').textContent = gal.items.length > 1 ? `${gal.i + 1} of ${gal.items.length}` : '';
+    [...$('lbstrip').children].forEach((im, k) => im.classList.toggle('on', k === gal.i));
+    $('lbstrip').children[gal.i]?.scrollIntoView({ block: 'nearest', inline: 'center' });
+  }
+  function openGallery(items, i) {
+    gal = { items, i }; $('lightbox').classList.toggle('gallery', items.length > 1);
+    $('lbstrip').replaceChildren(...(items.length > 1 ? items.map((it, k) => {
+      const im = document.createElement('img'); im.src = it.src; im.alt = ''; im.onclick = e => { e.stopPropagation(); gal.i = k; showGallery(); }; return im;
+    }) : []));
+    showGallery(); $('lightbox').classList.add('show');
+  }
+  function stepGallery(d) { if (!gal || gal.items.length < 2) return; gal.i = (gal.i + d + gal.items.length) % gal.items.length; showGallery(); }
+  $('lbprev').onclick = e => { e.stopPropagation(); stepGallery(-1); };
+  $('lbnext').onclick = e => { e.stopPropagation(); stepGallery(1); };
+  $('lbimg').onclick = e => { if (gal && gal.items.length > 1) { e.stopPropagation(); stepGallery(1); } };
+  let touchX = null;
+  $('lightbox').addEventListener('touchstart', e => { touchX = e.touches[0].clientX; }, { passive: true });
+  $('lightbox').addEventListener('touchend', e => {
+    if (touchX === null) return; const dx = e.changedTouches[0].clientX - touchX; touchX = null;
+    if (Math.abs(dx) > 40) { stepGallery(dx < 0 ? 1 : -1); e.preventDefault(); }
+  });
+  $('lightbox').onclick = () => { $('lightbox').classList.remove('show', 'gallery'); $('lbcount').textContent = ''; gal = null; };
 
   // ---------- indicators ----------
   const ind = $('indicator');
@@ -422,7 +533,7 @@
     const j = await r.json();
     if (echoTranscript && j.transcript) addUser(j.transcript);
     if (j.warning) addAssistant('Note: ' + j.warning, [], null, true);
-    addAssistant(j.answer, j.cited, j.tool_calls, false, ms, j.markers);
+    addAssistant(j.answer, j.cited, j.tool_calls, false, ms, j.markers, j.collage);
     $('latency').textContent = (ms / 1000).toFixed(1) + 's';
     if (j.audio_url && cfg.autoplay) {
       try { speaker?.pause(); speaker = new Audio(media(j.audio_url)); await speaker.play(); } catch (e) { console.warn('audio playback failed', e); }
@@ -507,7 +618,8 @@
   ptt.addEventListener('pointercancel', endRecording);
   window.addEventListener('keydown', (e) => {
     if (e.code === 'Space' && !e.repeat && document.activeElement !== $('text') && !$('settings').classList.contains('show')) { e.preventDefault(); beginRecording(); }
-    if (e.key === 'Escape') { $('settings').classList.remove('show'); $('lightbox').classList.remove('show'); }
+    if (e.key === 'Escape') { $('settings').classList.remove('show'); $('lightbox').classList.remove('show', 'gallery'); gal = null; }
+    if (gal && $('lightbox').classList.contains('show') && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { stepGallery(e.key === 'ArrowLeft' ? -1 : 1); e.preventDefault(); }
   });
   window.addEventListener('keyup', (e) => { if (e.code === 'Space' && document.activeElement !== $('text')) { e.preventDefault(); endRecording(); } });
 

@@ -200,10 +200,16 @@ Response:
   "cited": [ { "id": "...", "ts": 1731000000.1, "caption": "...", "thumb_url": "/v1/thumbs/....jpg",
                "replay_url": "/v1/replay.mp4?device_id=quest3-abc&from=1731000000.100&to=1731000010.100" } ],
   "tool_calls": [ { "name": "recall_memory", "args": { "query": "keys", "k": 12 }, "confidence": "high" } ],
-  "device_id_used": "quest3-abc", "warning": null,
+  "device_id_used": "quest3-abc", "warning": null, "collage": null,
   "markers": [ { "label": "keys", "token_id": "...", "device_id": "quest3-abc", "ts": 1731000000.1,
                  "x": 0.42, "y": 0.61, "box": [0.38, 0.55, 0.46, 0.67], "confidence": 0.9 } ] }
 ```
+`collage` is `null` unless the turn made a photo montage: when the wearer asks to see pictures of something
+("show me pictures of the red car", "make a collage of every coffee today"), Claude calls the `make_collage` tool
+(`COLLAGE_AGENT_TOOL`, default on; without an API key the fallback path does the same for such requests) and
+`collage` is the `POST /collage` response. `cited` then starts with the collage's photos. Show `collage.url`
+(`width` x `height`) in place of the thumbnail row (the Quest panel shows it as one card in the transcript; a tap
+opens the lightbox on the collage, then each of `images[]`). `/chat/stream` carries it in `final` (no separate event).
 `device_id` (optional) limits the search to that device's memories; omitted/null = all devices.
 `device_id_used` is the device that was actually searched (`null` = all devices). `warning` is `null` normally;
 when the request's `device_id` has **no** memory tokens while other devices do, it says so instead of the answer
@@ -220,7 +226,7 @@ stored real video (`POST /video`) around the citation (pixels aged out, replay d
 For questions about the present ("what am I looking at right now", "what did I just see") the evidence also
 includes live short-term memory (see `GET /live/{id}.jpg`): a cited raw frame has an id starting `now_`, a
 caption starting `LIVE NOW-<n>:` and `thumb_url` `/v1/live/{id}.jpg`. Treat `thumb_url` as an opaque URL.
-`markers` is `[]` except for "where is X" questions ("where's my pen right now?", "find my keys") whose answer
+`markers` (also in the `/chat/stream` `final` event) is `[]` except for "where is X" questions ("where's my pen right now?", "find my keys") whose answer
 cites a frame with pixels: then a vision model (`LOCATE_PROVIDER=openai` GPT by default, `anthropic` = Claude)
 looks at the newest cited frames (live `now_*` first) and reports X's box in one of them. `token_id` is that
 `cited[].id`; `device_id` + `ts` identify the uploaded frame (`FrameMeta.ts`). `x`/`y` (box centre) and `box`
@@ -367,8 +373,10 @@ Response:
 { "id": "3f2a9c0d1e5b7a8c6d4e", "url": "/v1/montages/3f2a9c0d1e5b7a8c6d4e.mp4", "title": "Your highlights",
   "narration": "Here's your highlight reel: 2 moments from that period.", "planner": "offline",
   "clips": [ { "token_id": "...", "ts": 1731005000.2, "title": "Team lunch at the long table",
-               "duration_s": 4.0, "source": "timelapse", "thumb_url": "/v1/thumbs/....jpg" } ] }
+               "duration_s": 4.0, "source": "timelapse", "thumb_url": "/v1/thumbs/....jpg" } ],
+  "hero": 0 }
 ```
+`hero` indexes `images` (chronological): the lead photo, so clients can lay out the same pick.
 404 when nothing matches or no chosen moment has video/frames/thumbnails; 503 without ffmpeg (same lookup as
 replay, `REPLAY_FFMPEG`); 404 when `MONTAGE_ENABLED=false`; 409 when `DELETE /memories` ran while it was
 being made (nothing is kept; POST again). The same plan always yields the same `id`.
@@ -412,7 +420,41 @@ the verifier checked the clips, `"offline"` when they are unverified retrieval h
 The rendered montage (H.264, `MONTAGE_WIDTH`x`MONTAGE_HEIGHT`, default 960x540). `GET` or `HEAD`; supports
 `Range: bytes=...` (206 / 416) exactly like `/replay.mp4`. Montages are a bounded cache (newest
 `MONTAGE_CACHE_MAX_FILES`, 16): 404 once evicted, so POST again. `DELETE /memories` clears every montage.
-Not a Claude tool: chat answers do not include a montage (call this endpoint from a "show me" UI action).
+Not a Claude tool: chat answers do not include a video montage (call this endpoint from a "show me" UI action);
+for photos, chat uses the collage below.
+
+## `POST /collage`
+Photo montage: the stored photos that show something, laid out as one JPEG grid (title header; each tile has its
+local time and a short caption). Cheap enough to run inside a chat turn (`make_collage` tool, see `POST /chat`).
+```json
+{ "device_id": "quest3-abc", "query": "pictures of the red car", "time_from": null, "time_to": null, "max_images": 9 }
+```
+- `query` required. Subject = the query minus framing and time phrase, as for smart montages ("pictures of",
+  "a collage of every ..."). A query that is only a time phrase ("photos from this afternoon") or has no subject
+  but a `time_from`/`time_to` samples that period instead (unverified); neither -> 400.
+- Candidates / verification: exactly the smart-montage path (`MONTAGE_SMART_MAX_CANDIDATES`, `MONTAGE_VERIFY_*`).
+  Without `ANTHROPIC_API_KEY`, or when every verifier call failed, the retrieval hits are kept unverified but only
+  when their caption names the subject (plural-insensitive: "dogs" ~ "a dog"), so an absent subject is a 404, not
+  the nearest unrelated photos. Only tokens with pixels count.
+- One photo per moment (`COLLAGE_MOMENT_GAP_S`, 60 s), chronological, at most `COLLAGE_MAX_IMAGES` (9, or
+  `max_images` if smaller), evenly spread in time. Layout: a lead ("hero") photo, the best match (sharpest among
+  equal scores), at ~2/3 width with the next 2-3 photos stacked beside it, the rest in justified rows (each photo keeps
+  its aspect ratio, clamped to 0.6..2.2; rows ~`COLLAGE_TILE_PX` (360) x 3/4 tall); 1-2 photos: one justified row.
+  Rounded corners, local date-time + caption on each photo, a "not visually checked" chip when unverified.
+Response:
+```json
+{ "id": "5d0c...", "url": "/v1/collages/5d0c....jpg", "title": "The red car",
+  "narration": "Found 4 moments matching the red car across 2 days.", "subject": "the red car", "verified": true,
+  "candidates": 60, "matches": 4, "width": 776, "height": 654,
+  "images": [ { "token_id": "...", "ts": 1731005000.2, "title": "Red car parked outside", "thumb_url": "/v1/thumbs/....jpg" } ] }
+```
+404 with a speakable `detail` when nothing matches ("I couldn't find any photos of the red car in your
+memories."); 503 when some verifier calls failed and the rest found nothing; 409 when `DELETE /memories` ran
+meanwhile; 404 when `COLLAGE_ENABLED=false`. The same picks always yield the same `id`.
+
+## `GET /collages/{id}.jpg`
+The collage JPEG (`GET` or `HEAD`). Bounded cache (newest `COLLAGE_CACHE_MAX_FILES`, 32): 404 once evicted, so POST
+again. `DELETE /memories` clears every collage.
 
 ## `GET /audio/{id}.wav`
 TTS output for a chat response: `final.audio_url` (the whole answer) or a `/chat/stream` `audio` clip (`{id}-{seq}.wav`, one sentence).
@@ -484,6 +526,10 @@ are unchanged.
 ```
 recall_memory(query, time_from?, time_to?, k=12, mode="hybrid")
   -> { evidence, confidence: high|medium|low|not_found, cited[], all_retrieved[] }
+```
+```
+make_collage(query, time_from?, time_to?)   # photo montage, see POST /collage
+  -> { evidence: "Photo montage shown to the wearer: ...", confidence: high (verified) | medium | not_found, cited[] }
 ```
 
 ## Memory Theater: `GET /xr` (outside `/v1`; not part of the headset contract)
