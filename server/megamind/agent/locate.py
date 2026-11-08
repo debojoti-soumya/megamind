@@ -153,7 +153,7 @@ class OwlRefiner:
         self.model_name = model_name
         self._lock = threading.Lock()
 
-    def detect(self, jpeg: bytes, query: str, top_k: int = 8) -> list[tuple[Box, float]]:
+    def detect(self, jpeg: bytes, query: str, min_score: float = 0.0) -> list[tuple[Box, float]]:
         with Image.open(io.BytesIO(jpeg)) as im:
             im = im.convert("RGB")
             w, h = im.size
@@ -167,8 +167,8 @@ class OwlRefiner:
                     else p.post_process_object_detection
                 )
                 side = max(w, h)  # OWLv2 pads to a square, so boxes come back in padded-square coordinates
-                r = post(out, threshold=0.0, target_sizes=self.torch.tensor([[side, side]]))[0]
-        order = r["scores"].argsort(descending=True)[:top_k]
+                r = post(out, threshold=min_score, target_sizes=self.torch.tensor([[side, side]]))[0]
+        order = r["scores"].argsort(descending=True)
         return [
             (
                 (
@@ -203,7 +203,7 @@ class Locator:
     """Finds the asked-about object in the turn's cited frames. `load(citation)` -> (jpeg, device_id) or None.
 
     `client` is an `anthropic.AsyncAnthropic` or `openai.AsyncOpenAI` matching `cfg.provider` (tests inject one).
-    `refiner` has `detect(jpeg, query) -> [(box px, score)]` (`OwlRefiner`), or is None for the LLM's boxes."""
+    `refiner` has `detect(jpeg, query, min_score) -> [(box px, score)]` (`OwlRefiner`), or None (LLM boxes)."""
 
     def __init__(self, settings, cfg: LocateSettings, load, client=None, refiner=None) -> None:
         self.cfg = cfg
@@ -278,7 +278,8 @@ class Locator:
         t0 = time.perf_counter()
         try:
             cands = await asyncio.wait_for(
-                asyncio.to_thread(self.refiner.detect, jpegs[idx], m.label), self.cfg.refine_timeout_s
+                asyncio.to_thread(self.refiner.detect, jpegs[idx], m.label, self.cfg.refine_min_score),
+                self.cfg.refine_timeout_s,
             )
         except Exception as e:  # noqa: BLE001
             log.warning("box refine failed (%s: %s); keeping the LLM's box", type(e).__name__, e)

@@ -243,7 +243,7 @@ class FakeRefiner:
     def __init__(self, result):
         self.result, self.calls = result, []
 
-    def detect(self, jpeg, query):
+    def detect(self, jpeg, query, min_score):
         self.calls.append(query)
         if isinstance(self.result, Exception):
             raise self.result
