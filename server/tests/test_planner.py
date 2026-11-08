@@ -178,3 +178,18 @@ def test_contentless_question_without_time_is_recent_mode(q):
 def test_contentless_question_with_time_stays_temporal():
     p = plan_query("what happened a minute ago?", now=NOW)
     assert p.search_text == "" and p.has_time and p.mode == "temporal" and p.route == "hybrid"
+
+
+@pytest.mark.parametrize(
+    "q",
+    ["what did I see?", "what did I notice?", "latest views", "my surroundings", "recent sights", "what's going on"],
+)
+def test_generic_perception_words_alone_are_recent_mode(q):
+    p = plan_query(q, now=NOW)
+    assert p.search_text == "" and p.mode == "recent" and p.route == "hybrid"
+
+
+@pytest.mark.parametrize("q", ["where is my camera", "what did I see on the whiteboard", "recent emails"])
+def test_generic_words_next_to_a_subject_keep_the_subject(q):
+    p = plan_query(q, now=NOW)
+    assert p.search_text and p.mode != "recent"
