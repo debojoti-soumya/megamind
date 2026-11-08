@@ -16,6 +16,10 @@ namespace Megamind
         public float duration = 0.15f;
         [Tooltip("How far above its resting place the drawer starts (canvas px). Default = panel height.")]
         public float hiddenOffset = 720f;
+        [Tooltip("Deactivate the drawer object while closed (off for the whole window: its children keep running).")]
+        public bool deactivateWhenClosed = true;
+        [Tooltip("PlayerPrefs key: when set, open/closed is remembered across relaunch (default open).")]
+        public string prefsKey = "";
 
         public bool IsOpen { get; private set; }
         public bool IsAnimating => _anim != null;
@@ -25,9 +29,17 @@ namespace Megamind
 
         private void Awake()
         {
-            Apply(0f);
-            if (drawer) drawer.gameObject.SetActive(false);
-            if (backdrop) backdrop.SetActive(false);
+            IsOpen = !string.IsNullOrEmpty(prefsKey) && PlayerPrefs.GetInt(prefsKey, 1) == 1;
+            Apply(IsOpen ? 1f : 0f);
+            if (drawer) drawer.gameObject.SetActive(IsOpen || !deactivateWhenClosed);
+            if (backdrop) backdrop.SetActive(IsOpen);
+        }
+
+        private void Save()
+        {
+            if (string.IsNullOrEmpty(prefsKey)) return;
+            PlayerPrefs.SetInt(prefsKey, IsOpen ? 1 : 0);
+            PlayerPrefs.Save();
         }
 
         public void Toggle() { if (IsOpen) Close(); else Open(); }
@@ -38,6 +50,7 @@ namespace Megamind
             IsOpen = true;
             if (drawer) drawer.gameObject.SetActive(true);
             if (backdrop) backdrop.SetActive(true);
+            Save();
             Animate(1f);
         }
 
@@ -46,13 +59,14 @@ namespace Megamind
             if (!IsOpen) return;
             IsOpen = false;
             if (backdrop) backdrop.SetActive(false);
+            Save();
             Animate(0f);
         }
 
         private void Animate(float target)
         {
             if (_anim != null) StopCoroutine(_anim);
-            if (!isActiveAndEnabled) { Apply(target); if (target <= 0f && drawer) drawer.gameObject.SetActive(false); return; }
+            if (!isActiveAndEnabled) { Apply(target); if (target <= 0f && drawer && deactivateWhenClosed) drawer.gameObject.SetActive(false); return; }
             _anim = StartCoroutine(Run(target));
         }
 
@@ -68,7 +82,7 @@ namespace Megamind
                 yield return null;
             }
             Apply(target);
-            if (target <= 0f && drawer) drawer.gameObject.SetActive(false);
+            if (target <= 0f && drawer && deactivateWhenClosed) drawer.gameObject.SetActive(false);
             _anim = null;
         }
 
@@ -89,7 +103,7 @@ namespace Megamind
             // Panel hidden / destroyed mid-slide: land in the final state without a coroutine.
             _anim = null;
             Apply(IsOpen ? 1f : 0f);
-            if (!IsOpen && drawer) drawer.gameObject.SetActive(false);
+            if (!IsOpen && drawer && deactivateWhenClosed) drawer.gameObject.SetActive(false);
         }
     }
 }
