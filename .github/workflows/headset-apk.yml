@@ -1,6 +1,7 @@
 # Prebuilt Quest APKs, so nobody has to install Unity:
 #   megamind.apk         Unity app (headset/Megamind): capture + AR chat panel. Needs Unity licence secrets (see
-#                        headset/README.md "Get the APK"); fails fast with a clear error when they are missing.
+#                        headset/README.md "Get the APK"). Without them: a warning + skipped build on pushes to main,
+#                        a clear error on workflow_dispatch / headset-v* tags.
 #   megamind-native.apk  native capture-only app (headset-android/): plain Gradle, no licence.
 # Both are uploaded as workflow artifacts; a `headset-v*` tag also attaches them to a GitHub Release.
 name: headset-apk
@@ -63,21 +64,37 @@ jobs:
       UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
       UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
     steps:
+      # Missing secrets: a push to main only warns and skips the remaining steps (keeps main green until the secrets
+      # exist); workflow_dispatch and headset-v* tags fail hard, since there someone explicitly asked for an APK.
       - name: Check Unity licence secrets
+        id: secrets
+        env:
+          SOFT_FAIL: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: |
           missing=()
           [ -n "$UNITY_EMAIL" ] || missing+=("UNITY_EMAIL")
           [ -n "$UNITY_PASSWORD" ] || missing+=("UNITY_PASSWORD")
           [ -n "$UNITY_LICENSE$UNITY_SERIAL" ] || missing+=("UNITY_LICENSE (Personal: contents of Unity_lic.ulf) or UNITY_SERIAL (Plus/Pro)")
-          if [ ${#missing[@]} -gt 0 ]; then
-            for m in "${missing[@]}"; do
-              echo "::error title=Unity licence secret missing::Repository secret $m is not set. See headset/README.md -> 'Get the APK' for how to add it. The native APK (megamind-native.apk) does not need it."
-            done
-            exit 1
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+          level=error
+          [ "$SOFT_FAIL" = true ] && level=warning
+          for m in "${missing[@]}"; do
+            echo "::$level title=Unity licence secret missing::Repository secret $m is not set, so megamind.apk was not built. See headset/README.md -> 'Get the APK'. The native APK (megamind-native.apk) does not need it."
+          done
+          if [ "$SOFT_FAIL" = true ]; then
+            echo "Push to main without Unity secrets: skipping the Unity build (job stays green)."
+            exit 0
+          fi
+          exit 1
       - uses: actions/checkout@v4
+        if: steps.secrets.outputs.ok == 'true'
       # The unityci/editor Android image is ~7 GB; the stock runner does not have room for it plus the build.
       - uses: jlumbroso/free-disk-space@v1.3.1
+        if: steps.secrets.outputs.ok == 'true'
         with:
           tool-cache: false
           android: true
@@ -88,6 +105,7 @@ jobs:
       # registry package (same version as Packages/manifest.json, checksum from the registry) and patch it before
       # Unity starts, so the first and only editor launch compiles.
       - name: Embed + patch Meta XR Core SDK (Linux editor fix)
+        if: steps.secrets.outputs.ok == 'true'
         working-directory: headset/Megamind
         run: |
           set -euo pipefail
@@ -102,6 +120,7 @@ jobs:
           sh ../tools/patch-metaxr-linux.sh
           grep -q meta_xr_simulator.bin "Packages/$pkg/Editor/MetaXRSimulator/Installer.cs"
       - uses: actions/cache@v4
+        if: steps.secrets.outputs.ok == 'true'
         with:
           path: headset/Megamind/Library
           key: unity-library-android-${{ hashFiles('headset/Megamind/Packages/manifest.json', 'headset/Megamind/Packages/packages-lock.json', 'headset/Megamind/ProjectSettings/**', 'headset/Megamind/Assets/**') }}
@@ -109,6 +128,7 @@ jobs:
       # The project's own headless entry point (Megamind > 3. Build APK) builds the committed scene with the committed
       # player settings (com.megamind.quest, IL2CPP, ARM64, min SDK 32) into Builds/megamind.apk.
       - uses: game-ci/unity-builder@v4
+        if: steps.secrets.outputs.ok == 'true'
         with:
           projectPath: headset/Megamind
           targetPlatform: Android
@@ -119,6 +139,7 @@ jobs:
           allowDirtyBuild: true # the embedded, patched Meta package above
       # BuildApk logs a failed BuildPlayer instead of throwing, so the editor can exit 0 without an APK.
       - name: Check APK
+        if: steps.secrets.outputs.ok == 'true'
         run: |
           apk=headset/Megamind/Builds/megamind.apk
           if [ ! -s "$apk" ]; then
@@ -127,6 +148,7 @@ jobs:
           fi
           ls -la "$apk"
       - uses: actions/upload-artifact@v4
+        if: steps.secrets.outputs.ok == 'true'
         with:
           name: megamind.apk
           path: headset/Megamind/Builds/megamind.apk

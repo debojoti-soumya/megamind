@@ -65,8 +65,12 @@ Notes on the prebuilt Unity APK:
 
 ### One-time setup: Unity licence secrets (repo admin)
 The Unity job uses [game-ci/unity-builder](https://game.ci/docs/github/builder) (Docker image
-`unityci/editor:ubuntu-6000.0.66f2-android-3`), which must activate a Unity licence. Without these secrets the job
-fails in its first step with `Repository secret … is not set` (the native APK still builds). Add them under
+`unityci/editor:ubuntu-6000.0.66f2-android-3`), which must activate a Unity licence. Without these secrets the Unity
+job's first step reports `Repository secret … is not set`: on a push to `main` as a **warning** (the build is skipped
+and the job stays green, so `main` is not red), on *Run workflow* / `headset-v*` tags as an **error** (job fails).
+Until the secrets exist, **the native job (`megamind-native.apk`, also run on PRs touching `headset-android/`) is the
+only path guaranteed to go green and produce an APK**; a green Unity job on `main` does not mean `megamind.apk` was
+built, so check the run's *Artifacts* (or its warning). Add them under
 GitHub → repo → *Settings* → *Secrets and variables* → *Actions* → *New repository secret*
 ([game-ci activation docs](https://game.ci/docs/github/activation)):
 
