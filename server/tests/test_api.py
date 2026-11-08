@@ -101,8 +101,11 @@ async def test_purge_since_and_device(client):
     await app.state.worker.queue.join()
     assert await app.state.store.count() == 4
 
-    r = await c.delete("/v1/memories", params={"since": "yesterday"})
-    assert r.status_code == 400 and "since" in r.json()["detail"]
+    for bad in ("yesterday", "", "   ", "nan", "inf"):
+        r = await c.delete("/v1/memories", params={"device_id": "dev1", "since": bad})
+        assert r.status_code == 400 and "since" in r.json()["detail"], bad
+    r = await c.delete("/v1/memories?since=")
+    assert r.status_code == 400
     assert await app.state.store.count() == 4
 
     r = await c.delete("/v1/memories", params={"device_id": "dev1", "since": "2500"})

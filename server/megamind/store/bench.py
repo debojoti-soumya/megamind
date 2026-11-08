@@ -128,7 +128,7 @@ async def bench_store(
             QUERIES[r % len(QUERIES)], k, device_id="quest-0", kinds=frames
         ),
         "range 1h": lambda r: store.range(hour[0], hour[1], limit=1000),
-        "get_many 12": lambda r: store.get_many(rnd.sample(ids, 12)),
+        "get_many 12": lambda r: store.get_many(rnd.sample(ids, min(12, len(ids)))),
         "neighbors ±2": lambda r: store.neighbors(rnd.choice(ids)),
         "search hybrid": lambda r: store.search(qtext[r], qimg[r], QUERIES[r % len(QUERIES)], k=k),
         "count": lambda r: store.count(),
@@ -186,13 +186,20 @@ async def run(
     return out
 
 
+def _positive_int(v: str) -> int:
+    n = int(v)
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {n}")
+    return n
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--n", type=int, default=10_000, help="synthetic tokens (default 10000)")
-    ap.add_argument("--queries", type=int, default=20, help="timed calls per primitive (default 20)")
+    ap.add_argument("--n", type=_positive_int, default=10_000, help="synthetic tokens (default 10000)")
+    ap.add_argument("--queries", type=_positive_int, default=20, help="timed calls per primitive (default 20)")
     ap.add_argument("--backends", default="memory,lancedb", help="comma list of memory,lancedb")
-    ap.add_argument("--text-dim", type=int, default=1024)
-    ap.add_argument("--image-dim", type=int, default=768)
+    ap.add_argument("--text-dim", type=_positive_int, default=1024)
+    ap.add_argument("--image-dim", type=_positive_int, default=768)
     ap.add_argument("--path", type=Path, help="LanceDB dir (must be empty; default: temp dir)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--json", type=Path, help="also write raw results here")
