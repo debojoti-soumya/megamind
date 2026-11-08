@@ -105,7 +105,8 @@ namespace Megamind
 
     [Serializable] public class HealthModels { public string claude, reader, embed; }
 
-    [Serializable] public class HealthResponse { public string status; public int store_count; public HealthModels models; }
+    // warmup: "off" | "running" | "done" | "done (failed: <steps>)" (server startup warmup; informational, missing on older servers)
+    [Serializable] public class HealthResponse { public string status; public int store_count; public HealthModels models; public string warmup; }
 
     [Serializable] public class PurgeResponse { public int deleted; }
 

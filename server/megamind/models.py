@@ -281,6 +281,13 @@ class ChatStreamDelta(BaseModel):
     text: str
 
 
+class ChatStreamTranscript(BaseModel):
+    """`POST /v1/chat/stream` event `transcript`: what the voice question was heard as, right after speech-to-text
+    (first event of a multipart/voice turn; never sent for typed questions). Same text as `final.transcript`."""
+
+    text: str
+
+
 class ChatStreamError(BaseModel):
     """`POST /v1/chat/stream` event `error`: the turn failed after the stream started; no `final` follows."""
 
@@ -328,3 +335,6 @@ class HealthResponse(BaseModel):
     status: str
     store_count: int
     models: dict[str, str]
+    # startup warmup (megamind/warmup.py): "off" | "running" | "done" | "done (failed: <steps>)". Informational: the
+    # server answers either way, "running" only means the first question may still pay some first-use cost.
+    warmup: str = "off"

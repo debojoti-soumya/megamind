@@ -22,8 +22,15 @@ Response bodies are unchanged: `thumb_url`/`replay_url`/`audio_url` stay token-f
 { "status": "ok", "store_count": 1234,
   "models": { "claude": "claude-sonnet-5-5", "reader": "google/gemma-4-31B-it",
               "embed": "mock (openai configured, no key)", "enrich": "vlm:google/gemma-4-31B-it",
-              "stt": "mock", "tts": "mock", "store": "lancedb" } }
+              "stt": "mock", "tts": "mock", "store": "lancedb" },
+  "warmup": "done" }
 ```
+`warmup` (additive; older servers omit it): the startup warmup's state, `"off"` (`WARMUP=false`), `"running"`, `"done"`
+or `"done (failed: <steps>)"`. At startup the server runs one background pass over the question path (free Claude
+`count_tokens`, one tiny embedding, a LanceDB retrieval, SigLIP, reader image encoding, the STT/TTS clients), so the
+first question after a cold start doesn't pay first-use costs. It never delays startup or any request and a failed
+step is only logged; `"running"` means the first question may still be a little slower. `/health` itself is cheap
+(a row count, no provider calls), so clients can poll it every few seconds to keep a container warm.
 `models` names what is actually serving each role. When the configured provider has no key, or isn't wired up yet,
 the value is `mock (<provider> configured, no key | not installed | not implemented)`. Claude without a key reports
 `fallback (<model> configured, no key)`, meaning the no-LLM caption path. `enrich` is the keyframe captioner
@@ -190,6 +197,7 @@ early. Each event is `event: <name>` + one `data:` line of JSON:
 
 | event | data | when |
 |---|---|---|
+| `transcript` | `{ "text": "where did I leave my keys?" }` | voice (multipart) questions only: first event, right after speech-to-text, before retrieval (same text as `final.transcript`) |
 | `retrieval` | `{ "confidence": "high", "candidates": [Citation, ...] }` | after each memory search, before the answer (cited first, then the other retrieved moments; `thumb_url` / `replay_url` as in `cited`) |
 | `delta` | `{ "text": "On the kitchen" }` | answer text as Claude generates it; append (the `<cites>` trailer is never sent) |
 | `reset` | `{}` | discard the text streamed so far (that model round turned into another search, or Claude failed and the caption fallback answers) |
@@ -207,6 +215,8 @@ event: final
 data: {"transcript": "where did I leave my keys?", "answer": "On the kitchen counter ...", "audio_url": null, "cited": [...], "tool_calls": [...]}
 ```
 `device_id_used` / `warning` arrive only in `final` (same rules as `POST /chat`).
+`retrieval` waits at most `STREAM_REPLAY_BUDGET_S` (0.15 s) for `replay_url` lookups so answer text is never held
+back; a link not found in time is `null` in that event and present in `final.cited`.
 Clients can swap it in for `POST /chat` and fall back to `POST /chat` on 404/405 (older servers). The model
 requests are identical to `POST /chat` apart from streaming, so answers are the same. With `RECALL_FIRST` a
 standalone question's `retrieval` arrives before Claude is called at all.

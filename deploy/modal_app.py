@@ -3,6 +3,7 @@
     modal deploy deploy/modal_app.py                         # live (secrets megamind-providers + megamind-auth)
     MEGAMIND_MIN_CONTAINERS=1 modal deploy deploy/modal_app.py   # live, one container kept warm (demo window)
     MEGAMIND_PROFILE=mock modal deploy deploy/modal_app.py   # keyless smoke test (secret megamind-auth only)
+    python deploy/keep_warm.py on|off                        # demo window without redeploying (deploy/README.md)
 
 One CPU container (`max_containers=1`): the in-process workers (enrichment, consolidator, UCC sync, media aging) and
 LanceDB are single-writer. All state (LanceDB, thumbnails, AV1 chunks, TTS audio, replay/montage caches) lives on a
@@ -27,6 +28,9 @@ if PROFILE not in ("live", "mock"):
 MIN_CONTAINERS = int(os.environ.get("MEGAMIND_MIN_CONTAINERS", "0"))
 if MIN_CONTAINERS not in (0, 1):
     raise SystemExit("MEGAMIND_MIN_CONTAINERS must be 0 or 1 (max_containers=1)")
+# Opt-in (unverified on our app yet): Modal memory snapshot of the container after the heavy imports below (torch,
+# open_clip, lancedb, SDKs, megamind), so a cold start restores them instead of importing again. Off = as before.
+MEMORY_SNAPSHOT = os.environ.get("MEGAMIND_MEMORY_SNAPSHOT", "0") == "1"
 
 COMMON_ENV = {
     "MEGAMIND_PROFILE": PROFILE,
@@ -34,6 +38,10 @@ COMMON_ENV = {
     "LANCEDB_PATH": f"{DATA}/lancedb",
     "THUMB_DIR": f"{DATA}/thumbs",  # chunks / replay / montages default to siblings of this dir, i.e. on the Volume
     "AUDIO_DIR": f"{DATA}/audio",
+    # background warmup at startup (server/megamind/warmup.py): free/tiny calls, so the first question after a cold
+    # start skips first-use costs; GET /v1/health reports "warmup": "running" | "done"
+    "WARMUP": "true",
+    "MEGAMIND_MEMORY_SNAPSHOT": "1" if MEMORY_SNAPSHOT else "0",
 }
 PROFILE_ENV = {
     # mirrors server/.env.example; keys come from the megamind-providers secret
@@ -93,6 +101,22 @@ if PROFILE == "live":
 
 app = modal.App("megamind")
 
+if MEMORY_SNAPSHOT and not modal.is_local():
+    # global scope runs before Modal takes the snapshot; nothing here opens files, sockets or the Volume
+    import anthropic  # noqa: F401
+    import lancedb  # noqa: F401
+    import open_clip  # noqa: F401
+    import openai  # noqa: F401
+    import torch  # noqa: F401
+
+    # megamind's modules, but not megamind.main: its module-level create_app() would read Settings (API_TOKEN, keys)
+    # into the snapshot, and a rotated secret would then need a redeploy
+    import megamind.agent.router  # noqa: F401
+    import megamind.ingest.router  # noqa: F401
+    import megamind.retrieval.hybrid  # noqa: F401
+    import megamind.store.embeddings  # noqa: F401
+    import megamind.store.lancedb_store  # noqa: F401
+
 
 @app.function(
     image=image,
@@ -102,7 +126,8 @@ app = modal.App("megamind")
     memory=3072,  # + CPU torch and SigLIP ViT-B/16 (~1 GB resident)
     min_containers=MIN_CONTAINERS,  # MEGAMIND_MIN_CONTAINERS=1 for a demo window, 0 afterwards
     max_containers=1,  # single writer: LanceDB + in-process background workers
-    scaledown_window=600,
+    scaledown_window=600,  # 10 min idle; the headset and /ui poll /v1/health every 4 s, so an open client keeps it up
+    enable_memory_snapshot=MEMORY_SNAPSHOT,
     timeout=600,  # per request; /v1/chat/stream and replay renders stay well below this
 )
 @modal.concurrent(max_inputs=64)  # one container serves the headset, the browser panel and SSE streams at once
