@@ -35,8 +35,9 @@ namespace Megamind
         public RectTransform thumbnailRowPrefab;  // legacy thumbnails (used when cardPrefab is empty)
         public RectTransform thumbnailPrefab;
         public RectTransform collagePrefab;
-        public float collageWidth = 420f;     // canvas units; height follows the image's aspect ratio
-        public float collageMaxHeight = 360f;
+        public float collageWidth = 552f;     // card = 552 + 2 * Space1 = 568, the transcript content width (600 - 2 * 16)
+        public float collageMaxHeight = 420f;
+        public bool autoOpenCollage = true;   // open the Lightbox on a new answer's collage once its JPEG has loaded
         public RectTransform cardStripPrefab;     // horizontal ScrollRect of CitationCards (candidates / cited)
         public CitationCard cardPrefab;
         public RectTransform turnActionsPrefab;   // meta caption + Copy + Retry under an answer
@@ -262,7 +263,7 @@ namespace Megamind
                 if (card.image && card.image.transform.parent is RectTransform frameRt)
                     frameRt.offsetMin = new Vector2(frameRt.offsetMin.x, -(MegamindTheme.Space1 + h));
                 Track(strip.gameObject);
-                if (card.image) StartCoroutine(LoadThumb(card.image, config.Url(collage.url)));
+                if (card.image) StartCoroutine(LoadCollage(card.image, config.Url(collage.url), set));
                 return true;
             }
             var pre = collagePrefab != null ? collagePrefab : thumbnailPrefab;
@@ -277,8 +278,14 @@ namespace Megamind
             le.preferredWidth = w;
             le.preferredHeight = h;
             Track(frame.gameObject);
-            if (img) StartCoroutine(LoadThumb(img, config.Url(collage.url)));
+            if (img) StartCoroutine(LoadCollage(img, config.Url(collage.url), CollageSet(collage)));
             return true;
+        }
+
+        private IEnumerator LoadCollage(RawImage target, string url, List<Citation> set)
+        {
+            yield return LoadThumb(target, url);
+            if (autoOpenCollage && lightbox != null && target != null && target.texture != null) lightbox.Show(set, 0);
         }
 
         /// <summary>Lightbox set: the collage JPEG first, then each photo in it (chronological).</summary>
