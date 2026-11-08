@@ -65,6 +65,33 @@ async def test_recent_empty_and_bad_k(client):
     assert (await c.get("/v1/memories/recent", params={"k": 201})).status_code == 422
 
 
+async def test_recent_pages_past_range_cap(client, monkeypatch):
+    # range() is oldest-first and capped: a full page holds the OLDEST tokens, so the route must page forward
+    from megamind.ingest import recent
+
+    monkeypatch.setattr(recent, "_RANGE_CAP", 3)
+    c, app = client
+    now = time.time()
+    for i in range(10):  # a busy stretch inside the first (15 min) window, more than one page
+        await _add(app, i, now - 800 + i * 10)
+    res = (await c.get("/v1/memories/recent", params={"k": 2})).json()["results"]
+    assert [h["id"] for h in res] == ["tok0009", "tok0008"]
+
+
+async def test_recent_old_history_does_not_hide_newest(client, monkeypatch):
+    from megamind.ingest import recent
+
+    monkeypatch.setattr(recent, "_RANGE_CAP", 3)
+    c, app = client
+    now = time.time()
+    for i in range(10):  # lots of old history, then only two recent tokens (fewer than k)
+        await _add(app, i, now - 400 * 86400 + i)
+    await _add(app, 100, now - 30)
+    await _add(app, 101, now - 20)
+    res = (await c.get("/v1/memories/recent", params={"k": 4})).json()["results"]
+    assert [h["id"] for h in res] == ["tok0101", "tok0100", "tok0009", "tok0008"]
+
+
 async def test_search_route_unchanged(client):
     c, _ = client
     assert (await c.get("/v1/memories")).status_code == 422  # q is still required on the search route

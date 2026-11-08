@@ -264,6 +264,7 @@ export class MemoryTheater {
       this.drawStill(null, m.caption || "");
       loadBitmap(m.thumb_url).then((img) => {
         if (token === this.playToken && img) this.drawStill(img, "");
+        img?.close?.(); // ImageBitmap: free decoded pixels now (copied into the canvas), not at GC
       });
     };
     if (!m.replay_url) {
@@ -439,6 +440,7 @@ export class MemoryTheater {
       draw();
       loadBitmap(h.thumb_url).then((img) => {
         if (img && !this.disposed) draw(img);
+        img?.close?.(); // cards are rebuilt as memories arrive; don't leave bitmaps to GC on the headset
       });
       const card = new THREE.Mesh(
         new THREE.PlaneGeometry(0.3, 0.206),
