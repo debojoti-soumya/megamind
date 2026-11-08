@@ -19,7 +19,7 @@ import random
 import statistics
 import time as _time
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -149,14 +149,14 @@ def load_dataset(path: Path | str = DEFAULT_DATASET) -> Dataset:
     raw = json.loads(Path(path).read_text())
     tz = ZoneInfo(raw.get("tz", "America/Los_Angeles"))
     d = date.fromisoformat(raw["date"])
-    now = _local(d, raw["now"], tz)
+    now = _local(d + timedelta(days=raw.get("now_day", 0)), raw["now"], tz)
     tokens = []
     for e in raw["stream"]:
         tokens.append(
             MemoryToken(
                 id=e["id"],
                 device_id=raw.get("device_id", "eval-device"),
-                ts=_local(d, e["time"], tz).timestamp(),
+                ts=_local(d + timedelta(days=e.get("day", 0)), e["time"], tz).timestamp(),
                 caption=e["caption"],
                 ocr_text=e.get("ocr", ""),
                 entities=e.get("entities", []),
