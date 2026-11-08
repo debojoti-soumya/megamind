@@ -1,6 +1,7 @@
 // Editor-only helpers so the project can be built with zero manual scene wiring:
 //   Megamind > 1. Create Capture Scene      builds Assets/Megamind/Scenes/Megamind.unity (OVRCameraRig + passthrough +
-//                                           PassthroughCameraAccess + FrameUploader + HUD) and adds it to Build Settings
+//                                           tracked hands + right controller/hand UI rays + PassthroughCameraAccess +
+//                                           FrameUploader + HUD) and adds it to Build Settings. Then run 1b (chat panel).
 //   Megamind > 2. Apply Android Player Settings
 //   Megamind > 3. Build APK                 -> Builds/megamind.apk
 //   Megamind > 4. Build and Run             -> installs + launches on the connected headset
@@ -27,6 +28,10 @@ namespace Megamind.EditorTools
         public const string ApkPath = "Builds/megamind.apk";
         public const string PackageName = "com.megamind.quest";
         private const string RigPrefabPath = "Packages/com.meta.xr.sdk.core/Prefabs/OVRCameraRig.prefab";
+        private const string HandPrefabPath = "Packages/com.meta.xr.sdk.core/Prefabs/OVRHandPrefab.prefab";
+        private const string ControllerPrefabPath = "Packages/com.meta.xr.sdk.core/Prefabs/OVRControllerPrefab.prefab";
+        private const string RayHelperPrefabPath = "Packages/com.meta.xr.sdk.core/Prefabs/OVRRayHelper.prefab";
+        public const string LeftHandName = "LeftOVRHand", RightHandName = "RightOVRHand";
         private const string ManifestPath = "Assets/Plugins/Android/AndroidManifest.xml";
 
         [MenuItem("Megamind/1. Create Capture Scene", false, 1)]
@@ -74,6 +79,18 @@ namespace Megamind.EditorTools
             var centerEye = rigGo.transform.Find("TrackingSpace/CenterEyeAnchor");
             if (centerEye == null) centerEye = rigGo.transform;
 
+            // Hand tracking (index pinch = push-to-talk, middle pinch = capture toggle) and the UI rays that Meta's
+            // OVRInputModule (added by Megamind > 1b) drives: right controller + right hand. OVRCameraRig re-uses
+            // anchors that already exist by name, so creating them here is safe for the component-built rig too.
+            var trackingSpace = EnsureChild(rigGo.transform, "TrackingSpace");
+            var leftAnchor = EnsureChild(trackingSpace, "LeftHandAnchor");
+            var rightAnchor = EnsureChild(trackingSpace, "RightHandAnchor");
+            var rightControllerAnchor = EnsureChild(rightAnchor, "RightControllerAnchor");
+            var leftHand = AddHand(leftAnchor, OVRHand.Hand.HandLeft, trackingSpace, withRay: false);
+            var rightHand = AddHand(rightAnchor, OVRHand.Hand.HandRight, trackingSpace, withRay: true);
+            AddControllerRay(rightControllerAnchor, OVRInput.Controller.RTouch);
+            EnableHandTrackingSupport();
+
             // Passthrough Camera API
             var pcaGo = new GameObject("PassthroughCameraAccess");
             var pca = pcaGo.AddComponent<PassthroughCameraAccess>();
@@ -92,6 +109,8 @@ namespace Megamind.EditorTools
             var hud = mm.AddComponent<CaptureHud>();
             hud.uploader = uploader;
             hud.head = centerEye;
+            hud.leftHand = leftHand;
+            hud.rightHand = rightHand;
             var ambient = mm.AddComponent<AmbientAudioRecorder>();
             ambient.config = config;
             ambient.settings = capture;
@@ -104,8 +123,144 @@ namespace Megamind.EditorTools
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
             AssetDatabase.SaveAssets();
             Debug.Log($"[Megamind] created {ScenePath} and set it as the only scene in Build Settings. " +
-                      "Now run Meta > Tools > Project Setup Tool and fix all, then Megamind > 3/4.");
+                      "Now run Megamind > 1b (chat panel; re-run it after every 1.), Meta > Tools > Project Setup Tool " +
+                      "and fix all, then Megamind > 3/4.");
             Selection.activeObject = config;
+        }
+
+        private static Transform EnsureChild(Transform parent, string name)
+        {
+            var t = parent.Find(name);
+            if (t != null) return t;
+            t = new GameObject(name).transform;
+            t.SetParent(parent, false);
+            return t;
+        }
+
+        /// <summary>
+        /// Meta's OVRHandPrefab (OVRHand + OVRSkeleton + OVRMesh/OVRMeshRenderer) under a hand anchor, set to one side.
+        /// OVRHand.HandType / OVRSkeleton._skeletonType / OVRMesh._meshType are not public, so go through SerializedObject.
+        /// </summary>
+        private static OVRHand AddHand(Transform anchor, OVRHand.Hand side, Transform pointerPoseRoot, bool withRay)
+        {
+            var hand = anchor.GetComponentInChildren<OVRHand>(true);
+            if (hand == null)
+            {
+                GameObject go;
+                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(HandPrefabPath);
+                if (prefab != null)
+                {
+                    go = (GameObject)PrefabUtility.InstantiatePrefab(prefab, anchor);
+                }
+                else
+                {
+                    Debug.LogWarning($"[Megamind] {HandPrefabPath} not found; adding OVRHand + OVRSkeleton without a hand mesh.");
+                    go = new GameObject();
+                    go.transform.SetParent(anchor, false);
+                    go.AddComponent<OVRHand>();
+                    go.AddComponent<OVRSkeleton>();
+                }
+                go.transform.localPosition = Vector3.zero;
+                go.transform.localRotation = Quaternion.identity;
+                hand = go.GetComponent<OVRHand>();
+            }
+            hand.gameObject.name = side == OVRHand.Hand.HandLeft ? LeftHandName : RightHandName;
+
+            var version = OVRRuntimeSettings.GetRuntimeSettings().HandSkeletonVersion;
+            SetSerialized(hand, "HandType", (int)side);
+            SetSerialized(hand, "_pointerPoseRoot", pointerPoseRoot);
+            var skeleton = hand.GetComponent<OVRSkeleton>();
+            if (skeleton != null) SetSerialized(skeleton, "_skeletonType", (int)side.AsSkeletonType(version));
+            var mesh = hand.GetComponent<OVRMesh>();
+            if (mesh != null) SetSerialized(mesh, "_meshType", (int)side.AsMeshType(version));
+
+            if (withRay && hand.RayHelper == null) hand.RayHelper = AddRayHelper(hand.transform);
+            return hand;
+        }
+
+        /// <summary>
+        /// Meta's OVRControllerPrefab (controller model + OVRControllerHelper, an OVRInputModule input source) with an
+        /// OVRRayHelper, so the controller draws a ray + cursor on OVRRaycaster canvases and the trigger clicks.
+        /// </summary>
+        private static void AddControllerRay(Transform controllerAnchor, OVRInput.Controller controller)
+        {
+            var helper = controllerAnchor.GetComponentInChildren<OVRControllerHelper>(true);
+            if (helper == null)
+            {
+                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(ControllerPrefabPath);
+                if (prefab == null)
+                {
+                    Debug.LogWarning($"[Megamind] {ControllerPrefabPath} not found; no visible controller ray.");
+                    return;
+                }
+                var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab, controllerAnchor);
+                go.transform.localPosition = Vector3.zero;
+                go.transform.localRotation = Quaternion.identity;
+                helper = go.GetComponent<OVRControllerHelper>();
+            }
+            helper.m_controller = controller;
+            if (helper.RayHelper == null) helper.RayHelper = AddRayHelper(helper.transform);
+        }
+
+        private static OVRRayHelper AddRayHelper(Transform parent)
+        {
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(RayHelperPrefabPath);
+            if (prefab == null)
+            {
+                Debug.LogWarning($"[Megamind] {RayHelperPrefabPath} not found; no visible UI ray on {parent.name}.");
+                return null;
+            }
+            var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab, parent);
+            go.transform.localPosition = Vector3.zero;
+            go.transform.localRotation = Quaternion.identity;
+            return go.GetComponent<OVRRayHelper>();
+        }
+
+        private static void SetSerialized(UnityEngine.Object target, string field, int value)
+        {
+            var so = new SerializedObject(target);
+            var prop = so.FindProperty(field);
+            if (prop == null) { Debug.LogWarning($"[Megamind] {target.GetType().Name}.{field} not found (SDK changed?)"); return; }
+            prop.intValue = value;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void SetSerialized(UnityEngine.Object target, string field, UnityEngine.Object value)
+        {
+            var so = new SerializedObject(target);
+            var prop = so.FindProperty(field);
+            if (prop == null) { Debug.LogWarning($"[Megamind] {target.GetType().Name}.{field} not found (SDK changed?)"); return; }
+            prop.objectReferenceValue = value;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>OVRProjectConfig "Hand Tracking Support" = Controllers And Hands (adds the manifest feature at build).</summary>
+        private static void EnableHandTrackingSupport()
+        {
+            var config = OVRProjectConfig.CachedProjectConfig;
+            if (config == null || config.handTrackingSupport != OVRProjectConfig.HandTrackingSupport.ControllersOnly) return;
+            config.handTrackingSupport = OVRProjectConfig.HandTrackingSupport.ControllersAndHands;
+            OVRProjectConfig.CommitProjectConfig(config);
+            Debug.Log("[Megamind] OVRProjectConfig: Hand Tracking Support = Controllers And Hands.");
+        }
+
+        /// <summary>
+        /// The scene's OVRHand for one side (by OVRHand.GetHand(), falling back to the Left/Right anchor it sits under).
+        /// Used by both scene builders so ChatClient / CaptureHud get the right hand whichever ran last.
+        /// </summary>
+        public static OVRHand FindHand(OVRPlugin.Hand side)
+        {
+            var hands = UnityEngine.Object.FindObjectsByType<OVRHand>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (var h in hands)
+                if (h.GetHand() == side) return h;
+            var word = side == OVRPlugin.Hand.HandLeft ? "left" : "right";
+            foreach (var h in hands)
+            {
+                if (h.GetHand() != OVRPlugin.Hand.None) continue;
+                for (var t = h.transform; t != null; t = t.parent)
+                    if (t.name.ToLowerInvariant().Contains(word)) return h;
+            }
+            return null;
         }
 
         /// <summary>
@@ -209,6 +364,7 @@ namespace Megamind.EditorTools
             Check(manifest.Contains("android.permission.RECORD_AUDIO"), "manifest has RECORD_AUDIO (push-to-talk + ambient audio)");
             Check(manifest.Contains("com.oculus.feature.BOUNDARYLESS_APP"), "manifest declares com.oculus.feature.BOUNDARYLESS_APP (capture keeps running outside the boundary)");
             Check(manifest.Contains("usesCleartextTraffic=\"true\""), "manifest allows cleartext HTTP (needed for http:// server URLs)");
+            Check(manifest.Contains("com.oculus.permission.HAND_TRACKING"), "manifest has HAND_TRACKING (index pinch push-to-talk, middle pinch capture toggle)");
             Check(File.Exists(ScenePath), $"{ScenePath} exists (Megamind > 1)");
             Check(EditorBuildSettings.scenes.Any(s => s.enabled && s.path == ScenePath), "scene is in Build Settings");
             Check(EditorUserBuildSettings.activeBuildTarget == BuildTarget.Android, "active build target is Android (Megamind > 2)");
@@ -224,6 +380,7 @@ namespace Megamind.EditorTools
             Check(projectConfig != null && projectConfig.isPassthroughCameraAccessEnabled, "OVRProjectConfig: Passthrough Camera Access enabled");
             Check(projectConfig != null && projectConfig.insightPassthroughSupport != OVRProjectConfig.FeatureSupport.None, "OVRProjectConfig: Passthrough Support = Supported/Required");
             Check(projectConfig != null && projectConfig.boundaryVisibilitySupport == OVRProjectConfig.FeatureSupport.None, "OVRProjectConfig: Boundary Visibility Support = None (BOUNDARYLESS_APP and the contextual Boundary API are mutually exclusive)");
+            Check(projectConfig != null && projectConfig.handTrackingSupport != OVRProjectConfig.HandTrackingSupport.ControllersOnly, "OVRProjectConfig: Hand Tracking Support = Controllers And Hands (Megamind > 1 sets it)");
             Debug.Log(problems == 0
                 ? "[Megamind] project check passed. Also run Meta > Tools > Project Setup Tool and fix any remaining items."
                 : $"[Megamind] {problems} item(s) to fix (see warnings above).");

@@ -38,7 +38,7 @@ Contents: [Demo-day quick card](#demo-day-quick-card) · [1. Quest 3 basics](#1-
 10. Plug the headset into a power bank or charger between runs. Keep it worn or face-up and still. Taking it off can suspend the app (see [7](#7-troubleshooting)).
 
 **If it breaks:** look up the symptom in the [decision table](#27-decision-table-symptom--link--2-minute-check).
-Press **A/X** to pause or resume capture (the HUD shows `capture PAUSED (press A/X)`).
+Press **A/X**, or pinch thumb + **middle** finger with hand tracking, to pause or resume capture (the HUD shows `capture PAUSED (press A/X or middle-pinch)`).
 Capture pauses on its own only when the app is really backgrounded (HUD `capture PAUSED (app backgrounded)`, counter
 `bg N`). Opening the system menu or a boundary dialog does not pause it (HUD `REC … (unfocused)`, counter `unfocus N`) [D-focus].
 
@@ -49,7 +49,8 @@ Capture pauses on its own only when the app is really backgrounded (HUD `capture
 | Task | How |
 |---|---|
 | Open the menu ("Navigator") | Press the **Meta button** on the right controller [M-update]. Hold it to recenter the view [M-record]. |
-| Switch to hand tracking | Navigator → *Quick controls* → *Settings* → *Hands & body* → toggle *Hand and Body Tracking* [M-hands]. Megamind's A/X pause toggle uses the controllers. |
+| Switch to hand tracking | Enable it once: *Settings → Movement tracking → Hand tracking* (older Horizon OS: Navigator → *Quick controls* → *Settings* → *Hands & body* → *Hand and Body Tracking* [M-hands]) (verify on device). Then put the controllers down. In Megamind: **index pinch** = push-to-talk (hold, release to send), **middle pinch** = capture pause/resume (like A/X), and the right hand draws the panel ray (pinch to click) (verify on device). |
+| Panel UI ray | The **right controller** draws a ray + cursor on the chat/settings panel; pull the trigger to click (verify on device). |
 | See your room (passthrough) | Navigator → *Quick settings* → *See your surroundings*. Turning on **Double Tap for Passthrough** in Passthrough settings lets you tap the side of the headset twice [M-passthrough]. |
 | Lighting | Meta recommends **≥ 50 lux** for colour passthrough [M-passthrough]. Dim rooms make the camera feed dark and the server rejects frames as `dark`/`blurry`. |
 | Boundary | The boundary is the virtual wall that appears near the edge of your play area [M-boundary]. Megamind declares itself a **boundaryless** mixed-reality app (`com.oculus.feature.BOUNDARYLESS_APP` in its manifest), so the boundary should not appear while it runs and you can walk between rooms [D-boundaryless] (verify on device). This only applies to the installed APK, not over Link [D-boundaryless]. Watch where you walk: Megamind shows passthrough only, with no obstacle warnings [D-boundaryless-bp]. |
@@ -249,7 +250,8 @@ the native app takes the token in Settings → *API token* or `adb shell am star
 3. *File → Build Profiles* (Unity 6) → **Android** → *Switch Platform* [D-unity-build].
 4. Open the Meta **Project Setup Tool** (*Window → Meta → Tools → Project Setup Tool*) and resolve the **required** issues on the Android tab [D-unity-setup][D-pca-unity].
 5. Run the project's menu items in order (`Assets/Megamind/Editor/MegamindSceneBuilder.cs`):
-   - **Megamind → 1. Create Capture Scene**. Creates the scene, `MegamindConfig.asset`, and `CaptureSettings.asset`.
+   - **Megamind → 1. Create Capture Scene** (answer **Overwrite** if asked). Creates the scene, `MegamindConfig.asset`, and `CaptureSettings.asset`, adds the tracked hands (`OVRHandPrefab`) and the right controller/hand UI rays, and sets *Hand Tracking Support* = Controllers And Hands.
+   - **Megamind → 1b. Add Chat Panel To Current Scene**. Adds the chat/settings panel and wires the hands and the ray into it. Re-run it after every *1.*, because *1.* replaces the scene.
    - **Megamind → Check Project**. Every line should read `OK`.
    - **Megamind → Select Config**. Set `Server Base Url` (see 2.3).
    - **Megamind → 2. Apply Android Player Settings**
@@ -331,7 +333,7 @@ On the server, watch the uvicorn output for `POST /v1/frames ... 200` and (ambie
 | 6 | Camera | `[Megamind] camera: os=... device=... requested=1280x960 supported=[...]` then **`[Megamind] camera playing: 1280x960 maxFps=30`**. HUD: `REC 1 fps  1280x960` | `Passthrough Camera API unsupported...` → OS < v74. `no PassthroughCameraAccess in scene` → re-run *1. Create Capture Scene*. If `supported=[...]` lacks `1280x960`, pick one from the list for `CaptureSettings.cameraResolution` |
 | 7 | Upload | HUD `sent` and `accepted` rise about once per second. `last ok` with a latency in ms and the size in KB | `last net` + `NET ERR: ...` and the log line `[Megamind] frame upload failed (Nx): ... url=...` → 2.7 |
 | 8 | Server filter | Some `last duplicate` / `too_soon` while still is normal (the filter keeps roughly 10–30% at 1 fps) | Mostly `dark`/`blurry` → 7 |
-| 9 | Pause | A/X → `capture PAUSED (press A/X)`. Press again to resume | — |
+| 9 | Pause | A/X (or middle pinch with hand tracking, verify on device) → `capture PAUSED (press A/X or middle-pinch)`. Press again to resume | Pinches do nothing → hand tracking off on the headset (section 1), or the scene predates the hands: re-run *1.* then *1b.* |
 | 10 | Image check | Open a stored thumbnail (`/v1/thumbs/{id}.jpg`, see [api.md](api.md)). Colours should be right, upright, not mirrored | Blue skin → reboot the headset [D-pca] |
 | 11 | Ambient audio (verify on device) | Log `[Megamind] ambient audio: mic started 16000 Hz x1, 15 s chunks`. Talk near the headset: HUD `mic: chunks sent N  accepted M  (on -NN dB)` rises about every 15 s; in silence only `silent N` rises (chunks below −50 dBFS are not sent). Hold the trigger: state shows `push-to-talk`, then back to `on`. A/X: `paused` | `waiting for mic permission` → 4.8. `ERR …` → same network checks as step 7 (2.7). Only `silent` rises while talking → 7 |
 | 12 | "What did I hear?" (verify on device) | After ~30 s of talking, hold the trigger and ask *"what did I hear?"*. The answer cites a speech memory (`Speech heard nearby: "…"`; with mock STT the words are `[mock transcript]`, real words need `AUDIO_STT_PROVIDER=openai` or `faster-whisper` on the server). Laptop check: `curl 'http://<server>:8000/v1/memories/recent?kind=transcript&k=5'` | `not_found` / only frames → no `POST /v1/audio 200` yet (step 11), or a different `deviceId` than the chat uses |

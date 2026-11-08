@@ -41,4 +41,8 @@
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
   <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <!-- Megamind: hand tracking (index pinch = push-to-talk, middle pinch = capture toggle), controllers still work.
+       Matches OVRProjectConfig "Hand Tracking Support = Controllers And Hands" (set by Megamind > 1). -->
+  <uses-feature android:name="oculus.software.handtracking" android:required="false" />
+  <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
 </manifest>

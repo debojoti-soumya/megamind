@@ -184,12 +184,18 @@ namespace Megamind.EditorTools
             var client = go.AddComponent<ChatClient>();
             client.config = config; client.panel = chatPanel; client.speaker = speaker;
             chatPanel.client = client;
-            var hands = UnityEngine.Object.FindObjectsByType<OVRHand>(FindObjectsSortMode.None);
-            foreach (var h in hands)
+            client.leftHand = MegamindSceneBuilder.FindHand(OVRPlugin.Hand.HandLeft);
+            client.rightHand = MegamindSceneBuilder.FindHand(OVRPlugin.Hand.HandRight);
+            var hud = UnityEngine.Object.FindFirstObjectByType<CaptureHud>();
+            if (hud != null)
             {
-                var n = h.name.ToLowerInvariant();
-                if (n.Contains("left")) client.leftHand = h; else if (n.Contains("right")) client.rightHand = h;
+                if (hud.leftHand == null) hud.leftHand = client.leftHand;
+                if (hud.rightHand == null) hud.rightHand = client.rightHand;
+                EditorUtility.SetDirty(hud);
             }
+            if (client.leftHand == null || client.rightHand == null)
+                Debug.LogWarning("[Megamind] no OVRHand for " + (client.leftHand == null ? "left " : "") + (client.rightHand == null ? "right " : "") +
+                                 "in the scene: pinch push-to-talk is off. Re-run Megamind > 1. Create Capture Scene (Overwrite), then 1b.");
 
             var settings = go.AddComponent<SettingsPanel>();
             settings.config = config; settings.client = client; settings.chatPanel = chatPanel;
@@ -229,14 +235,26 @@ namespace Megamind.EditorTools
             }
             var ovrModule = FindType("OVRInputModule");
             var ovrRaycaster = FindType("OVRRaycaster");
-            if (ovrModule != null && es.GetComponent(ovrModule) == null)
+            if (ovrModule != null)
             {
-                var module = es.gameObject.AddComponent(ovrModule);
+                // Re-configured on every run (the EventSystem survives re-runs). The visible rays + cursor are the
+                // OVRRayHelpers that Megamind > 1 puts on the right controller and right hand (OVRInputModule input
+                // sources: trigger / index pinch clicks). rayTransform is the module's fallback when neither is active.
+                var module = es.GetComponent(ovrModule);
+                if (module == null) module = es.gameObject.AddComponent(ovrModule);
+                var rightRay = GameObject.Find("RightControllerAnchor");
+                if (rightRay == null) rightRay = GameObject.Find("RightHandAnchor");
                 var rayField = ovrModule.GetField("rayTransform");
-                var rightHand = GameObject.Find("RightControllerAnchor") ?? GameObject.Find("RightHandAnchor");
-                if (rayField != null && rightHand) rayField.SetValue(module, rightHand.transform);
+                if (rayField != null && rightRay) rayField.SetValue(module, rightRay.transform);
+                // Default fallback click is A, which CaptureHud uses for the capture toggle: click with the trigger.
+                var clickField = ovrModule.GetField("joyPadClickButton");
+                if (clickField != null && clickField.FieldType.IsEnum && Enum.IsDefined(clickField.FieldType, "PrimaryIndexTrigger"))
+                    clickField.SetValue(module, Enum.Parse(clickField.FieldType, "PrimaryIndexTrigger"));
+                EditorUtility.SetDirty(module);
                 var std = es.GetComponent<StandaloneInputModule>();
                 if (std) UnityEngine.Object.DestroyImmediate(std);
+                if (!rightRay)
+                    Debug.LogWarning("[Megamind] no RightControllerAnchor/RightHandAnchor: OVRInputModule.rayTransform not set.");
             }
             else if (ovrModule == null && es.GetComponent<BaseInputModule>() == null)
             {
