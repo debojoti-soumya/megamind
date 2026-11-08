@@ -104,9 +104,11 @@ Optional keys: `captureFps` (default 1).
 ## Capture pipeline (stream 1)
 `FrameUploader` waits for the camera permission (`MegamindPermissions`), then for
 `PassthroughCameraAccess.IsPlaying`, then every `1/captureFps` s:
-1. (settings from `CaptureSettings.asset`) skips the frame if `maxPendingUploads` uploads are still in flight (slow network) or,
-   if `maxHeadDegPerSec` > 0, when the head is turning faster than that (off by default —
-   the server's blur filter handles motion blur);
+1. (settings from `CaptureSettings.asset`) skips the frame if `maxPendingUploads` uploads are still in flight (slow network),
+   while backing off after upload failures (network error / 5xx / 429: `backoffBaseSeconds` 1 s doubling to
+   `backoffMaxSeconds` 30 s, ±20% jitter, reset by the next success; no offline queue — stale frames are
+   worthless to a live memory) or, if `maxHeadDegPerSec` > 0, when the head is turning faster than that (off by
+   default — the server's blur filter handles motion blur);
 2. blits `cameraAccess.GetTexture()` into a ≤ `jpegMaxWidth` (960 px) texture (GPU resize +
    `ReadPixels`), then JPEG-encodes it on the *next* frame (`jpegQuality` 75 ⇒ ~60–120 KB) so
    readback and encode never hitch the same render frame;
@@ -117,7 +119,9 @@ Optional keys: `captureFps` (default 1).
    (we sample 1 fps; saves GPU/battery vs the API default 60);
 4. updates counters shown by `CaptureHud` (state, resolution, sent/accepted, last server
    reason, latency, JPEG size, skipped-motion/backlog) — a visible recording indicator is
-   always on screen while capturing. **A / X button pauses and resumes capture.**
+   always on screen while capturing. **A / X button pauses and resumes capture.** While paused, and while
+   the app is backgrounded or unfocused (headset off, system menu open), nothing is captured and the camera
+   stream is stopped (`stopCameraWhenPaused`); it restarts on resume.
 
 Permissions: `Assets/Plugins/Android/AndroidManifest.xml` declares
 `horizonos.permission.HEADSET_CAMERA`, `android.permission.CAMERA`,
