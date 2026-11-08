@@ -454,6 +454,15 @@ and **Delete** (deleting the active chat switches to the newest remaining one). 
 (Settings) both go through `SessionStore.NewSession()`; a blank active chat is reused rather than stacking blanks, and
 blank chats are dropped on save. Up to 60 chats x 200 messages are kept.
 
+**Voice path (fast).** Release push-to-talk → `POST /v1/stt` (audio + `command_hints` = every phrase in
+`VoiceCommands.cs`; ≈ 0.5 s) → the transcript appears as your bubble → `VoiceCommands.Match` runs locally (exact, then
+fuzzy: all words of a multi-word phrase present — "could you open the menu please" — or edit distance ≤ 1–2 — "paws
+recording"; single-word phrases exact only), falling back to the server's `command.phrase`. A command runs at once with a
+confirmation chip (`"paws recording" → "pause recording" → recording paused`) and never reaches Claude/TTS; anything else
+is asked as **text** on `/v1/chat/stream`, whose `audio` events start speaking after the first sentence (clips queued in
+`seq` order). `ChatClient.transcribeFirst` (default on) switches this off; servers without `/v1/stt` (404/405) get the
+old path below automatically.
+
 **Voice commands.** With a server that sends the stream's early `transcript` event, `ChatClient` matches commands on it and closes the stream, so the server stops the turn before Claude/TTS finish. Otherwise: STT runs inside `POST /v1/chat` (there is no STT-only endpoint), so `ChatClient` hands the returned
 `transcript` to `PanelMenu.TryVoiceCommand` before showing the answer: a short utterance (≤ 6 words after dropping
 fillers like "please", "hey", "megamind") that equals one of the phrases in `VoiceCommands.cs` is executed, the answer

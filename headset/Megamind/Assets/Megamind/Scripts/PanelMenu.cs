@@ -142,12 +142,23 @@ namespace Megamind
         }
 
         /// <summary>Executes a recognised voice command and posts a system chip; false = not a command.</summary>
-        public bool TryVoiceCommand(string transcript)
+        public bool TryVoiceCommand(string transcript) => TryVoiceCommand(transcript, null);
+
+        /// <summary>serverPhrase: POST /v1/stt `command.phrase` (its own fuzzy match), used when the local matcher has none.</summary>
+        public bool TryVoiceCommand(string transcript, string serverPhrase)
         {
-            var cmd = VoiceCommands.Match(transcript);
+            var cmd = VoiceCommands.Match(transcript, out string phrase, out bool exact);
+            if (cmd == VoiceCommand.None && !string.IsNullOrEmpty(serverPhrase))
+            {
+                cmd = VoiceCommands.FromPhrase(serverPhrase);
+                phrase = serverPhrase; exact = false;
+            }
             if (cmd == VoiceCommand.None) return false;
             Execute(cmd);
-            if (chatPanel) chatPanel.AddSystemMessage("\u201c" + transcript.Trim() + "\u201d \u2192 " + VoiceCommands.Describe(cmd));
+            // confirmation chip: what was heard, and (for fuzzy hits) what it was taken as
+            string heard = "\u201c" + (transcript ?? "").Trim() + "\u201d";
+            if (chatPanel) chatPanel.AddSystemMessage(exact ? heard + "  \u2192  " + VoiceCommands.Describe(cmd)
+                                                            : heard + "  \u2192  \u201c" + phrase + "\u201d  \u2192  " + VoiceCommands.Describe(cmd));
             return true;
         }
 
