@@ -74,6 +74,7 @@ namespace Megamind
             settings = CaptureSettings.Resolve(settings);
             Capturing = settings.captureOnStart;
             Debug.Log($"[Megamind] capture: server={ServerBaseUrl} device={DeviceId} fps={settings.captureFps} url-source={settings.overrideSource}");
+            Debug.Log($"[Megamind] config: {settings.DescribeConfig(config)}");
         }
 
         private IEnumerator Start()
