@@ -81,6 +81,7 @@ CONFIGS: dict[str, dict[str, str]] = {
     "sail512_sonnet": {**SAIL, "READER_THUMB_MAX_PX": "512"},
     "sail960_sonnet": {**SAIL, "READER_THUMB_MAX_PX": "960"},
     "claude_sonnet": {"READER_PROVIDER": "claude", "READER_THUMB_MAX_PX": "960"},
+    "claude_sonnet_siglip": {"READER_PROVIDER": "claude", "READER_THUMB_MAX_PX": "960", "IMAGE_EMBED_PROVIDER": "openclip"},
     "claude_haiku": {"READER_PROVIDER": "claude", "READER_THUMB_MAX_PX": "960", "CLAUDE_MODEL": "claude-haiku-4-5"},
 }
 

@@ -219,7 +219,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000094852.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000189310.jpg"
 },
 {
 "id": "c0033",
@@ -228,7 +228,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000189310.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000543528.jpg"
 },
 {
 "id": "c0034",
@@ -237,7 +237,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000543528.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000160728.jpg"
 },
 {
 "id": "c0035",
@@ -246,7 +246,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000160728.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000149375.jpg"
 },
 {
 "id": "c0036",
@@ -255,7 +255,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000149375.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000050006.jpg"
 },
 {
 "id": "c0037",
@@ -264,7 +264,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000050006.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000015278.jpg"
 },
 {
 "id": "c0005",
@@ -282,7 +282,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000015278.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000407403.jpg"
 },
 {
 "id": "c0039",
@@ -291,7 +291,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000407403.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000484351.jpg"
 },
 {
 "id": "c0040",
@@ -300,7 +300,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000484351.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000389532.jpg"
 },
 {
 "id": "c0041",
@@ -309,7 +309,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000044699.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000433192.jpg"
 },
 {
 "id": "c0042",
@@ -318,7 +318,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000389532.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000236426.jpg"
 },
 {
 "id": "c0043",
@@ -327,7 +327,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000433192.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000289059.jpg"
 },
 {
 "id": "c0044",
@@ -336,7 +336,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000218439.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000173057.jpg"
 },
 {
 "id": "c0045",
@@ -345,7 +345,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000236426.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000064718.jpg"
 },
 {
 "id": "c0046",
@@ -354,7 +354,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000289059.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000180798.jpg"
 },
 {
 "id": "c0047",
@@ -363,7 +363,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000173057.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000035279.jpg"
 },
 {
 "id": "c0048",
@@ -372,7 +372,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000064718.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000047769.jpg"
 },
 {
 "id": "c0049",
@@ -381,7 +381,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000180798.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000183709.jpg"
 },
 {
 "id": "c0050",
@@ -390,7 +390,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000035279.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000495054.jpg"
 },
 {
 "id": "c0051",
@@ -399,7 +399,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000561009.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000436617.jpg"
 },
 {
 "id": "c0052",
@@ -408,7 +408,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000047769.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000437514.jpg"
 },
 {
 "id": "c0053",
@@ -417,7 +417,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000183709.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000419098.jpg"
 },
 {
 "id": "c0054",
@@ -426,7 +426,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000495054.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000162035.jpg"
 },
 {
 "id": "c0055",
@@ -435,7 +435,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000436617.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000099114.jpg"
 },
 {
 "id": "c0056",
@@ -444,7 +444,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000437514.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000289229.jpg"
 },
 {
 "id": "c0057",
@@ -453,7 +453,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000419098.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000431140.jpg"
 },
 {
 "id": "c0058",
@@ -462,7 +462,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000162035.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000214192.jpg"
 },
 {
 "id": "c0059",
@@ -471,7 +471,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000099114.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000522638.jpg"
 },
 {
 "id": "c0008",
@@ -489,7 +489,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000289229.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000229849.jpg"
 },
 {
 "id": "c0061",
@@ -498,7 +498,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000431140.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000379476.jpg"
 },
 {
 "id": "c0062",
@@ -507,7 +507,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000214192.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000120584.jpg"
 },
 {
 "id": "c0063",
@@ -516,7 +516,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000375763.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000482970.jpg"
 },
 {
 "id": "c0064",
@@ -525,7 +525,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000522638.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000308793.jpg"
 },
 {
 "id": "c0065",
@@ -534,7 +534,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000229849.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000273715.jpg"
 },
 {
 "id": "c0066",
@@ -543,7 +543,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000379476.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000097988.jpg"
 },
 {
 "id": "c0067",
@@ -552,7 +552,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000120584.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000270883.jpg"
 },
 {
 "id": "c0068",
@@ -561,7 +561,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000277689.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000482100.jpg"
 },
 {
 "id": "c0069",
@@ -570,7 +570,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000482970.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000383621.jpg"
 },
 {
 "id": "c0070",
@@ -579,7 +579,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000546556.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000340175.jpg"
 },
 {
 "id": "c0071",
@@ -588,7 +588,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000308793.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000073326.jpg"
 },
 {
 "id": "c0072",
@@ -597,7 +597,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000273715.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000546219.jpg"
 },
 {
 "id": "c0073",
@@ -606,7 +606,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000097988.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000239843.jpg"
 },
 {
 "id": "c0074",
@@ -615,7 +615,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000234526.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000269942.jpg"
 },
 {
 "id": "c0075",
@@ -624,7 +624,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000134689.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000166509.jpg"
 },
 {
 "id": "c0076",
@@ -633,7 +633,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000270883.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000545100.jpg"
 },
 {
 "id": "c0077",
@@ -642,7 +642,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000318080.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000483667.jpg"
 },
 {
 "id": "c0078",
@@ -651,7 +651,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000482100.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000538364.jpg"
 },
 {
 "id": "c0079",
@@ -660,7 +660,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000048396.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000342006.jpg"
 },
 {
 "id": "c0080",
@@ -669,7 +669,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000383621.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000492758.jpg"
 },
 {
 "id": "c0081",
@@ -678,7 +678,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000359781.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000370270.jpg"
 },
 {
 "id": "c0082",
@@ -687,7 +687,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000340175.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000284762.jpg"
 },
 {
 "id": "c0083",
@@ -696,7 +696,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000206135.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000363461.jpg"
 },
 {
 "id": "c0084",
@@ -705,7 +705,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000031269.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000398905.jpg"
 },
 {
 "id": "c0085",
@@ -714,7 +714,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000073326.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000339442.jpg"
 },
 {
 "id": "c0086",
@@ -723,7 +723,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000546219.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000169356.jpg"
 },
 {
 "id": "c0087",
@@ -732,7 +732,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000296222.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000333237.jpg"
 },
 {
 "id": "c0088",
@@ -741,7 +741,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000239843.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000016958.jpg"
 },
 {
 "id": "c0089",
@@ -750,7 +750,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000269942.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000343934.jpg"
 },
 {
 "id": "c0090",
@@ -759,7 +759,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000166509.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000068093.jpg"
 },
 {
 "id": "c0091",
@@ -768,7 +768,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000545100.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000190307.jpg"
 },
 {
 "id": "c0092",
@@ -777,7 +777,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000483667.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000232646.jpg"
 },
 {
 "id": "c0093",
@@ -786,7 +786,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000114907.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000303893.jpg"
 },
 {
 "id": "c0094",
@@ -795,7 +795,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000538364.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000287874.jpg"
 },
 {
 "id": "c0095",
@@ -804,7 +804,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000342006.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000298396.jpg"
 },
 {
 "id": "c0096",
@@ -813,7 +813,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000492758.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000415194.jpg"
 },
 {
 "id": "c0097",
@@ -822,7 +822,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000370270.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000196442.jpg"
 },
 {
 "id": "c0098",
@@ -831,7 +831,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000284762.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000439994.jpg"
 },
 {
 "id": "c0099",
@@ -840,7 +840,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000363461.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000041633.jpg"
 },
 {
 "id": "c0100",
@@ -849,7 +849,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000398905.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000091654.jpg"
 },
 {
 "id": "c0101",
@@ -858,7 +858,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000339442.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000177714.jpg"
 },
 {
 "id": "c0102",
@@ -867,7 +867,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000169356.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000118367.jpg"
 },
 {
 "id": "c0103",
@@ -876,7 +876,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000333237.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000423971.jpg"
 },
 {
 "id": "c0104",
@@ -885,7 +885,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000016958.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000029675.jpg"
 },
 {
 "id": "c0001",
@@ -903,7 +903,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000343934.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000323799.jpg"
 },
 {
 "id": "c0106",
@@ -912,7 +912,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000068093.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000405691.jpg"
 },
 {
 "id": "c0107",
@@ -921,7 +921,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000190307.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000174482.jpg"
 },
 {
 "id": "c0108",
@@ -930,7 +930,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000232646.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000469192.jpg"
 },
 {
 "id": "c0109",
@@ -939,7 +939,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000205776.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000189213.jpg"
 },
 {
 "id": "c0110",
@@ -948,7 +948,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000303893.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000531771.jpg"
 },
 {
 "id": "c0111",
@@ -957,7 +957,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000287874.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000128675.jpg"
 },
 {
 "id": "c0112",
@@ -966,7 +966,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000062353.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000122166.jpg"
 },
 {
 "id": "c0113",
@@ -975,7 +975,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000298396.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000468577.jpg"
 },
 {
 "id": "c0114",
@@ -984,7 +984,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000415194.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000032570.jpg"
 },
 {
 "id": "c0115",
@@ -993,7 +993,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000196442.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000424551.jpg"
 },
 {
 "id": "c0116",
@@ -1002,7 +1002,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000439994.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000042276.jpg"
 },
 {
 "id": "c0117",
@@ -1011,7 +1011,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000041633.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000000885.jpg"
 },
 {
 "id": "c0118",
@@ -1020,7 +1020,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000091654.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000080057.jpg"
 },
 {
 "id": "c0119",
@@ -1029,7 +1029,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000177714.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000038210.jpg"
 },
 {
 "id": "c0120",
@@ -1038,7 +1038,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000122927.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000133000.jpg"
 },
 {
 "id": "c0121",
@@ -1047,7 +1047,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000118367.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000199442.jpg"
 },
 {
 "id": "c0122",
@@ -1056,7 +1056,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000423971.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000432085.jpg"
 },
 {
 "id": "c0123",
@@ -1065,7 +1065,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000284296.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000188689.jpg"
 },
 {
 "id": "c0124",
@@ -1074,7 +1074,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000029675.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000431848.jpg"
 },
 {
 "id": "c0125",
@@ -1083,7 +1083,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000185409.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000216516.jpg"
 },
 {
 "id": "c0126",
@@ -1092,7 +1092,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000323799.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000335658.jpg"
 },
 {
 "id": "c0127",
@@ -1101,7 +1101,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000405691.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000122962.jpg"
 },
 {
 "id": "c0128",
@@ -1110,7 +1110,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000174482.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000537991.jpg"
 },
 {
 "id": "c0129",
@@ -1119,7 +1119,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000469192.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000581357.jpg"
 },
 {
 "id": "c0130",
@@ -1128,7 +1128,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000189213.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000145591.jpg"
 },
 {
 "id": "c0131",
@@ -1137,7 +1137,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000092939.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000474344.jpg"
 },
 {
 "id": "c0007",
@@ -1155,7 +1155,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000531771.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000025096.jpg"
 },
 {
 "id": "c0133",
@@ -1164,7 +1164,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000128675.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000182202.jpg"
 },
 {
 "id": "c0134",
@@ -1173,7 +1173,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000122166.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000042563.jpg"
 },
 {
 "id": "c0135",
@@ -1182,7 +1182,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000468577.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000500613.jpg"
 },
 {
 "id": "c0136",
@@ -1191,7 +1191,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000032570.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000406570.jpg"
 },
 {
 "id": "c0137",
@@ -1200,7 +1200,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000424551.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000320696.jpg"
 },
 {
 "id": "c0138",
@@ -1209,7 +1209,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000042276.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000430056.jpg"
 },
 {
 "id": "c0139",
@@ -1218,7 +1218,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000000885.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000449603.jpg"
 },
 {
 "id": "c0140",
@@ -1227,7 +1227,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000346703.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000430377.jpg"
 },
 {
 "id": "c0141",
@@ -1236,7 +1236,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000080057.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000018737.jpg"
 },
 {
 "id": "c0142",
@@ -1245,7 +1245,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000129756.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000485130.jpg"
 },
 {
 "id": "c0143",
@@ -1254,7 +1254,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000038210.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000501368.jpg"
 },
 {
 "id": "c0144",
@@ -1263,7 +1263,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000133000.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000294163.jpg"
 },
 {
 "id": "c0145",
@@ -1272,7 +1272,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000199442.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000274066.jpg"
 },
 {
 "id": "c0146",
@@ -1281,7 +1281,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000166642.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000123321.jpg"
 },
 {
 "id": "c0147",
@@ -1290,7 +1290,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000432085.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000459662.jpg"
 },
 {
 "id": "c0148",
@@ -1299,7 +1299,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000340894.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000432898.jpg"
 },
 {
 "id": "c0149",
@@ -1308,7 +1308,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000188689.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000137727.jpg"
 },
 {
 "id": "c0150",
@@ -1317,7 +1317,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000431848.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000284445.jpg"
 },
 {
 "id": "c0151",
@@ -1326,7 +1326,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000216516.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000234660.jpg"
 },
 {
 "id": "c0152",
@@ -1335,7 +1335,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000335658.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000197796.jpg"
 },
 {
 "id": "c0153",
@@ -1344,7 +1344,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000038825.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000365095.jpg"
 },
 {
 "id": "c0154",
@@ -1353,7 +1353,7 @@
 "ocr": "",
 "entities": [],
 "episode": "lunch",
-"image": "/home/ubuntu/.cache/coco/img/000000122962.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000206411.jpg"
 },
 {
 "id": "c0155",
@@ -1362,7 +1362,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000282912.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000293245.jpg"
 },
 {
 "id": "c0156",
@@ -1371,7 +1371,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000537991.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000213255.jpg"
 },
 {
 "id": "c0157",
@@ -1380,7 +1380,7 @@
 "ocr": "",
 "entities": [],
 "episode": "dinner.",
-"image": "/home/ubuntu/.cache/coco/img/000000581357.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000415882.jpg"
 },
 {
 "id": "c0158",
@@ -1389,7 +1389,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000145591.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000364126.jpg"
 },
 {
 "id": "c0159",
@@ -1398,7 +1398,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000290833.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000163640.jpg"
 },
 {
 "id": "c0160",
@@ -1407,7 +1407,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000474344.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000314914.jpg"
 },
 {
 "id": "c0161",
@@ -1416,7 +1416,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000025096.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000126226.jpg"
 },
 {
 "id": "c0162",
@@ -1425,7 +1425,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000182202.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000011122.jpg"
 },
 {
 "id": "c0163",
@@ -1434,7 +1434,7 @@
 "ocr": "",
 "entities": [],
 "episode": "street",
-"image": "/home/ubuntu/.cache/coco/img/000000042563.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000314541.jpg"
 },
 {
 "id": "c0164",
@@ -1443,7 +1443,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000500613.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000153527.jpg"
 },
 {
 "id": "c0165",
@@ -1452,7 +1452,7 @@
 "ocr": "",
 "entities": [],
 "episode": "office",
-"image": "/home/ubuntu/.cache/coco/img/000000406570.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000424642.jpg"
 },
 {
 "id": "c0166",
@@ -1461,7 +1461,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000320696.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000324614.jpg"
 },
 {
 "id": "c0167",
@@ -1470,7 +1470,7 @@
 "ocr": "",
 "entities": [],
 "episode": "outdoors,",
-"image": "/home/ubuntu/.cache/coco/img/000000356424.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000274219.jpg"
 },
 {
 "id": "c0168",
@@ -1479,7 +1479,7 @@
 "ocr": "",
 "entities": [],
 "episode": "home",
-"image": "/home/ubuntu/.cache/coco/img/000000430056.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000066523.jpg"
 },
 {
 "id": "c0169",
@@ -1488,7 +1488,7 @@
 "ocr": "",
 "entities": [],
 "episode": "kitchen",
-"image": "/home/ubuntu/.cache/coco/img/000000449603.jpg"
+"image": "/home/ubuntu/.cache/coco/img/000000260261.jpg"
 },
 {
 "id": "c0003",
@@ -1613,7 +1613,7 @@
 ]
 },
 {
-"q": "did I see a giraffe today",
+"q": "did I see a fire hydrant today",
 "gold": [],
 "expect": [
 "__not_found__"

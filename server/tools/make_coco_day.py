@@ -17,6 +17,8 @@ from pathlib import Path
 
 OUT = Path(__file__).resolve().parent / "data" / "coco_day.json"
 IMG = Path.home() / ".cache" / "coco" / "img"
+ANIMALS = {"bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe"}
+NOT_FOUND = "fire hydrant"  # absent from every picked photo (checked against the annotations)
 NUM = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
 
 
@@ -69,7 +71,7 @@ def main() -> None:
         ("16:40", "dog", "what animal did I see at the park"),
         ("17:20", "horse", "what animal did I see on the trail"),
     ]:
-        i = pick(lambda c, n=name: c[n] >= 1 and not ({"dog", "horse", "cat", "cow", "sheep"} - {n}) & set(c))
+        i = pick(lambda c, n=name: c[n] >= 1 and not (ANIMALS - {n}) & set(c))
         T.append((t, "Outdoors, walking.", i, q, [name]))
     i = pick(lambda c: c["bus"] >= 1 and c["truck"] == 0)
     T.append(("08:45", "Street outside.", i, "what vehicle was at the stop this morning", ["bus"]))
@@ -98,7 +100,9 @@ def main() -> None:
         "Dinner.",
         "Lunch at a restaurant.",
     ]
-    avoid = {"dog", "horse", "cat", "bus", "pizza", "umbrella", "banana"}
+    # distractors must not hold another answer: no animal at all (else "what animal" is ambiguous), no cups /
+    # buses / pizza / umbrellas / bananas, and nothing the not-found question asks about
+    avoid = ANIMALS | {"bus", "pizza", "umbrella", "banana", "cup", NOT_FOUND}
     stream, n = [], 0
     IMG.mkdir(parents=True, exist_ok=True)
 
@@ -130,7 +134,7 @@ def main() -> None:
         m += rng.randrange(2, 6)
         add(f"{min(m, 22 * 60) // 60:02d}:{min(m, 22 * 60) % 60:02d}", rng.choice(places), iid)
     stream.sort(key=lambda e: e["time"])
-    qs.append({"q": "did I see a giraffe today", "gold": [], "expect": ["__not_found__"]})
+    qs.append({"q": f"did I see a {NOT_FOUND} today", "gold": [], "expect": ["__not_found__"]})
     OUT.write_text(
         json.dumps(
             {
