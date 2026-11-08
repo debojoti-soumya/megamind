@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     api_token: str = ""  # shared secret for a public deployment; empty = no auth (megamind/auth.py)
+    # startup warmup (megamind/warmup.py): one background pass over the question path (free Claude count_tokens, one
+    # tiny embedding, a LanceDB retrieval, SigLIP, reader image encode, STT/TTS clients) so the first question after a
+    # cold start doesn't pay first-use costs. Never blocks startup or requests; failures are only logged.
+    warmup: bool = True
+    warmup_timeout_s: float = 20.0  # per warmup step
 
     anthropic_api_key: str = ""
     claude_model: str = "claude-sonnet-5-5"  # 1.6 s p50 / 2.1 s p95 live (deploy/bench_modal.py); CLAUDE_MODEL
@@ -29,6 +34,12 @@ class Settings(BaseSettings):
     reader_max_retries: int = 1
     reader_max_images: int = 12  # per call (Sail cap 20; report 04 says <=12 for latency); more -> chunk + merge
     reader_thumb_max_px: int = 960  # longest side sent to the reader; 960 = the headset upload, unscaled
+    # Claude-reads-the-snapshots path (ClaudeVisionReader): the best READER_FULL_IMAGES hits go at
+    # READER_THUMB_MAX_PX, the rest (mostly temporal-context tokens at the tail) at READER_SMALL_PX; ~922 -> ~262
+    # Claude image tokens each at 512 px. 0 full images = every image at full size (the old payload);
+    # READER_SMALL_PX=0 = captions only beyond the full ones. Every hit's caption/OCR is always in the evidence.
+    reader_full_images: int = 6
+    reader_small_px: int = 512
     reader_max_tokens: int = 300
     reader_json_mode: str = "schema"  # schema (json_schema) | object (json_object) | off; downgraded on HTTP 400
     reader_completion_window: str = ""  # Sail: asap | balanced; sent as X-Sail-Completion-Window when set
@@ -41,6 +52,16 @@ class Settings(BaseSettings):
     # question, so the tool round re-reads tools + system + history. Never changes answers; off (default) = the
     # request bodies are exactly as before
     claude_prompt_cache: bool = False
+    # "right now" questions (megamind.live.is_now_question) with live frames buffered: skip embedding + retrieval
+    # and hand Claude only the newest live frames + speech as its first tool result (it can still re-query)
+    now_fast_path: bool = True
+    # opt-in per-question routing: live / short standalone recall questions go to CLAUDE_FAST_MODEL, the rest to
+    # CLAUDE_MODEL. Off by default until the eval shows the fast model keeps answers correct
+    claude_route_fast: bool = False
+    claude_fast_model: str = "claude-haiku-5-5"
+    # the stream's `retrieval` event waits at most this long for replay_url lookups (store queries) so it never
+    # holds back answer text; links not ready by then are null in that event (final.cited always has them)
+    stream_replay_budget_s: float = 0.15
     # demo convenience: "latest" = a chat whose device_id has no memories searches the most recently active device
     # instead (reported as device_id_used + warning); "" (default) = search the requested device and only warn
     chat_default_device: Literal["", "latest"] = ""

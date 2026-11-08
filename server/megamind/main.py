@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import importlib.util
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -42,6 +43,7 @@ from megamind.store.embeddings import build_image_embedder, build_text_embedder
 from megamind.store.media import MediaStore, aging_loop
 from megamind.ui.router import router as ui_router
 from megamind.video import install as install_video
+from megamind.warmup import WarmupState, start_warmup, stop_warmup
 from megamind.xr import install as install_xr
 
 logging.basicConfig(level=logging.INFO)
@@ -97,6 +99,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        t_start = time.perf_counter()
         settings.thumb_dir.mkdir(parents=True, exist_ok=True)
         settings.audio_dir.mkdir(parents=True, exist_ok=True)
         st = app.state
@@ -159,7 +162,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.aging_task = None
         if settings.media_age_interval_s > 0:
             st.aging_task = asyncio.create_task(aging_loop(st, settings.media_age_interval_s))
+        st.warmup_task = start_warmup(st, settings)  # background: never delays startup or the first request
+        log.info("startup ready in %.2f s (warmup %s)", time.perf_counter() - t_start, st.warmup.status)
         yield
+        await stop_warmup(st.warmup_task)
         if st.hier_task is not None:
             st.hier_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -202,6 +208,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return HealthResponse(
             status="degraded" if store_degraded else "ok",
             store_count=await st.store.count(),
+            warmup=getattr(st, "warmup", WarmupState()).status,
             models={
                 "store": f"{settings.store_backend} (degraded: {store_degraded})"
                 if store_degraded
