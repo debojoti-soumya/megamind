@@ -5,9 +5,13 @@ hits) so the reader sees context. Returns <= k tokens in chronological order.
 
 from __future__ import annotations
 
+import asyncio
 import math
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from megamind.ingest.enrich import ImageEmbedder, TextEmbedder
@@ -60,6 +64,10 @@ class HybridRetriever(Retriever):
         self.tz = tz
         self.cfg = config or HybridConfig()
         self._cache: dict[str, MemoryToken] = {}
+        # query text -> vector (LRU): the prefetch and the agent's own recall often embed the same text, and a
+        # hosted embedder is a network round trip on the critical path
+        self._qvecs: OrderedDict[tuple[str, str], list[float]] = OrderedDict()
+        self.qvec_cache_size = 256
 
     # ------------------------------------------------------------------ public
 
@@ -139,37 +147,33 @@ class HybridRetriever(Retriever):
         `weight * sigmoid(scale * cos + bias) / (c + rank + 1)`, so a weak nearest image can't outrank exact
         text/OCR hits (ported from PR #54). Hybrid mode only: visual mode ranks the image list alone, unchanged."""
         flt = dict(time_from=time_from, time_to=time_to, device_id=device_id)
-        # (name, weight, ranked ids, optional per-hit multipliers aligned with the ids)
-        lists: list[tuple[str, float, list[str], list[float] | None]] = []
         n = self.cfg.pool
 
-        if mode in ("semantic", "hybrid"):
-            kw = await self.adapter.keyword_search(text, n, **flt)
-            lists.append(("bm25", w.bm25, [i for i, _ in kw], None))
+        async def vec(embed, field: str) -> list[tuple[str, float]]:
+            return await self.adapter.vector_search(await self._embed_query(field, embed, text), n, field, **flt)
+
+        # the legs are independent store calls (LanceDB runs each in a worker thread): run them concurrently
+        legs: list[tuple[str, float, Coroutine[Any, Any, list[tuple[str, float]]]]] = []
+        text_lists = mode in ("semantic", "hybrid") or (mode == "visual" and self.image_embedder is None)
+        if text_lists:
+            legs.append(("bm25", w.bm25, self.adapter.keyword_search(text, n, **flt)))
             if self.text_embedder is not None:
-                qv = await self.text_embedder.embed_query(text)
-                tv = await self.adapter.vector_search(qv, n, "text_vec", **flt)
-                lists.append(("text", w.text, [i for i, _ in tv], None))
-            if w.ocr_bm25:
-                ocr = await self.adapter.ocr_search(text, n, **flt)
-                lists.append(("ocr_bm25", w.ocr_bm25, [i for i, _ in ocr], None))
+                legs.append(("text", w.text, vec(self.text_embedder.embed_query, "text_vec")))
+        if mode in ("semantic", "hybrid") and w.ocr_bm25:
+            legs.append(("ocr_bm25", w.ocr_bm25, self.adapter.ocr_search(text, n, **flt)))
         if mode in ("visual", "hybrid") and self.image_embedder is not None:
-            iv_q = await self.image_embedder.embed_text(text)
-            iv = await self.adapter.vector_search(iv_q, n, "image_vec", **flt)
             weight = 1.0 if mode == "visual" else w.image
-            # calibrate only when the image list is fused against text lists: in visual mode it is the only
-            # list, and shrinking it would just hand the ranking to the additive recency/OCR priors
-            cal = getattr(self.adapter.store, "image_calibration", None) if mode == "hybrid" else None
-            mults = [image_conf(cos, *cal) for _, cos in iv] if cal is not None else None
-            lists.append(("image", weight, [i for i, _ in iv], mults))
-        if mode == "visual" and self.image_embedder is None:
-            # no image tower available: degrade gracefully to the text lists
-            kw = await self.adapter.keyword_search(text, n, **flt)
-            lists.append(("bm25", w.bm25, [i for i, _ in kw], None))
-            if self.text_embedder is not None:
-                qv = await self.text_embedder.embed_query(text)
-                tv = await self.adapter.vector_search(qv, n, "text_vec", **flt)
-                lists.append(("text", w.text, [i for i, _ in tv], None))
+            legs.append(("image", weight, vec(self.image_embedder.embed_text, "image_vec")))
+        ranked = await asyncio.gather(*(c for _, _, c in legs))
+
+        # calibrate only when the image list is fused against text lists: in visual mode it is the only
+        # list, and shrinking it would just hand the ranking to the additive recency/OCR priors
+        cal = getattr(self.adapter.store, "image_calibration", None) if mode == "hybrid" else None
+        # (name, weight, ranked ids, optional per-hit multipliers aligned with the ids)
+        lists: list[tuple[str, float, list[str], list[float] | None]] = []
+        for (name, weight, _), hits in zip(legs, ranked, strict=True):
+            mults = [image_conf(cos, *cal) for _, cos in hits] if name == "image" and cal is not None else None
+            lists.append((name, weight, [i for i, _ in hits], mults))
 
         scores: dict[str, float] = {}
         reasons: dict[str, list[str]] = {}
@@ -224,6 +228,17 @@ class HybridRetriever(Retriever):
                 pass
         return bool(a.caption) and a.caption == b.caption and a.ocr_text == b.ocr_text
 
+    async def _embed_query(self, field: str, embed: Callable[[str], Awaitable[list[float]]], text: str) -> list[float]:
+        key = (field, text)
+        if (v := self._qvecs.get(key)) is not None:
+            self._qvecs.move_to_end(key)
+            return v
+        v = await embed(text)
+        self._qvecs[key] = v
+        while len(self._qvecs) > self.qvec_cache_size:
+            self._qvecs.popitem(last=False)
+        return v
+
     async def _expand(
         self, ranked: list[RetrievedToken], k: int, lo: float | None = None, hi: float | None = None
     ) -> list[RetrievedToken]:
@@ -234,17 +249,24 @@ class HybridRetriever(Retriever):
         )
         primary = ranked[: max(1, k - budget)]
         chosen: dict[str, RetrievedToken] = {r.token.id: r for r in primary}
-        for r in primary[: self.cfg.expand_top]:
+        anchors = primary[: self.cfg.expand_top] if len(chosen) < k else []
+        # one store scan per anchor (window + linked modality): fetch them concurrently, then merge in rank order
+        windows, links = await asyncio.gather(
+            asyncio.gather(
+                *(self.adapter.neighbors(r.token.id, self.cfg.expand_before, self.cfg.expand_after) for r in anchors)
+            ),
+            asyncio.gather(*(self._linked(r.token, lo, hi) for r in anchors)),
+        )
+        for r, nbs, link in zip(anchors, windows, links, strict=True):
             if len(chosen) >= k:
                 break
-            link = await self._linked(r.token, lo, hi)
             if (
                 link is not None
                 and link.id not in chosen
                 and not any(self._same_frame(link, c.token) for c in chosen.values())
             ):
                 chosen[link.id] = RetrievedToken(token=link, score=r.score * 0.5, reasons=["linked"], is_context=True)
-            for nb in await self.adapter.neighbors(r.token.id, self.cfg.expand_before, self.cfg.expand_after):
+            for nb in nbs:
                 if len(chosen) >= k:
                     break
                 if nb.id in chosen or not nb.caption:
