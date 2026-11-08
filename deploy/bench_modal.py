@@ -50,14 +50,6 @@ CONFIGS: dict[str, dict[str, str]] = {
         **{"_ARGS": "--dataset tools/data/coco_day.json", "EMBED_PROVIDER": "openai"},
         "IMAGE_EMBED_PROVIDER": "openclip",
     },
-    "visual_off": {
-        **{"_ARGS": "--dataset tools/data/visual_day.json", "EMBED_PROVIDER": "openai"},
-        "IMAGE_EMBED_PROVIDER": "none",
-    },
-    "visual_on": {
-        **{"_ARGS": "--dataset tools/data/visual_day.json", "EMBED_PROVIDER": "openai"},
-        "IMAGE_EMBED_PROVIDER": "openclip",
-    },
     "long_hybrid": {
         "_ARGS": "--dataset tools/data/long_week.json",
         "EMBED_PROVIDER": "openai",
@@ -81,7 +73,11 @@ CONFIGS: dict[str, dict[str, str]] = {
     "sail512_sonnet": {**SAIL, "READER_THUMB_MAX_PX": "512"},
     "sail960_sonnet": {**SAIL, "READER_THUMB_MAX_PX": "960"},
     "claude_sonnet": {"READER_PROVIDER": "claude", "READER_THUMB_MAX_PX": "960"},
-    "claude_sonnet_siglip": {"READER_PROVIDER": "claude", "READER_THUMB_MAX_PX": "960", "IMAGE_EMBED_PROVIDER": "openclip"},
+    "claude_sonnet_siglip": {
+        "READER_PROVIDER": "claude",
+        "READER_THUMB_MAX_PX": "960",
+        "IMAGE_EMBED_PROVIDER": "openclip",
+    },
     "claude_haiku": {"READER_PROVIDER": "claude", "READER_THUMB_MAX_PX": "960", "CLAUDE_MODEL": "claude-haiku-4-5"},
 }
 

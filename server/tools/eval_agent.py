@@ -72,29 +72,6 @@ def _local(d: date, hhmm: str, tz: ZoneInfo) -> datetime:
 
 
 PHOTOS: dict[str, str] = {}  # token id -> real photo path (tools/make_coco_day.py)
-SCENES: dict[str, dict] = {}  # token id -> drawn scene (tools/make_visual_day.py); else a caption card
-
-
-def _draw_scene(scene: dict, width: int):
-    from PIL import Image, ImageDraw
-
-    k = width / 960
-    img = Image.new("RGB", (width, round(720 * k)), tuple(scene.get("bg", [220, 220, 220])))
-    dr = ImageDraw.Draw(img)
-    for sh in scene["shapes"]:
-        xy, c = [v * k for v in sh["xy"]], tuple(sh["color"])
-        kind = sh["shape"]
-        if kind == "rect":
-            dr.rectangle(xy, fill=c)
-        elif kind in ("circle", "ellipse"):
-            dr.ellipse(xy, fill=c)
-        elif kind == "ring":
-            dr.ellipse(xy, outline=c, width=max(2, round(12 * k)))
-        elif kind == "pie":
-            dr.pieslice(xy, 180, 360, fill=c)
-        elif kind == "line":
-            dr.line(xy, fill=c, width=max(1, round(4 * k)))
-    return img
 
 
 def load_day(path: Path | str = DEFAULT_DATASET, thumb_dir: Path | None = None) -> Day:
@@ -120,8 +97,6 @@ def load_day(path: Path | str = DEFAULT_DATASET, thumb_dir: Path | None = None) 
             )
         )
     for t, e in zip(tokens, raw["stream"], strict=True):
-        if "scene" in e:
-            SCENES[t.id] = e["scene"]
         if "image" in e:
             PHOTOS[t.id] = e["image"]
     cases = [Case(q=q["q"], gold=list(q.get("gold", [])), expect=list(q.get("expect", []))) for q in raw["questions"]]
@@ -142,9 +117,6 @@ def render_thumbs(day: Day, out_dir: Path, width: int = 512) -> None:
             ph = Image.open(PHOTOS[t.id]).convert("RGB")
             ph.thumbnail((width, width))
             ph.save(t.thumb_path, "JPEG", quality=85)
-            continue
-        if t.id in SCENES:
-            _draw_scene(SCENES[t.id], width).save(t.thumb_path, "JPEG", quality=80)
             continue
         img = Image.new("RGB", (width, round(384 * scale)), (235, 235, 225))
         dr = ImageDraw.Draw(img)
