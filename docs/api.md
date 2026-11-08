@@ -131,6 +131,17 @@ Query: `k` (int, 1–200, default 24), `device_id` (optional), `kind` (repeatabl
 (not ranked). Unenriched tokens may appear with an empty `caption`. Used by the Memory Theater (`GET /xr`) for
 its cards. `GET /memories` stays a ranked search that drops hits unrelated to `q`, so it can't list "recent".
 
+## `GET /episodes`  (the day as episodes, no query)
+Query: `from`/`to` (ISO-8601, optional; unparseable → 400), `k` (int, 1–500, default 50), `device_id` (optional).
+Newest first. Episodes come from the frames' `episode_id` (span and size within the window), plus the consolidator's
+`kind="episode"` summary token when one has been written (`summary_id` is `null` and `summary` empty until then).
+```json
+{ "episodes": [ { "episode_id": "...", "device_id": "quest3-01", "start_ts": 1731000000.1, "end_ts": 1731000420.7,
+                  "n_frames": 37, "summary": "Made coffee in the kitchen", "entities": ["mug","kettle"],
+                  "thumb_url": "/v1/thumbs/....jpg", "summary_id": "..." } ] }
+```
+Debug / companion-app route: the headset does not call it, so it has no `Dto.cs` counterpart.
+
 ## `GET /thumbs/{id}.jpg`
 Keyframe thumbnail (JPEG) on every media tier: hot frames are served from their JPEG, cold frames are decoded
 from their AV1 chunk (recent decodes are cached). 404 for tokens without an image (`tier="text"`, transcripts).
