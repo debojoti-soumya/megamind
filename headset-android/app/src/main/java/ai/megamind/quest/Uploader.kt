@@ -150,6 +150,7 @@ object Uploader {
       val sent = sentParts(dir)
       var accepted = 0
       var dropped = 0
+      var rejected = 0
       if (frames != null) {
         for (i in 0 until frames.length()) {
           val fr = frames.getJSONObject(i)
@@ -162,6 +163,13 @@ object Uploader {
           when {
             r.code in 200..299 -> {
               if (r.body.contains("\"accepted\":true")) accepted++ else dropped++
+              markSent(dir, name)
+            }
+            r.code == 400 && r.body.contains(MegamindApi.UNDECODABLE_JPEG) -> {
+              // One corrupt JPEG (e.g. torn write before a crash) must not park the whole chunk,
+              // and its audio, in chunks_failed: skip just this frame.
+              Log.w(TAG, "Skipping undecodable frame ${dir.name}/$name")
+              rejected++
               markSent(dir, name)
             }
             r.code == 400 || r.code == 413 || r.code == 415 || r.code == 422 ->
@@ -207,7 +215,7 @@ object Uploader {
           }
         }
       }
-      Outcome.Ok("frames accepted=$accepted filtered=$dropped$audioNote")
+      Outcome.Ok("frames accepted=$accepted filtered=$dropped" + (if (rejected > 0) " undecodable=$rejected" else "") + audioNote)
     } catch (e: IOException) {
       Outcome.Retry("Backend unreachable ($base): ${e.message ?: e.javaClass.simpleName}")
     } catch (e: Exception) {

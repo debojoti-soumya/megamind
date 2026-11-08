@@ -24,6 +24,9 @@ object MegamindApi {
   const val AUDIO_PATH = "/v1/audio"
   const val HEALTH_PATH = "/v1/health"
 
+  /** `detail` of the server's 400 for a corrupt JPEG (server/megamind/ingest/router.py): skip that frame only. */
+  const val UNDECODABLE_JPEG = "not a decodable JPEG"
+
   fun frameMetaJson(deviceId: String, tsSec: Double): String =
       "{\"device_id\":${jsonString(deviceId)},\"ts\":${jsonNumber(tsSec)}}"
 
@@ -143,9 +146,13 @@ object MegamindApi {
     }
   }
 
-  /** "192.168.1.20:8000/" -> "http://192.168.1.20:8000". Null if unparseable. */
+  /**
+   * "192.168.1.20:8000/" -> "http://192.168.1.20:8000". A pasted API base ("…:8000/v1") is accepted too,
+   * since the paths above already start with /v1. Null if unparseable.
+   */
   fun normalizeBaseUrl(raw: String): String? {
     var url = raw.trim().trimEnd('/')
+    if (url.endsWith("/v1")) url = url.removeSuffix("/v1").trimEnd('/')
     if (url.isEmpty()) return null
     if (!url.contains("://")) url = "http://$url"
     return try {

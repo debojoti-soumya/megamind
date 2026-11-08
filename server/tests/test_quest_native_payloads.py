@@ -115,3 +115,12 @@ async def test_native_app_bad_meta_is_permanent_400(client):
     body, ctype = _multipart([("meta", None, None, b"{}"), ("image", "x.jpg", "image/jpeg", _checkerboard_jpeg())])
     r = await c.post("/v1/frames", content=body, headers={"Content-Type": ctype})
     assert r.status_code == 400
+
+
+async def test_native_app_corrupt_jpeg_detail_is_stable(client):
+    """The app skips only a corrupt frame, not the whole chunk, on this 400 detail (MegamindApi.UNDECODABLE_JPEG)."""
+    c, _ = client
+    body, ctype = _frame_body("quest3-native", T0, _checkerboard_jpeg()[:200])
+    r = await c.post("/v1/frames", content=body, headers={"Content-Type": ctype})
+    assert r.status_code == 400
+    assert "not a decodable JPEG" in r.json()["detail"]

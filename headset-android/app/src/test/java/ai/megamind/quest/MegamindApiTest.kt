@@ -87,6 +87,8 @@ class MegamindApiTest {
     assertEquals("http://192.168.1.20:8000", MegamindApi.normalizeBaseUrl(" 192.168.1.20:8000/ "))
     assertEquals("https://x.example", MegamindApi.normalizeBaseUrl("https://x.example/"))
     assertEquals(null, MegamindApi.normalizeBaseUrl(""))
+    assertEquals("http://192.168.1.20:8000", MegamindApi.normalizeBaseUrl("192.168.1.20:8000/v1/"))
+    assertEquals(null, MegamindApi.normalizeBaseUrl("/v1"))
   }
 
   // ---- live: replay the exact bytes against a running server ----
