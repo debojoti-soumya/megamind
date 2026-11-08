@@ -175,6 +175,25 @@ def _with_images(payload: str, r: RecallResult) -> str | list[dict]:
     return blocks
 
 
+def _tool_rounds_as_text(turn: list[dict]) -> list[dict]:
+    """`turn` with each tool_use written as a text call and each tool_result as a labelled text block followed by its
+    content (images kept), so the request no longer ends in a tool_result (which Sonnet answers in one burst)."""
+
+    def flat(b: dict) -> list:
+        if b.get("type") == "tool_use":
+            return [{"type": "text", "text": f"{b['name']}({json.dumps(b['input'], ensure_ascii=False)})"}]
+        if b.get("type") == "tool_result":
+            content = b.get("content", "")
+            blocks = content if isinstance(content, list) else [{"type": "text", "text": str(content)}]
+            return [{"type": "text", "text": "tool result:"}, *blocks]
+        return [b]
+
+    return [
+        {**m, "content": [x for b in m["content"] for x in flat(b)]} if isinstance(m["content"], list) else m
+        for m in turn
+    ]
+
+
 def _strip_images(turn: list[dict]) -> list[dict]:
     """`turn` with every image block (in a message or inside a tool result) replaced by a short text placeholder."""
 
@@ -584,10 +603,13 @@ class ClaudeAgent:
             )
             for _round in range(MAX_TOOL_ROUNDS + 1):
                 t_llm = time.perf_counter()
-                messages = prior + turn
+                sent = turn
+                if self.settings.claude_tool_results_as_text and len(turn) > 1:
+                    sent = _tool_rounds_as_text(turn)
+                messages = prior + sent
                 if cache_question:
                     question = {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}
-                    messages = [*prior, {"role": "user", "content": [question]}, *turn[1:]]
+                    messages = [*prior, {"role": "user", "content": [question]}, *sent[1:]]
                 req = {
                     "model": model,
                     "max_tokens": MAX_TOKENS,

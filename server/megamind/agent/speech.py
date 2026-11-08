@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import time
 import wave
 from collections.abc import Awaitable, Callable
@@ -26,12 +27,18 @@ Emit = Callable[[str, dict], Awaitable[None]]
 GAP_S = 0.15  # silence between sentences in the concatenated file (as OpenAITTS._render)
 
 
-class SentenceBuffer:
-    """Incremental `tts.split_sentences`: feed text deltas, get back complete sentences to speak."""
+_CLAUSE_END = re.compile(r"(?<=[,;:])\s+(?=\S)")
 
-    def __init__(self, min_chars: int = 25) -> None:
+
+class SentenceBuffer:
+    """Incremental `tts.split_sentences`: feed text deltas, get back complete sentences to speak. With
+    `first_clause`, the first piece may end at a comma/semicolon instead: a TTS call takes longer the more text it
+    has (~0.9 s for 6 words vs ~1.4 s for 20 with gpt-4o-mini-tts), so the first audio comes sooner."""
+
+    def __init__(self, min_chars: int = 25, first_clause: bool = False) -> None:
         self.buf = ""
         self.min_chars = min_chars
+        self.first_clause = first_clause
 
     def feed(self, text: str) -> list[str]:
         self.buf += text
@@ -44,6 +51,13 @@ class SentenceBuffer:
                 continue
             out.append(head)
             self.buf, pos = self.buf[m.end() :], 0
+        if self.first_clause and not out:
+            m = next((m for m in _CLAUSE_END.finditer(self.buf) if m.start() >= self.min_chars), None)
+            if m:
+                out.append(self.buf[: m.start()].strip())
+                self.buf = self.buf[m.end() :]
+        if out:
+            self.first_clause = False
         return out
 
     def flush(self) -> str:
@@ -89,7 +103,7 @@ class StreamingSpeaker:
 
     def _new_generation(self) -> None:
         self.audio_id = str(ULID())
-        self.buf = SentenceBuffer(self.min_chars)
+        self.buf = SentenceBuffer(self.min_chars, first_clause=True)
         self.texts: list[str] = []
         self.started_ms: list[float] = []  # when each clip's TTS call began (ms since the turn started)
         self.parts: list[asyncio.Task[str | None]] = []

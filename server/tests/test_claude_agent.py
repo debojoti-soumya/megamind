@@ -150,10 +150,11 @@ async def test_single_tool_call_with_claude_cites(recall):
     assert "Pass short keywords as query" in first["system"]
     assert first["messages"] == [{"role": "user", "content": "where did I leave my keys?"}]
     assert second["messages"][1]["role"] == "assistant"
-    assert second["messages"][1]["content"][0]["type"] == "tool_use"
-    tr = second["messages"][2]["content"][0]
-    assert tr["type"] == "tool_result" and tr["tool_use_id"] == "toolu_1"
-    payload = json.loads(tr["content"])
+    # CLAUDE_TOOL_RESULTS_AS_TEXT (default): the tool round goes back as text so Sonnet streams the answer
+    assert second["messages"][1]["content"][0] == {"type": "text", "text": 'recall_memory({"query": "keys", "k": 6})'}
+    label, tr = second["messages"][2]["content"][:2]
+    assert label == {"type": "text", "text": "tool result:"}
+    payload = json.loads(tr["text"])
     assert payload["confidence"] == "low"
     assert payload["cited"][0]["id"] == "t_keys"
     assert "ago" in payload["cited"][0]["when"] and payload["cited"][0]["time_local"]
@@ -236,7 +237,7 @@ async def test_bad_tool_args_are_reported_not_raised(recall):
     agent = _agent(recall, script)
     resp = await agent.chat("s6", "keys?", "dev1")
     assert resp.tool_calls[0].confidence == "not_found"
-    payload = json.loads(script.requests[1]["messages"][2]["content"][0]["content"])
+    payload = json.loads(script.requests[1]["messages"][2]["content"][1]["text"])
     assert payload["evidence"].startswith("Tool error")
 
 
@@ -398,7 +399,7 @@ async def test_ocr_match_skips_reader_on_claude_path(recall):
         ]
     )
     _, stats = await _agent(recall, script).chat_with_stats("s", "when is standup and the demo", "dev1", now=NOW)
-    payload = json.loads(script.requests[1]["messages"][2]["content"][0]["content"])
+    payload = json.loads(script.requests[1]["messages"][2]["content"][1]["text"])
     assert (
         payload["evidence"].startswith("[exact text match") and "Standup 10am / Ship demo Sunday" in payload["evidence"]
     )
