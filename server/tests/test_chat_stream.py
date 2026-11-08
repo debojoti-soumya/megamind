@@ -443,8 +443,9 @@ async def test_prompt_cache_breakpoints_read_back_across_rounds_and_turns(app_cl
     assert "cache_control" not in clock
     assert question == {"type": "text", "text": "where are my keys?", "cache_control": EPHEMERAL}
     assert _breakpoints(q1) == ["system[0]", "messages[0][1]:text"]
-    # the tool round: the marker moves to the tool result (the API finds the question's entry behind it)
-    assert _breakpoints(q2) == ["system[0]", "messages[2][0]:tool_result"]
+    # the tool round: the marker moves to the tool result (the API finds the question's entry behind it), sent as
+    # text by CLAUDE_TOOL_RESULTS_AS_TEXT (default): ["tool result:", payload]
+    assert _breakpoints(q2) == ["system[0]", "messages[2][1]:text"]
     assert q2["messages"][0]["content"] == [clock, {"type": "text", "text": "where are my keys?"}]
     assert [m["role"] for m in q2["messages"]] == ["user", "assistant", "user"]
 

@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     recall_first: bool = (
         True  # standalone recall questions: the prefetch is Claude's first tool result (no picking call)
     )
+    # after a tool round, send that round's tool_use/tool_result blocks to Claude as plain text (images kept): Sonnet
+    # answers a request ending in a tool_result in one burst at the end of the call, which holds up sentence TTS
+    # (#138). History keeps the real blocks; off = the request bodies are exactly as before
+    claude_tool_results_as_text: bool = True
     # prompt caching (default on): a clock-free system prompt cached with the tools, the clock sent with the
     # question, and breakpoints on the prior history and the latest tool result, so every call reads back what the
     # previous call / turn wrote (history is the bulk of the input). Never changes answers; off = the request
