@@ -35,6 +35,7 @@ namespace Megamind
         public GameObject listeningIndicator;
         public GameObject thinkingIndicator;
         public GameObject emptyHint;        // "hold the trigger and ask…" shown until the first message
+        public SessionStore sessions;       // optional: every message is appended to the active chat; Render() replays one
 
         [Header("Status strip")]
         public FrameUploader uploader;      // optional, for the capture line (fallback when `hud` is empty)
@@ -78,6 +79,7 @@ namespace Megamind
             var b = Instantiate(userBubblePrefab, content);
             b.Text = text;
             Track(b.gameObject);
+            Record("user", text, null);
         }
 
         /// <summary>Adds an empty assistant bubble the caller fills in later (streaming).</summary>
@@ -103,6 +105,7 @@ namespace Megamind
             var b = AddAssistantBubble(text);
             if (isError) b.SetError(errorTextColor, errorBubbleColor);
             AddAnswerDetails(cited, confidence, latencySeconds, firstTextSeconds);
+            if (!isError) Record("assistant", text, cited);
         }
 
         /// <summary>Streaming answer text so far (POST /v1/chat/stream `delta`s), shown in one assistant bubble that
@@ -143,6 +146,7 @@ namespace Megamind
             b.transform.SetAsLastSibling(); // thumbnails/meta go right under it even if a system chip came in between
             b.Text = text;
             AddAnswerDetails(cited, confidence, latencySeconds, firstTextSeconds);
+            Record("assistant", text, cited);
             RequestScroll();
         }
 
@@ -203,6 +207,35 @@ namespace Megamind
             var b = Instantiate(systemChipPrefab != null ? systemChipPrefab : assistantBubblePrefab, content);
             b.Text = text;
             Track(b.gameObject);
+            Record("system", text, null);
+        }
+
+        /// <summary>Replaces the transcript with a stored chat (launch, session switch). Nothing is re-recorded.</summary>
+        public void Render(ChatSession session)
+        {
+            Clear();
+            if (session == null) return;
+            _replaying = true;
+            try
+            {
+                foreach (var m in session.messages)
+                {
+                    switch (m.role)
+                    {
+                        case "user": AddUserMessage(m.text); break;
+                        case "system": AddSystemMessage(m.text); break;
+                        default: AddAssistantBubble(m.text); AddCitations(m.cited); break;
+                    }
+                }
+            }
+            finally { _replaying = false; }
+        }
+
+        private bool _replaying;
+        private void Record(string role, string text, List<Citation> cited)
+        {
+            if (_replaying || sessions == null) return;
+            sessions.Append(role, text, cited);
         }
 
         public void Clear()

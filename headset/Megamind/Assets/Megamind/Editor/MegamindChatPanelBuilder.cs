@@ -67,12 +67,14 @@ namespace Megamind.EditorTools
             var metaLine = MetaLinePrefab();
             var thumbRow = ThumbRowPrefab();
             var thumb = ThumbPrefab();
+            var sessionEntry = SessionEntryPrefab();
+            var sessionGroup = SessionGroupPrefab();
 
             var old = GameObject.Find("MegamindPanel");
             if (old) Undo.DestroyObjectImmediate(old);
 
             var head = FindHead();
-            var panel = BuildPanel(config, head, userBubble, assistantBubble, systemChip, metaLine, thumbRow, thumb);
+            var panel = BuildPanel(config, head, userBubble, assistantBubble, systemChip, metaLine, thumbRow, thumb, sessionEntry, sessionGroup);
             EnsureEventSystem(head);
 
             Undo.RegisterCreatedObjectUndo(panel, "Build Megamind panel");
@@ -86,7 +88,8 @@ namespace Megamind.EditorTools
         // ---------- scene ----------
 
         static GameObject BuildPanel(MegamindConfig config, Transform head, ChatBubble userBubble, ChatBubble assistantBubble,
-                                     ChatBubble systemChip, RectTransform metaLine, RectTransform thumbRow, RectTransform thumb)
+                                     ChatBubble systemChip, RectTransform metaLine, RectTransform thumbRow, RectTransform thumb,
+                                     RectTransform sessionEntry, Text sessionGroup)
         {
             var go = new GameObject("MegamindPanel", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
             var rt = go.GetComponent<RectTransform>();
@@ -262,7 +265,7 @@ namespace Megamind.EditorTools
             MakeLabel(menuRoot.transform, "SessionsTitle", "Chats", FontCaption, TextMuted, TextAnchor.MiddleLeft).PreferredHeight(24f);
             var miNewSession = DrawerEntry(menuRoot.transform, "NewSession", "+", Accent, "New chat", AccentButton);
             var sessionsList = DrawerList(menuRoot.transform, "Sessions");
-            MakeLabel(sessionsList, "Empty", "Earlier chats will show up here.", FontCaption, TextMuted, TextAnchor.UpperLeft);
+            var sessionsEmpty = MakeLabel(sessionsList, "Empty", "Earlier chats will show up here.", FontCaption, TextMuted, TextAnchor.UpperLeft);
             HairlineRow(menuRoot.transform);
             var miSettings = DrawerEntry(menuRoot.transform, "Settings", "S", Secondary, "Settings");
             var miDebug = DrawerEntry(menuRoot.transform, "Debug", "D", Warning, "Debug stats");
@@ -298,8 +301,10 @@ namespace Megamind.EditorTools
             var anchor = go.AddComponent<PanelAnchor>();
             anchor.config = config; anchor.head = head;
 
+            var store = go.AddComponent<SessionStore>();
+
             var chatPanel = go.AddComponent<ChatPanel>();
-            chatPanel.config = config;
+            chatPanel.config = config; chatPanel.sessions = store;
             chatPanel.content = crt; chatPanel.scroll = scroll;
             chatPanel.userBubblePrefab = userBubble; chatPanel.assistantBubblePrefab = assistantBubble;
             chatPanel.systemChipPrefab = systemChip; chatPanel.metaLinePrefab = metaLine;
@@ -312,7 +317,7 @@ namespace Megamind.EditorTools
             chatPanel.hud = hud;
 
             var client = go.AddComponent<ChatClient>();
-            client.config = config; client.panel = chatPanel; client.speaker = speaker;
+            client.config = config; client.panel = chatPanel; client.speaker = speaker; client.sessions = store;
             chatPanel.client = client;
             client.leftHand = MegamindSceneBuilder.FindHand(OVRPlugin.Hand.HandLeft);
             client.rightHand = MegamindSceneBuilder.FindHand(OVRPlugin.Hand.HandRight);
@@ -343,6 +348,11 @@ namespace Megamind.EditorTools
             menu.hud = hud; menu.settings = settings; menu.anchor = anchor; menu.chatPanel = chatPanel;
             client.menu = menu;
             client.panelHover = go.AddComponent<PanelHover>();
+
+            var sessionList = go.AddComponent<SessionListView>();
+            sessionList.store = store; sessionList.chatPanel = chatPanel; sessionList.menu = menu;
+            sessionList.content = sessionsList; sessionList.entryPrefab = sessionEntry; sessionList.groupPrefab = sessionGroup;
+            sessionList.emptyHint = sessionsEmpty.gameObject;
 
             var controls = go.AddComponent<PanelControls>();
             controls.hud = hud; controls.client = client; controls.menu = menu; controls.chatPanel = chatPanel;
@@ -554,6 +564,45 @@ namespace Megamind.EditorTools
             return SavePrefab(go).GetComponent<RectTransform>();
         }
 
+        // Drawer chat row: [Title ............][…] and a hidden second line [Rename][Delete] (SessionListView toggles it).
+        static RectTransform SessionEntryPrefab()
+        {
+            var row = new GameObject("SessionEntry", typeof(RectTransform), typeof(VerticalLayoutGroup));
+            var v = row.GetComponent<VerticalLayoutGroup>();
+            v.spacing = 4f; v.childControlWidth = true; v.childControlHeight = true; v.childForceExpandWidth = true; v.childForceExpandHeight = false;
+            var main = new GameObject("Main", typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(LayoutElement));
+            main.transform.SetParent(row.transform, false);
+            var h = main.GetComponent<HorizontalLayoutGroup>();
+            h.spacing = 4f; h.childControlWidth = true; h.childControlHeight = true; h.childForceExpandWidth = false; h.childForceExpandHeight = true;
+            main.GetComponent<LayoutElement>().preferredHeight = 44f;
+            var title = MakeButton(main.transform, "Title", "New chat", FontCaption, sprite: RoundedS);
+            title.gameObject.AddComponent<LayoutElement>().flexibleWidth = 1f;
+            var tl = title.GetComponentInChildren<Text>();
+            tl.alignment = TextAnchor.MiddleLeft; tl.horizontalOverflow = HorizontalWrapMode.Overflow; tl.verticalOverflow = VerticalWrapMode.Truncate;
+            tl.rectTransform.offsetMin = new Vector2(12f, 0f); tl.rectTransform.offsetMax = new Vector2(-6f, 0f);
+            title.gameObject.AddComponent<RectMask2D>(); // clip long titles
+            var more = MakeButton(main.transform, "More", "…", FontButton, sprite: RoundedS);
+            var mle = more.gameObject.AddComponent<LayoutElement>(); mle.preferredWidth = mle.minWidth = 36f;
+            var actions = new GameObject("Actions", typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(LayoutElement));
+            actions.transform.SetParent(row.transform, false);
+            var ah = actions.GetComponent<HorizontalLayoutGroup>();
+            ah.spacing = 4f; ah.childControlWidth = true; ah.childControlHeight = true; ah.childForceExpandWidth = true;
+            actions.GetComponent<LayoutElement>().preferredHeight = 40f;
+            MakeButton(actions.transform, "Rename", "Rename", FontCaption, sprite: RoundedS);
+            MakeButton(actions.transform, "Delete", "Delete", FontCaption, DangerButton, RoundedS);
+            actions.SetActive(false);
+            return SavePrefab(row).GetComponent<RectTransform>();
+        }
+
+        static Text SessionGroupPrefab()
+        {
+            var t = MakeLabel(null, "SessionGroup", "Today", 14, TextMuted, TextAnchor.LowerLeft);
+            t.fontStyle = FontStyle.Bold;
+            t.PreferredHeight(28f);
+            t.rectTransform.offsetMin = new Vector2(12f, 0f);
+            return SavePrefab(t.gameObject).GetComponent<Text>();
+        }
+
         static RectTransform ThumbRowPrefab()
         {
             var go = new GameObject("ThumbRow", typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(LayoutElement));
@@ -613,7 +662,7 @@ namespace Megamind.EditorTools
         static Text MakeLabel(Transform parent, string name, string text, int size, Color color, TextAnchor align)
         {
             var go = new GameObject(name, typeof(RectTransform), typeof(Text));
-            go.transform.SetParent(parent, false);
+            if (parent) go.transform.SetParent(parent, false);
             var t = go.GetComponent<Text>();
             t.font = UIFont; t.text = text; t.fontSize = size; t.color = color; t.alignment = align;
             t.horizontalOverflow = HorizontalWrapMode.Wrap; t.verticalOverflow = VerticalWrapMode.Overflow; t.raycastTarget = false;

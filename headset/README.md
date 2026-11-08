@@ -335,6 +335,8 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | `ChatBubble.cs` | 3 | one transcript row: `ChatBubble` (label + background, `Append` for streaming) and `ChatBubbleFit` (shrink-wraps the bubble to its text up to a max width) |
 | `PanelAnchor.cs` | 3 | tag-along panel: eye height, `panelDistance` m ahead, glides back when the head leaves a 25° / 0.5 m dead zone; Pin/Unpin (world-lock), hold B/Y 0.5 s to drag; A-/A+ UI scale (PlayerPrefs `megamind.uiScale`) |
 | `SettingsPanel.cs` | 3 | runtime server URL / device id, new session, purge memory |
+| `SessionStore.cs` | 3 | ChatGPT-style chats persisted as JSON in `Application.persistentDataPath/megamind-sessions.json` (id = server `session_id`, title, created/updated, messages with cited memories) |
+| `SessionListView.cs` | 3 | the drawer's chat list: Today / Yesterday / Earlier, active highlighted, tap = switch, long-press or `…` = Rename (Quest keyboard) / Delete |
 | `PanelMenu.cs` | 3 | the right-side drawer's actions (New chat, Settings, Debug, Pin/Unpin, Text size, Controls, Purge) + voice-command execution |
 | `PanelDrawer.cs` | 3 | slides the drawer down the right edge of the panel (150 ms ease-out, `CanvasGroup` fade, chevron rotates) |
 | `VoiceCommands.cs` | 3 | normalized-string matcher for short spoken commands (no wake word, no dependencies) |
@@ -416,13 +418,26 @@ toggle. The chat panel header shows:
 - **Corner tab** (top-right: three bars + a chevron, 72x40 px, visible even when the panel is Hidden): click / trigger /
   pinch or say "open menu" and a **drawer** slides down the right edge of the panel (216 px ≈ 35 % of the width,
   `PanelDrawer`: 150 ms ease-out on `anchoredPosition`, `CanvasGroup` fade, the chevron turns upside down; clipped by a
-  `RectMask2D` while it moves). Top to bottom: **Chats** — *+ New chat* (coral) and the sessions list (filled by the
-  session store; empty hint until then) — then a divider and the actions, each with a coloured one-letter disc:
+  `RectMask2D` while it moves). Top to bottom: **Chats** — *+ New chat* (coral) and the chats list (see *Sessions*
+  below) — then a divider and the actions, each with a coloured one-letter disc:
   *Settings* (the settings sheet), *Debug stats* (everything the old HUD showed — state, resolution, head °/s,
   sent/accepted/last reason/latency/KB, skipped and bg/unfocus counters, the `mic:` line, server URL + `url:<source>` —
   as a scrollable mono block refreshed 4x/s), *Pin panel* / *Unpin panel*, *Text size 1x → 1.25x → 1.5x → 2x*,
   *Controls*, *Purge memory* (red on hover). Only one overlay is open at a time; the drawer closes on the tab, on any
   entry, by clicking anywhere else on the panel, or by voice ("close menu").
+
+**Sessions (ChatGPT-style).** `SessionStore` keeps every chat in `Application.persistentDataPath/megamind-sessions.json`
+(`{ activeId, sessions: [{ id, title, created, updated, messages: [{ role, text, ts, cited: [Citation] }] }] }`, written
+atomically on the next frame after a change and on pause/quit). The chat's `id` *is* the server `session_id`
+(`ChatClient.SessionId`), so tapping an older chat in the drawer resumes Claude's history for it while the server still
+holds that session. `ChatPanel` appends every user / assistant / system message to the active chat (errors are not
+stored) and `ChatPanel.Render(session)` replays one — on launch the last active chat comes back, thumbnails re-load
+from their stored `thumb_url`. The title is the first user message (≤ 36 chars, "New chat" until then). The drawer list
+(`SessionListView`) groups by last activity — **Today / Yesterday / Earlier** — highlights the active chat in coral,
+tap switches (and closes the drawer), long-press (0.6 s) or the `…` button reveals **Rename** (opens the Quest keyboard)
+and **Delete** (deleting the active chat switches to the newest remaining one). *+ New chat* (drawer) and *New session*
+(Settings) both go through `SessionStore.NewSession()`; a blank active chat is reused rather than stacking blanks, and
+blank chats are dropped on save. Up to 60 chats x 200 messages are kept.
 
 **Voice commands.** With a server that sends the stream's early `transcript` event, `ChatClient` matches commands on it and closes the stream, so the server stops the turn before Claude/TTS finish. Otherwise: STT runs inside `POST /v1/chat` (there is no STT-only endpoint), so `ChatClient` hands the returned
 `transcript` to `PanelMenu.TryVoiceCommand` before showing the answer: a short utterance (≤ 6 words after dropping
