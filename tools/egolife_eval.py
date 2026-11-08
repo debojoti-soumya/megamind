@@ -398,12 +398,15 @@ class HTTPBackend:
 class OfflineBackend:
     """main's HybridRetriever over a stored LanceDB (server stopped), with embedders from the server's env."""
 
-    def __init__(self, lancedb_path: Path, k: int, calibrate: str, speech_link: float | None) -> None:
+    def __init__(
+        self, lancedb_path: Path, k: int, calibrate: str, speech_link: float | None, backend: str = "hybrid"
+    ) -> None:
         import asyncio
 
         sys.path.insert(0, str(ROOT / "server"))
         # A/B switches also go in as env settings, so a Settings-driven implementation sees them too.
-        os.environ["RETRIEVER_BACKEND"] = "hybrid"  # UCC needs its cloud corpus; offline is our retriever
+        # UCC needs its cloud corpus; offline is ours: hybrid, or hier (LLM notes over hybrid; needs OPENAI_API_KEY)
+        os.environ["RETRIEVER_BACKEND"] = backend
         # The eval calendar maps EgoLife wall-clock times onto UTC (DAY0), so the planner must resolve "this
         # morning" / "at 3pm" in UTC too, not in the server's WEARER_TZ.
         os.environ["WEARER_TZ"] = "UTC"
@@ -423,7 +426,8 @@ class OfflineBackend:
         self.text, self.image = build_text_embedder(s), build_image_embedder(s)
         self.store = LanceDBStore(lancedb_path)
         self.retriever, _ = build_retriever(s, self.store, self.text, self.image)
-        cfg = self.retriever.cfg
+        hybrid = getattr(self.retriever, "base", self.retriever)
+        cfg = hybrid.cfg
         self.notes: list[str] = []
         if speech_link is not None:
             if hasattr(cfg, "speech_link_s"):
@@ -436,10 +440,10 @@ class OfflineBackend:
         # main.py sets store.image_calibration in its lifespan; this store is built outside the app, so "default"
         # must do the same (SEARCH_CALIBRATE_IMAGE, on when PR 1 has it) or offline would silently run uncalibrated.
         on = calibrate == "on" or (calibrate == "default" and bool(getattr(s, "search_calibrate_image", True)))
-        set_calibration(self.retriever, self.store, self.image, on)
+        set_calibration(hybrid, self.store, self.image, on)
         self.k = k
         self.config = {
-            "backend": "offline HybridRetriever",
+            "backend": f"offline {type(self.retriever).__name__}",
             "text_embedder": _name(self.text),
             "image_embedder": _name(self.image),
             "image_calibration": cal,
@@ -482,6 +486,9 @@ def evaluate(
         got = backend.search(q["question"], tq)
         before = [x for x in all_ts if x <= tq]
         row = score_question(q, got, before, windows, k)
+        trace = getattr(getattr(backend, "retriever", None), "last_trace", None)
+        if trace:
+            row["trace"] = trace
         rows.append(row)
         br = row["best_rank"][str(w_max)]
         print(f"{'OK' if br == 1 else (f'@{br}' if br else 'XX'):3} {q['type']:14} {q['question'][:60]}")
@@ -580,6 +587,7 @@ def main() -> None:
     v.add_argument("--offline", action="store_true", help="in-process HybridRetriever over --lancedb, no server")
     v.add_argument("--calibrate", choices=["default", "on", "off"], default="default", help="offline: PR 1 A/B")
     v.add_argument("--speech-link", type=float, default=None, help="offline: SPEECH_LINK_S for PR 3 A/B (0 = off)")
+    v.add_argument("--backend", choices=["hybrid", "hier"], default="hybrid", help="offline: RETRIEVER_BACKEND")
     a = ap.parse_args()
     if a.cmd == "fetch":
         fetch(a.out, a.repo, a.person, a.day, a.pattern)
@@ -605,7 +613,9 @@ def main() -> None:
         if a.offline and a.lancedb is None:
             raise SystemExit("--offline needs --lancedb")
         backend = (
-            OfflineBackend(a.lancedb, a.k, a.calibrate, a.speech_link) if a.offline else HTTPBackend(a.server, a.k)
+            OfflineBackend(a.lancedb, a.k, a.calibrate, a.speech_link, a.backend)
+            if a.offline
+            else HTTPBackend(a.server, a.k)
         )
         evaluate(backend, a.qa, a.day, [float(x) for x in a.windows.split(",")], a.k, a.out, a.lancedb, a.max_lag)
 

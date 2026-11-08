@@ -38,4 +38,11 @@ def build_retriever(settings, store, text_embedder, image_embedder=None) -> tupl
         if getattr(settings, "ucc_api_key", ""):
             return build_ucc(settings, store, hybrid)
         logging.getLogger(__name__).warning("RETRIEVER_BACKEND=ucc but UCC_API_KEY is empty; using hybrid")
+    if getattr(settings, "retriever_backend", "hybrid") == "hier":
+        from megamind.retrieval.hier import build_hier
+
+        key = getattr(settings, "hier_api_key", "") or getattr(settings, "openai_api_key", "")
+        if key:
+            return build_hier(settings, store, hybrid, key), None
+        logging.getLogger(__name__).warning("RETRIEVER_BACKEND=hier but no HIER_API_KEY/OPENAI_API_KEY; using hybrid")
     return hybrid, None
