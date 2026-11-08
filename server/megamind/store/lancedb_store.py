@@ -458,6 +458,19 @@ class LanceDBStore(MemoryStore):
                 self._summary_writes = 0
                 self._s.optimize(cleanup_older_than=_KEEP_VERSIONS)
 
+    def replace_summaries(self, summaries: list[MemorySummary]) -> None:
+        """Bulk rebuild (backfill): drops every stored summary, then writes these in one batch."""
+        rows = []
+        for x in summaries:
+            tv = x.text_vec if x.text_vec is not None and len(x.text_vec) == self.text_dim else None
+            rows.append(x.model_dump() | {"text_vec": tv or [0.0] * self.text_dim, "has_text_vec": tv is not None})
+        with self._lock:
+            self._s.delete("true")
+            if rows:
+                self._s.add(rows)
+            self._s.create_fts_index("text", use_tantivy=False, replace=True)
+            self._s.optimize(cleanup_older_than=_KEEP_VERSIONS)
+
     async def upsert_summary(self, summary: MemorySummary) -> None:
         await asyncio.to_thread(self._upsert_summary_sync, summary)
 

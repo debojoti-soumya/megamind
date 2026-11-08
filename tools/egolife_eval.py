@@ -324,6 +324,7 @@ def summarize(lancedb_path: Path, captions: Path | None) -> None:
     from megamind.ingest.enrich import build_text_embedder
     from megamind.ingest.summaries import SummaryBuilder
     from megamind.store.lancedb_store import LanceDBStore
+    from megamind.store.memory_store import InMemoryStore
 
     async def run() -> None:
         s = Settings(embed_provider="local")
@@ -343,11 +344,25 @@ def summarize(lancedb_path: Path, captions: Path | None) -> None:
                 t.text_vec = await emb.embed(t.search_text())
             await store.add_many(changed)
             print(f"descriptions: {len(changed)} tokens updated")
-        store._s.delete("true")
-        builder = SummaryBuilder(s, store, emb)
+
+        class _Deferred:
+            dim = emb.dim
+
+            async def embed(self, text: str) -> None:
+                return None
+
+        staging = InMemoryStore()
+        builder = SummaryBuilder(s, staging, _Deferred())
         for t in toks:
             await builder.add(t)
-        print(f"{len(toks)} tokens -> {len(await store.list_summaries())} summaries")
+        sums = await staging.list_summaries()
+        vecs = emb.model.encode(
+            [x.text for x in sums], batch_size=32, normalize_embeddings=True
+        )
+        for x, v in zip(sums, vecs, strict=True):
+            x.text_vec = [float(f) for f in v]
+        store.replace_summaries(sums)
+        print(f"{len(toks)} tokens -> {len(sums)} summaries")
 
     asyncio.run(run())
 
