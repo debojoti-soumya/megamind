@@ -132,6 +132,7 @@ class Model3DSettings(BaseSettings):
     multiview: bool = True
     vggt_weights: str = "facebook/VGGT-1B"  # HF repo or a local model.pt; CC-BY-NC-4.0
     mv_window_s: float = 120.0  # photos within this many seconds of a matching moment
+    mv_visit_s: float = 1800.0  # matching moments this close to the best one are the same visit
     mv_candidates: int = 48  # photos checked by the detector
     mv_min_frames: int = 5
     mv_max_frames: int = 16  # into VGGT; ~4 min and ~10 GB RAM for 16 on CPU, seconds on a GPU
@@ -501,7 +502,7 @@ async def make_model3d(
 
     runner: mv.VGGTRunner = st.model3d_mv
     if not remote and cfg.multiview and not missing and runner.missing() is None:
-        views = await gather_views(st, found.picks, cfg)
+        views = await gather_views(st, found.picks, cfg, t0, t1)
         if len(views) >= cfg.mv_min_frames:
             return await start_multiview(st, found, phrase, prompt, views)
 
@@ -580,17 +581,25 @@ def _spread(items: list, n: int) -> list:
     return [items[round(i * (len(items) - 1) / (n - 1))] for i in range(n)] if n > 1 else items[:1]
 
 
-async def gather_views(st, picks, cfg: Model3DSettings) -> list[MemoryToken]:
-    """Photos from around the best matching moments (the walk around the exhibit), oldest first, spread evenly
-    over time up to `mv_candidates`."""
+async def gather_views(
+    st, picks, cfg: Model3DSettings, t0: float | None = None, t1: float | None = None
+) -> list[MemoryToken]:
+    """Photos from around the best matching moments of one visit (the walk around the exhibit), inside the
+    requested time range, oldest first, spread evenly over time up to `mv_candidates`."""
+    ranked = sorted(picks, key=lambda p: -p.score)
+    if not ranked:
+        return []
+    best = ranked[0].token
+    visit = [
+        p.token for p in ranked if p.token.device_id == best.device_id and abs(p.token.ts - best.ts) <= cfg.mv_visit_s
+    ][:4]
     seen: dict[str, MemoryToken] = {}
-    for p in sorted(picks, key=lambda p: -p.score)[:4]:
-        t = p.token
-        near = await st.store.range(
-            t.ts - cfg.mv_window_s, t.ts + cfg.mv_window_s, 1000, device_id=t.device_id, kinds=("frame",)
-        )
+    for t in visit:
+        lo, hi = t.ts - cfg.mv_window_s, t.ts + cfg.mv_window_s
+        lo, hi = max(lo, t0) if t0 is not None else lo, min(hi, t1) if t1 is not None else hi
+        near = await st.store.range(lo, hi, 1000, device_id=t.device_id, kinds=("frame",))
         for tok in [t, *near]:
-            if tok.has_image:
+            if tok.has_image and lo <= tok.ts <= hi:
                 seen.setdefault(tok.id, tok)
     return _spread(sorted(seen.values(), key=lambda t: t.ts), cfg.mv_candidates)
 

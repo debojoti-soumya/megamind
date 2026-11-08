@@ -416,3 +416,30 @@ def test_model3d_multiview_purged_while_building_keeps_nothing(app3d, tmp_path):
                 break
             time.sleep(0.05)
         assert r.status_code == 404 and "mug" not in r.text
+
+
+def test_gather_views_one_visit_inside_the_time_range():
+    import asyncio
+    from types import SimpleNamespace
+
+    from megamind.agent.model3d import Model3DSettings, gather_views
+    from megamind.models import MemoryToken
+
+    def tok(i, ts):
+        return MemoryToken(id=f"g{i}", device_id="d", ts=ts, caption="", thumb_path="x.jpg", frame_hash=f"{i:016x}")
+
+    day1 = [tok(i, 1000.0 + 10 * i) for i in range(10)]  # 1000..1090
+    day2 = [tok(100 + i, 90000.0 + 10 * i) for i in range(5)]
+    store = SimpleNamespace(range=None)
+
+    async def rng(t0, t1, limit=100, *, device_id=None, kinds=None):
+        return [t for t in day1 + day2 if t0 <= t.ts <= t1]
+
+    store.range = rng
+    st = SimpleNamespace(store=store)
+    picks = [SimpleNamespace(token=day1[5], score=0.9), SimpleNamespace(token=day2[2], score=0.8)]
+    cfg = Model3DSettings()
+    got = asyncio.run(gather_views(st, picks, cfg))
+    assert {t.id for t in got} == {t.id for t in day1}  # the other day's sighting is a different visit
+    got = asyncio.run(gather_views(st, picks, cfg, t0=1030.0, t1=1060.0))
+    assert [t.ts for t in got] == [1030.0, 1040.0, 1050.0, 1060.0]
