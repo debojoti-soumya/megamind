@@ -107,6 +107,39 @@ Live short-term memory frame (JPEG): a raw frame from the replay buffer that was
 `NOW-<n>` evidence item because enrichment had not caught up yet. Only `thumb_url`s of `now_*` citations point
 here. 404 once the frame leaves the replay buffer (window / `DELETE /memories`) or the small live cache.
 Opt out with `LIVE_MEMORY_ENABLED=false` (`LIVE_MEMORY_*` knobs in `server/.env.example`).
+## `POST /montage`
+Highlight reel: a captioned mp4 of the best few moments for a query and/or a time range.
+```json
+{ "device_id": "quest3-abc", "query": "lunch with the team", "time_from": "2026-11-07T11:00:00-08:00",
+  "time_to": 1731009600.0, "max_clips": 6 }
+```
+- At least one of `query`, `time_from`, `time_to` (400 otherwise). Time bounds: unix seconds or ISO-8601
+  (naive = server local time); `time_to < time_from` → 400. `device_id` optional (default: all devices).
+  `max_clips` 0-24 (0/null = default), capped by `MONTAGE_MAX_CLIPS` (8). Empty strings count as unset.
+- Candidates: the retriever's top hits for `query` (within the range, if given), else every frame/transcript
+  token in the range; at most `MONTAGE_MAX_CANDIDATES` (40), evenly spaced.
+- Clip choice: Claude (`montage_plan` tool, `CLAUDE_MODEL`) when `ANTHROPIC_API_KEY` is set and
+  `MONTAGE_PLANNER` is not `offline`; otherwise (or on any API failure) a deterministic plan of evenly spaced,
+  non-empty, de-duplicated moments. `planner` says which one ran.
+- Each clip shows the moment's local time and a short title burned in, with 0.3 s fades. `source="replay"`: the
+  frames buffered for `GET /replay.mp4` around the moment (real frame rate). `source="timelapse"`: the stored
+  keyframe thumbnails from that moment on, each held ~1 s (a ~1 fps timelapse; used once the moment is older
+  than the replay window).
+Response:
+```json
+{ "id": "3f2a9c0d1e5b7a8c6d4e", "url": "/v1/montages/3f2a9c0d1e5b7a8c6d4e.mp4", "title": "Your highlights",
+  "narration": "Here's your highlight reel: 2 moments from that period.", "planner": "offline",
+  "clips": [ { "token_id": "...", "ts": 1731005000.2, "title": "Team lunch at the long table",
+               "duration_s": 4.0, "source": "timelapse", "thumb_url": "/v1/thumbs/....jpg" } ] }
+```
+404 when nothing matches or no chosen moment has frames/thumbnails; 503 without ffmpeg (same lookup as
+replay, `REPLAY_FFMPEG`); 404 when `MONTAGE_ENABLED=false`. The same plan always yields the same `id`.
+
+## `GET /montages/{id}.mp4`
+The rendered montage (H.264, `MONTAGE_WIDTH`x`MONTAGE_HEIGHT`, default 960x540). `GET` or `HEAD`; supports
+`Range: bytes=...` (206 / 416) exactly like `/replay.mp4`. Montages are a bounded cache (newest
+`MONTAGE_CACHE_MAX_FILES`, 16): 404 once evicted, so POST again. `DELETE /memories` clears every montage.
+Not a Claude tool: chat answers do not include a montage (call this endpoint from a "show me" UI action).
 
 ## `GET /audio/{id}.wav`
 TTS output for a chat response.
