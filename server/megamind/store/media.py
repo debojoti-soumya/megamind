@@ -401,7 +401,7 @@ async def run_aging(state: Any, **kwargs: Any) -> dict:
     stats = await state.media.age(**kwargs)
     video = getattr(state, "video", None)
     if video is not None:
-        stats["video_deleted"] = video.age(retention_s=kwargs.get("hot_s"))
+        stats["video_deleted"] = video.age(now=kwargs.get("now"), retention_s=kwargs.get("hot_s"))
     cache = getattr(state, "replay_cache", None)
     if (stats["to_text"] or stats.get("video_deleted")) and cache is not None:
         cache.clear()

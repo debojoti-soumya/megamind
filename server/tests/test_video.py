@@ -161,6 +161,20 @@ async def test_post_video_validation(app_client, clips):
     assert not list(app.state.video.root.rglob("*.part")) and not list(app.state.video.root.rglob("*.mp4"))
 
 
+async def test_post_video_rejects_unsafe_input_without_500(app_client, clips):
+    c, app = app_client
+    # a playlist must never be followed: the demuxer is pinned to mov, so this is simply not a video
+    playlist = b"#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXTINF:5,\nfile:///etc/passwd\n#EXT-X-ENDLIST\n"
+    r = await _post_video(c, playlist, T0)
+    assert r.status_code == 415 and str(app.state.video.root) not in r.json()["detail"]  # no server paths leak
+    r = await _post_video(c, clips["1s"], T0, device="d" * 300)
+    assert r.status_code == 400 and "device_id" in r.json()["detail"]
+    r = await _post_video(c, clips["1s"], 1e300, device="../../x")  # odd but finite: stored, not a 500
+    assert r.status_code == 200, r.text
+    [clip] = app.state.video.clips("../../x")
+    assert clip.path.parent.parent == app.state.video.root and clip.path.name == f"{clip.id}.mp4"
+
+
 async def test_post_video_without_ffmpeg_is_503(app_client, monkeypatch):
     c, app = app_client
 
@@ -245,6 +259,17 @@ async def test_aging_drops_video_with_the_hot_tier(app_client):
     assert len(store.clips("dev1")) == 1
     r = (await c.post("/v1/admin/age", params={"hot_older_than_s": 0})).json()
     assert r["video_deleted"] == 1 and store.clips("dev1") == []
+
+
+async def test_aging_honours_the_given_now(app_client):
+    from megamind.store.media import run_aging
+
+    c, app = app_client
+    clip = _fake_clip(app.state.video, "dev1", T0)  # footage ends at T0 + 5
+    stats = await run_aging(app.state, now=T0 + 6, hot_s=60.0)
+    assert stats["video_deleted"] == 0 and clip.path.exists()
+    stats = await run_aging(app.state, now=T0 + 66, hot_s=60.0)
+    assert stats["video_deleted"] == 1 and not clip.path.exists()
 
 
 def test_store_byte_cap_drops_oldest_and_restart_rehydrates(tmp_path):
@@ -413,3 +438,22 @@ async def test_montage_uses_video_clips_when_covered(app_client, clips, tmp_path
     st.settings.privacy_blur_faces = True  # unblurred sources skipped: stored thumbnails only
     r = await c.post("/v1/montage", json={"time_from": T0, "time_to": T0 + 100, "max_clips": 2})
     assert [cl["source"] for cl in r.json()["clips"]] == ["timelapse", "timelapse"]
+
+
+@needs_ffmpeg
+async def test_montage_render_failing_after_a_purge_is_409(app_client, clips, monkeypatch):
+    c, app = app_client
+    st = app.state
+    p = st.settings.thumb_dir / "t0.jpg"
+    p.write_bytes(_jpeg(0))
+    await st.store.add(MemoryToken(id="t0", device_id="dev1", ts=T0 + 2, caption="scene at the desk",
+                                   thumb_path=str(p), frame_hash="0" * 16))  # fmt: skip
+    await _post_video(c, clips["5s"], T0)
+
+    async def purged_mid_render(*a, **kw):  # DELETE /v1/memories removed the clip while ffmpeg was cutting it
+        st.montage_cache.clear()
+        raise RuntimeError("ffmpeg failed: No such file or directory")
+
+    monkeypatch.setattr(st.montage_cache, "get_or_render", purged_mid_render)
+    r = await c.post("/v1/montage", json={"time_from": T0, "time_to": T0 + 100, "max_clips": 1})
+    assert r.status_code == 409, r.text

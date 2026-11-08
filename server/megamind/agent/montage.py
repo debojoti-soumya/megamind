@@ -522,6 +522,8 @@ async def _render_response(st, cache, cfg, ffmpeg, gen, clips, title, narration,
     try:
         await cache.get_or_render(key, clips, ffmpeg=ffmpeg, fps=cfg.fps, max_width=cfg.width)
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as e:
+        if cache.generation != gen:  # a purge deleted a stored video clip mid-render: same answer as below
+            raise HTTPException(409, "memories were deleted while the montage was being made; try again") from None
         raise HTTPException(500, f"montage render failed: {e}") from None
     if cache.generation != gen:  # DELETE /v1/memories ran meanwhile: the reel may show deleted moments
         cache.path(key).unlink(missing_ok=True)

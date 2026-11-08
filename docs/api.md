@@ -83,8 +83,8 @@ disk (`VIDEO_STORE_DIR`, default `<THUMB_DIR>/../video`). Response `200 OK`:
   already stored (an upload retried after its response was lost); its `video_id` is returned, nothing new is kept.
 - `reason="privacy"` (`accepted: false`, `video_id: ""`): `PRIVACY_BLUR_FACES(_VLM)` is on. Real video is never
   blurred, so it is discarded; don't resend.
-- Bad `meta` (incl. non-finite `ts_start`) / empty body → 400; larger or longer than the caps → 413; not a
-  decodable video, not mp4/mov, not H.264 → 415; `DELETE /memories` covered the clip while it was uploading → 409
+- Bad `meta` (incl. non-finite `ts_start`, or a `device_id` too long to be a directory name, ~230 bytes) /
+  empty body → 400; larger or longer than the caps → 413; not a decodable video, not mp4/mov, not H.264 → 415; `DELETE /memories` covered the clip while it was uploading → 409
   (not kept); `VIDEO_ENABLED=false` → 404 (clients should then stop sending video); no ffmpeg/ffprobe → 503.
 Retention: clips are hot media (tiered media, see `POST /admin/age`): one is deleted once its footage is older than
 `VIDEO_RETENTION_H` (default `HOT_RETENTION_H`, 72 h, when keyframes move to AV1), and the oldest go first beyond

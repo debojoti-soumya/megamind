@@ -12,7 +12,7 @@ from ulid import ULID
 
 from megamind.models import VideoAccepted, VideoMeta
 from megamind.replay.render import FFMPEG_HINT, find_ffmpeg
-from megamind.video.store import privacy_blocks_video, probe
+from megamind.video.store import device_id_fits, privacy_blocks_video, probe
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -31,6 +31,8 @@ async def post_video(request: Request, video: UploadFile = File(...), meta: str 
         vm = VideoMeta.model_validate(json.loads(meta))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"bad meta: {exc}") from exc
+    if not device_id_fits(vm.device_id):
+        raise HTTPException(400, "bad meta: device_id too long")
     if privacy_blocks_video(st.settings):  # never keep unblurred real video while face blurring is on
         return VideoAccepted(video_id="", accepted=False, reason="privacy", ts_start=vm.ts_start)
 
@@ -56,7 +58,7 @@ async def post_video(request: Request, video: UploadFile = File(...), meta: str 
         except FileNotFoundError:
             raise HTTPException(503, FFMPEG_HINT) from None
         except (ValueError, subprocess.SubprocessError) as e:
-            raise HTTPException(415, f"not a decodable video: {e}") from None
+            raise HTTPException(415, f"not a decodable mp4/mov video: {e}") from None
         if "mp4" not in p.format_name and "mov" not in p.format_name:
             raise HTTPException(415, f"expected an mp4 container, got {p.format_name or 'unknown'}")
         if p.codec != "h264":

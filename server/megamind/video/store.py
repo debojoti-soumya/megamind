@@ -1,6 +1,6 @@
 """On-disk store of real H.264 clips uploaded by the headset (`POST /v1/video`).
 
-Layout: `<video_dir>/d_<quoted device_id>/<ts_start>_<ULID>.mp4` plus a `.json` sidecar with what ffprobe
+Layout: `<video_dir>/d_<quoted device_id>/<ULID>.mp4` plus a `.json` sidecar with what ffprobe
 measured (`ts_start`, `duration`, `width`, `height`, `fps`, `bytes`). The sidecar is written last, so a clip
 without one is an interrupted upload and is deleted on startup. The per-device index (sorted by `ts_start`)
 lives in memory and is rebuilt from the sidecars when the server starts.
@@ -109,10 +109,13 @@ def probe(path: Path, *, ffmpeg: str | None, timeout_s: float = 20.0) -> Probe:
     file is not a decodable video, FileNotFoundError when neither ffprobe nor ffmpeg is available."""
     ffprobe = find_ffprobe(ffmpeg)
     if ffprobe:
-        cmd = [ffprobe, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)]
+        # `-f mov` pins the demuxer: an upload is never content-sniffed as a playlist (hls/concat) that would make
+        # ffprobe open other files or URLs.
+        cmd = [ffprobe, "-v", "error", "-f", "mov", "-print_format", "json", "-show_format", "-show_streams", str(path)]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
         if r.returncode != 0:
-            raise ValueError(f"ffprobe: {r.stderr.strip()[-300:] or 'not a media file'}")
+            err = r.stderr.replace(str(path), "upload").strip()  # no server paths in the 415 detail
+            raise ValueError(f"ffprobe: {err[-300:] or 'not a media file'}")
         try:
             info = json.loads(r.stdout or "{}")
         except json.JSONDecodeError as e:
@@ -142,7 +145,8 @@ def _probe_with_ffmpeg(path: Path, ffmpeg: str, timeout_s: float) -> Probe:
     """Fallback for ffmpeg-only installs: parse the stream summary `ffmpeg -i` prints, then count the duration."""
     import re
 
-    r = subprocess.run([ffmpeg, "-hide_banner", "-i", str(path)], capture_output=True, text=True, timeout=timeout_s)
+    cmd = [ffmpeg, "-hide_banner", "-f", "mov", "-i", str(path)]  # demuxer pinned, as in `probe`
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
     err = r.stderr
     m_in = re.search(r"Input #0, ([^,\n]+(?:,[^,\n ]+)*), from", err)
     m_v = re.search(r"Stream #0:\d+[^\n]*: Video: (\w+)[^\n]*?, (\d{2,5})x(\d{2,5})", err)
@@ -156,8 +160,16 @@ def _probe_with_ffmpeg(path: Path, ffmpeg: str, timeout_s: float) -> Probe:
     )
 
 
+MAX_DIR_NAME = 240  # filesystems cap a name at 255 bytes
+
+
 def _device_dir(device_id: str) -> str:
     return _DIR_PREFIX + quote(device_id, safe="")
+
+
+def device_id_fits(device_id: str) -> bool:
+    """False when `device_id` is too long to be a directory name (the upload is then refused with 400)."""
+    return len(_device_dir(device_id)) <= MAX_DIR_NAME
 
 
 @dataclass
@@ -211,7 +223,7 @@ class VideoStore:
 
     def commit(self, staged: Path, clip_id: str, device_id: str, ts_start: float, p: Probe) -> VideoClip:
         """Move a validated staged upload into place (mp4 first, sidecar last) and index it."""
-        final = staged.with_name(f"{ts_start:.3f}_{clip_id}.mp4")
+        final = staged.with_name(f"{clip_id}.mp4")  # ts_start lives in the sidecar (any finite float is valid)
         clip = VideoClip(
             id=clip_id, device_id=device_id, ts_start=ts_start, duration=p.duration, path=final,
             width=p.width, height=p.height, fps=round(p.fps, 3), bytes=staged.stat().st_size,

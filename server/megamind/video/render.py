@@ -50,7 +50,7 @@ def render_video(
     cmd = [ffmpeg, "-y", "-v", "error"]
     chains = []
     for i, s in enumerate(segs):
-        cmd += ["-ss", f"{max(s.offset, 0.0):.3f}", "-t", f"{s.duration:.3f}", "-i", str(s.clip.path)]
+        cmd += ["-ss", f"{max(s.offset, 0.0):.3f}", "-t", f"{s.duration:.3f}", "-f", "mov", "-i", str(s.clip.path)]
         span = (segs[i + 1].start - s.start) if i + 1 < len(segs) else s.duration
         hold = max(span - s.duration, 0.0) + 0.5  # pad past the target, then trim to it exactly
         chains.append(
