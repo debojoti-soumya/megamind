@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 import wave
 
+import httpx2
 import pytest
-from test_chat_stream import ANSWER, ScriptedAnthropic, _message, _stream, _two_rounds, _use_script, text
+from test_chat_stream import ANSWER, ScriptedAnthropic, _message, _sse_body, _stream, _two_rounds, _use_script, text
 from test_chat_stream import app_client as _app_client
 
 from megamind.agent import tts as tts_mod
@@ -177,3 +180,53 @@ async def test_chat_stream_reset_cancels_preamble_audio(app_client):
     after = [d for n, d in events[r_i:] if n == "audio"]
     assert [a["seq"] for a in after] == [0] and after[0]["text"] == ANSWER.split(" <cites>")[0]
     assert ChatResponse.model_validate(events[-1][1]).audio_url.endswith(".wav")
+
+
+class GappedAnthropic(ScriptedAnthropic):
+    """Streams each SSE event `gap` s apart, like the live API writing an answer token by token."""
+
+    gap = 0.03
+
+    def handler(self, request: httpx2.Request) -> httpx2.Response:
+        self.requests.append(json.loads(request.content))
+        events = _sse_body(self.responses.pop(0)).split(b"\n\n")
+
+        async def body():
+            for e in events:
+                if e:
+                    yield e + b"\n\n"
+                    await asyncio.sleep(self.gap)
+
+        return httpx2.Response(200, content=body(), headers={"content-type": "text/event-stream"})
+
+
+async def test_recall_first_answer_streams_and_first_audio_overlaps_the_call(app_client):
+    """#138: on the recall_first path the answer must stream (no trailing tool_result), so sentence 0's clip is
+    ready while Claude still writes sentence 1, one sentence's TTS time before `final`."""
+    c, app = app_client
+    tts_s = 0.1
+    script = GappedAnthropic([_message([text(TWO + " <cites>t_keys</cites>")])])
+    agent = _use_script(app, script, recall_first=True)
+    tts = SlowFirstTTS(app.state.settings.audio_dir, delays=(tts_s, tts_s))
+    t0, seen = time.perf_counter(), {}
+
+    async def put(name, data):
+        seen.setdefault(name, time.perf_counter() - t0)
+
+    speaker = StreamingSpeaker(tts, app.state.settings.audio_dir, put)
+
+    async def on_event(name, data):
+        seen.setdefault(name, time.perf_counter() - t0)
+        if name == "delta":
+            await speaker.feed(data["text"])
+
+    resp, stats = await agent.chat_with_stats("s", "where did I leave my keys?", "dev1", on_event=on_event)
+    t_call = time.perf_counter() - t0
+    assert stats.extra["prefetch"] == "first" and len(script.requests) == 1
+    assert "tool_result" not in json.dumps(script.requests[0]["messages"])
+    url = await speaker.finish(resp.answer)
+    t_final = time.perf_counter() - t0
+    assert url is not None and resp.answer == TWO
+    assert seen["delta"] < t_call - 5 * GappedAnthropic.gap  # text arrives while the call is still running
+    assert seen["audio"] < t_call  # clip 0 is playable before Claude has finished
+    assert t_final - seen["audio"] >= tts_s * 0.9  # ... a whole sentence's TTS ahead of `final`

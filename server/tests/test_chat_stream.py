@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -12,7 +13,13 @@ import httpx2
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from megamind.agent.claude_agent import NOT_FOUND_ANSWER, ClaudeAgent, _TrailerFilter
+from megamind.agent.claude_agent import (
+    EPHEMERAL,
+    NOT_FOUND_ANSWER,
+    ClaudeAgent,
+    _TrailerFilter,
+    render_static_system_prompt,
+)
 from megamind.config import Settings
 from megamind.ingest.enrich import MockTextEmbedder
 from megamind.main import create_app
@@ -21,7 +28,7 @@ from megamind.models import ChatResponse, MemoryToken
 NOW = time.time()
 
 
-def _message(content: list[dict], stop_reason: str = "end_turn") -> dict:
+def _message(content: list[dict], stop_reason: str = "end_turn", usage: dict | None = None) -> dict:
     return {
         "id": "msg_test",
         "type": "message",
@@ -30,7 +37,7 @@ def _message(content: list[dict], stop_reason: str = "end_turn") -> dict:
         "content": content,
         "stop_reason": stop_reason,
         "stop_sequence": None,
-        "usage": {"input_tokens": 100, "output_tokens": 20},
+        "usage": usage or {"input_tokens": 100, "output_tokens": 20},
     }
 
 
@@ -42,13 +49,13 @@ def tool_use(args: dict, tid: str = "toolu_1") -> dict:
     return {"type": "tool_use", "id": tid, "name": "recall_memory", "input": args}
 
 
-def _sse_body(msg: dict, chunk: int = 7) -> bytes:
+def _sse_events(msg: dict, chunk: int = 7) -> list[tuple[str, bytes]]:
     """A Messages API response as the streaming wire format, text split into `chunk`-char deltas."""
 
-    def ev(name: str, data: dict) -> str:
-        return f"event: {name}\ndata: {json.dumps(data)}\n\n"
+    def ev(name: str, data: dict) -> tuple[str, bytes]:
+        return name, f"event: {name}\ndata: {json.dumps(data)}\n\n".encode()
 
-    start = {**msg, "content": [], "stop_reason": None, "usage": {"input_tokens": 100, "output_tokens": 1}}
+    start = {**msg, "content": [], "stop_reason": None, "usage": {**msg["usage"], "output_tokens": 1}}
     out = [ev("message_start", {"type": "message_start", "message": start})]
     for i, b in enumerate(msg["content"]):
         if b["type"] == "text":
@@ -66,7 +73,11 @@ def _sse_body(msg: dict, chunk: int = 7) -> bytes:
     md = {"stop_reason": msg["stop_reason"], "stop_sequence": None}
     out.append(ev("message_delta", {"type": "message_delta", "delta": md, "usage": {"output_tokens": 20}}))
     out.append(ev("message_stop", {"type": "message_stop"}))
-    return "".join(out).encode()
+    return out
+
+
+def _sse_body(msg: dict, chunk: int = 7) -> bytes:
+    return b"".join(data for _, data in _sse_events(msg, chunk))
 
 
 class ScriptedAnthropic:
@@ -84,12 +95,36 @@ class ScriptedAnthropic:
             err = {"type": "error", "error": {"type": "api_error", "message": "x"}}
             return httpx2.Response(nxt["_status"], json=err)
         if body.get("stream"):
-            return httpx2.Response(200, content=_sse_body(nxt), headers={"content-type": "text/event-stream"})
+            return httpx2.Response(200, content=self.sse(nxt), headers={"content-type": "text/event-stream"})
         return httpx2.Response(200, json=nxt)
+
+    def sse(self, msg: dict):
+        return _sse_body(msg)
 
     def client(self) -> anthropic.AsyncAnthropic:
         http = httpx2.AsyncClient(transport=httpx2.MockTransport(self.handler))
         return anthropic.AsyncAnthropic(api_key="test", http_client=http, max_retries=0)
+
+
+class PacedAnthropic(ScriptedAnthropic):
+    """Like the real API: the SSE body is produced over time, one text delta every `gap_s`; `produced` records when."""
+
+    def __init__(self, responses: list[dict], gap_s: float = 0.03):
+        super().__init__(responses)
+        self.gap_s = gap_s
+        self.produced: list[float] = []
+
+    def sse(self, msg: dict):
+        events = _sse_events(msg)
+
+        async def gen():
+            for name, data in events:
+                if name == "content_block_delta" and b"text_delta" in data:
+                    await asyncio.sleep(self.gap_s)
+                    self.produced.append(time.perf_counter())
+                yield data
+
+        return gen()
 
 
 def _agent_settings(**cfg) -> Settings:
@@ -159,10 +194,62 @@ async def _stream(c, body: dict) -> list[tuple[str, dict]]:
 
 
 def _same_call(q: dict) -> dict:
-    """A request body minus `stream` and the clock line (separate turns can straddle a second boundary)."""
+    """A request body minus `stream` and the clock sentence, wherever it is (separate turns can straddle a second)."""
     out = {k: v for k, v in q.items() if k != "stream"}
-    out["system"] = re.sub(r"\d", "0", out["system"])
+    return json.loads(re.sub(r"The wearer's local time is [^\"\\\\]*", "CLOCK", json.dumps(out)))
+
+
+def _breakpoints(q: dict) -> list[str]:
+    """Where the cache_control markers are in a request body."""
+    out = []
+    if isinstance(q["system"], list):
+        out += [f"system[{i}]" for i, b in enumerate(q["system"]) if b.get("cache_control")]
+    for m_i, m in enumerate(q["messages"]):
+        if isinstance(m["content"], list):
+            marked = [(b_i, b["type"]) for b_i, b in enumerate(m["content"]) if b.get("cache_control")]
+            out += [f"messages[{m_i}][{b_i}]:{t}" for b_i, t in marked]
     return out
+
+
+def _unmarked(msgs: list[dict]) -> list[dict]:
+    return json.loads(re.sub(r', "cache_control": \{"type": "ephemeral"\}', "", json.dumps(msgs)))
+
+
+async def _asgi_stream(app, body: dict) -> list[tuple[float, bytes]]:
+    """POST /v1/chat/stream straight into the ASGI app, timestamping every body chunk as the server sends it
+    (httpx's ASGITransport collects the whole body first, so it cannot show pacing)."""
+    raw = json.dumps(body).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/chat/stream",
+        "raw_path": b"/v1/chat/stream",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"test"), (b"content-type", b"application/json")],
+        "server": ("test", 80),
+        "client": ("127.0.0.1", 1),
+    }
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if not sent:
+            sent = True
+            return {"type": "http.request", "body": raw, "more_body": False}
+        await asyncio.Event().wait()  # the client never disconnects
+
+    chunks: list[tuple[float, bytes]] = []
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("body"):
+            chunks.append((time.perf_counter(), message["body"]))
+
+    await app(scope, receive, send)
+    return chunks
 
 
 ANSWER = "Your keys are on the kitchen counter, about twenty minutes ago. <cites>t_keys</cites>"
@@ -295,44 +382,119 @@ async def test_post_chat_unchanged_non_streaming_requests(app_client):
     assert len(script.requests) == 2 and all("stream" not in q for q in script.requests)
 
 
-async def test_prompt_cache_is_opt_in_and_read_back_by_the_tool_round(app_client):
+async def test_stream_forwards_deltas_as_the_api_produces_them(app_client):
+    """Regression for batched answers: a delta must leave the server while the API is still writing the rest
+    (TTS_STREAM default on, mock TTS), not be flushed together with `final`."""
     c, app = app_client
-    body = {"session_id": "s", "text": "where are my keys?"}
-
-    # default off: request bodies exactly as before (plain string question, no cache_control anywhere)
-    script = ScriptedAnthropic(_two_rounds())
+    script = PacedAnthropic(_two_rounds())
     _use_script(app, script)
-    await c.post("/v1/chat", json=body)
-    assert all("cache_control" not in json.dumps(q) for q in script.requests)
-    assert script.requests[0]["messages"] == [{"role": "user", "content": "where are my keys?"}]
+    chunks = await _asgi_stream(app, {"session_id": "s", "device_id": "dev1", "text": "where are my keys?"})
+    deltas = [t for t, data in chunks if data.startswith(b"event: delta")]
+    assert chunks[-1][1].startswith(b"event: final") and len(deltas) >= 5 and len(script.produced) >= len(deltas)
+    assert deltas[0] < script.produced[-1], "first delta was held until the API finished"
+    assert deltas[0] - script.produced[0] < 0.1  # forwarded at once ...
+    assert deltas[-1] - deltas[0] > 0.5 * (script.produced[-1] - script.produced[0])  # ... and spread like the source
 
-    # on: the same breakpoint (end of the question) on the picking call AND the tool round; a cache read needs a
-    # breakpoint in the reading request, so marking only the first call would pay the write and never read it
-    script = ScriptedAnthropic(_two_rounds())
-    _use_script(app, script, claude_prompt_cache=True)
-    r = await c.post("/v1/chat", json=body)
-    assert r.json()["answer"] == "Your keys are on the kitchen counter, about twenty minutes ago."
-    q_block = {"type": "text", "text": "where are my keys?", "cache_control": {"type": "ephemeral"}}
-    assert len(script.requests) == 2
-    for q in script.requests:
-        assert "cache_control" not in q  # no top-level param (older SDKs reject it)
-        assert q["messages"][0] == {"role": "user", "content": [q_block]}
-    assert [m["role"] for m in script.requests[1]["messages"]] == ["user", "assistant", "user"]
-    # stored history keeps the plain question (the marker is per-request only)
-    hist = app.state.agent.histories["s"][-1]
-    assert hist[0] == {"role": "user", "content": "where are my keys?"}
+
+async def test_stream_logs_per_call_delivery_timing(app_client, caplog):
+    c, app = app_client
+    _use_script(app, ScriptedAnthropic([_message([text(ANSWER)])]), recall_first=True)
+    with caplog.at_level("INFO", logger="megamind.agent"):
+        await _stream(c, {"session_id": "s", "text": "where are my keys?"})
+    lines = [r.getMessage() for r in caplog.records if " stream: " in r.getMessage()]
+    assert len(lines) == 1
+    pat = r"first_event_ms=(\d+) first_text_ms=(\d+) text_deltas=(\d+) last_text_ms=(\d+) total_ms=(\d+)"
+    m = re.search(pat, lines[0])
+    assert m and int(m.group(3)) > 3 and int(m.group(1)) <= int(m.group(2)) <= int(m.group(4)) <= int(m.group(5))
+    turn = [r.getMessage() for r in caplog.records if "llm_calls=" in r.getMessage()]
+    assert len(turn) == 1 and "cache_read=0 cache_write=0" in turn[0]
+
+
+CACHE_USAGE = {
+    "input_tokens": 100,
+    "output_tokens": 20,
+    "cache_creation_input_tokens": 700,
+    "cache_read_input_tokens": 1500,
+}
+
+
+async def test_prompt_cache_breakpoints_read_back_across_rounds_and_turns(app_client):
+    c, app = app_client
+    rounds = [
+        _message([tool_use({"query": "keys kitchen"})], "tool_use", usage=CACHE_USAGE),
+        _message([text(ANSWER)], usage=CACHE_USAGE),
+    ]
+    script = ScriptedAnthropic(rounds)
+    agent = _use_script(app, script)  # default on
+    resp, stats = await agent.chat_with_stats("s", "where are my keys?", "dev1")
+    assert resp.answer == "Your keys are on the kitchen counter, about twenty minutes ago."
+    assert stats.extra["cache_creation_input_tokens"] == 1400 and stats.extra["cache_read_input_tokens"] == 3000
+    q1, q2 = script.requests
+    for q in (q1, q2):
+        assert "cache_control" not in q and len(_breakpoints(q)) <= 4
+
+    # the system prompt has no clock (identical bytes every turn) and is marked: tools + system cache together
+    static = render_static_system_prompt("America/Los_Angeles")
+    assert q1["system"] == q2["system"] == [{"type": "text", "text": static, "cache_control": EPHEMERAL}]
+    assert "local time is" not in static and "America/Los_Angeles" in static and "ISO-8601" in static
+    # the clock rides with the question, after the (cached) history
+    clock, question = q1["messages"][0]["content"]
+    assert clock["text"].startswith("The wearer's local time is ") and "in UTC that is" in clock["text"]
+    assert "cache_control" not in clock
+    assert question == {"type": "text", "text": "where are my keys?", "cache_control": EPHEMERAL}
+    assert _breakpoints(q1) == ["system[0]", "messages[0][1]:text"]
+    # the tool round: the marker moves to the tool result (the API finds the question's entry behind it)
+    assert _breakpoints(q2) == ["system[0]", "messages[2][0]:tool_result"]
+    assert q2["messages"][0]["content"] == [clock, {"type": "text", "text": "where are my keys?"}]
+    assert [m["role"] for m in q2["messages"]] == ["user", "assistant", "user"]
+
+    # next turn: a marker on the last block of the previous turn's answer, so this turn reads back all of turn 1
+    script2 = ScriptedAnthropic([_message([text("About twenty minutes ago. <cites>t_keys</cites>")])])
+    agent._client = script2.client()
+    resp2, _ = await agent.chat_with_stats("s", "when was that?", "dev1")
+    assert resp2.answer == "About twenty minutes ago." and resp2.cited[0].id == "t_keys"
+    (q3,) = script2.requests
+    assert _breakpoints(q3) == ["system[0]", "messages[3][0]:text", "messages[4][1]:text"]
+    assert q3["messages"][3]["content"][0]["text"] == ANSWER  # turn 1's final assistant message
+    assert _unmarked(q3["messages"][:3]) == _unmarked(q2["messages"])  # turn 1 re-sent byte for byte (prefix)
+    assert q3["messages"][4]["content"][0]["text"].startswith("The wearer's local time is ")
+    # the stored history keeps the clock blocks (when each question was asked) but never a marker
+    assert "cache_control" not in json.dumps(agent.histories["s"])
+    assert agent.histories["s"][0][0]["content"][1] == {"type": "text", "text": "where are my keys?"}
+
+    # recall_first (the common path): one user message = clock, question, label, result (#178: no tool_result,
+    # which Sonnet answers in a burst) -> marked on its last block, by position
+    script3 = ScriptedAnthropic([_message([text(ANSWER)])])
+    _use_script(app, script3, recall_first=True)
+    await c.post("/v1/chat", json={"session_id": "r", "text": "where are my keys?"})
+    (q4,) = script3.requests
+    assert len(q4["messages"]) == 1 and "tool_result" not in json.dumps(q4["messages"])
+    blocks = q4["messages"][0]["content"]
+    assert [b["type"] for b in blocks] == ["text"] * 4 and blocks[2]["text"].startswith("recall_memory(")
+    assert blocks[0]["text"].startswith("The wearer's local time is ") and blocks[1]["text"] == "where are my keys?"
+    assert _breakpoints(q4) == ["system[0]", "messages[0][3]:text"]
+    assert app.state.agent.histories["r"][0][0] == _unmarked(q4["messages"])[0]  # stored as sent, minus the marker
 
     # streaming sends the same bodies apart from `stream`
-    stream_script = ScriptedAnthropic(_two_rounds())
-    _use_script(app, stream_script, claude_prompt_cache=True)
-    await _stream(c, body)
-    assert [_same_call(q) for q in stream_script.requests] == [_same_call(q) for q in script.requests]
+    plain, streamed = ScriptedAnthropic(_two_rounds()), ScriptedAnthropic(_two_rounds())
+    _use_script(app, plain)
+    await c.post("/v1/chat", json={"session_id": "t", "text": "where are my keys?"})
+    _use_script(app, streamed)
+    await _stream(c, {"session_id": "t", "text": "where are my keys?"})
+    assert [_same_call(q) for q in streamed.requests] == [_same_call(q) for q in plain.requests]
 
-    # recall_first: the first call already carries a tool result (usually the only call): no cache write
-    script = ScriptedAnthropic([_message([text(ANSWER)])])
-    _use_script(app, script, recall_first=True, claude_prompt_cache=True)
-    await c.post("/v1/chat", json=body)
-    assert len(script.requests) == 1 and "cache_control" not in json.dumps(script.requests[0])
+
+async def test_prompt_cache_off_sends_the_pre_caching_request_bodies(app_client):
+    c, app = app_client
+    body = {"session_id": "s", "text": "where are my keys?"}
+    script = ScriptedAnthropic(_two_rounds())
+    _use_script(app, script, claude_prompt_cache=False)
+    r = await c.post("/v1/chat", json=body)
+    assert r.json()["answer"] == "Your keys are on the kitchen counter, about twenty minutes ago."
+    assert all("cache_control" not in json.dumps(q) for q in script.requests)
+    assert script.requests[0]["messages"] == [{"role": "user", "content": "where are my keys?"}]
+    assert isinstance(script.requests[0]["system"], str) and "in UTC that is" in script.requests[0]["system"]
+    assert app.state.agent.histories["s"][-1][0] == {"role": "user", "content": "where are my keys?"}
 
 
 def test_ui_and_xr_stream_with_post_chat_fallback():

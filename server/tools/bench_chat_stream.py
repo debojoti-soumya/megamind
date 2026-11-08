@@ -62,7 +62,9 @@ def _sim_transport(ttft_s: float, tok_per_s: float) -> httpx2.AsyncBaseTransport
     async def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
         last = body["messages"][-1]["content"]
-        has_result = isinstance(last, list) and any(b.get("type") == "tool_result" for b in last)
+        has_result = isinstance(last, list) and any(  # a tool result, or the recall_first result on the question
+            b.get("type") == "tool_result" or "already searched for you" in b.get("text", "") for b in last
+        )
         if has_result:
             msg = message([{"type": "text", "text": ANSWER}], "end_turn")
         else:

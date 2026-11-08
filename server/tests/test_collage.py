@@ -202,6 +202,15 @@ async def test_claude_calls_make_collage(recall):
     assert payload["confidence"] == "high" and "Photo montage shown" in payload["evidence"]
 
 
+async def test_cached_system_prompt_keeps_the_collage_instructions(recall):
+    script = ScriptedAnthropic([_message([text("ok")])])
+    settings = _settings(anthropic_api_key="k", claude_prompt_cache=True)
+    agent = ClaudeAgent(settings, recall, client=script.client(), collage=_fake_collage([]))
+    await agent.chat_with_stats("s", "show me pictures of my coffee mug", "dev1")
+    system = script.requests[0]["system"]
+    assert isinstance(system, list) and "make_collage" in system[0]["text"]
+
+
 async def test_claude_collage_not_found_has_no_collage(recall):
     use = {"type": "tool_use", "id": "toolu_1", "name": "make_collage", "input": {"query": "giraffe"}}
     script = ScriptedAnthropic([_message([use], stop_reason="tool_use"), _message([text("No giraffe photos.")])])
