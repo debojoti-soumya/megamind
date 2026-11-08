@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     hier_base_url: str = "https://api.openai.com/v1"
     hier_api_key: str = ""  # "" -> openai_api_key
     hier_cache_path: str = "data/hier_notes.json"  # "" = keep notes in memory only
+    hier_timeout_s: float = 8.0  # per recall: notes + pick + rank must finish in this, else the hybrid answers; 0 = off
+    hier_call_timeout_s: float = 4.0  # per recall-time chat call (httpx timeout)
+    hier_retries: int = 2  # attempts per recall-time chat call (429 / 5xx / transport errors)
     hier_gate_margin: float = 0.0  # >0: skip the LLM when the hybrid's top-1 leads top-2 by this relative margin
     hier_refresh_s: float = 300.0  # server: write new block/hour/day notes in the background this often (0 = off)
     ucc_api_key: str = ""

@@ -55,6 +55,7 @@ class HierConfig:
     moment_s: float = 60.0  # picks this close to a better one rank after the distinct moments
     vec_pool: int = 300  # nearest tokens aggregated per block for the vector block ranking
     vec_blocks: int = 4  # top vector-ranked blocks always added to the LLM's picks
+    timeout_s: float = 8.0  # wall bound on the LLM stages of one recall (notes + pick + rank); then -> hybrid
     inline_build_max: int = 3  # a query writes at most this many missing block notes itself; more -> background
     # cheap gating: skip the LLM when the hybrid's top hit leads the runner-up by >= this relative margin
     # ((s1 - s2) / s1 of the non-context scores); 0 = always ask the LLM
@@ -446,8 +447,11 @@ class HierRetriever(Retriever):
             return _truncate(base, k)
         t0 = time.perf_counter()
         try:
-            picked = await self._llm_rank(query, base, k, time_from, time_to, device_id, now)
-        except (RuntimeError, httpx.HTTPError, ValueError, KeyError) as e:
+            stages = self._llm_rank(query, base, k, time_from, time_to, device_id, now)
+            picked = await asyncio.wait_for(stages, self.cfg.timeout_s or None)
+        except (TimeoutError, RuntimeError, httpx.HTTPError, ValueError, KeyError) as e:
+            if isinstance(e, TimeoutError):
+                e = TimeoutError(f"LLM stages took > {self.cfg.timeout_s:g} s")
             log.warning("hier recall fell back to hybrid: %s", e)
             self.last_trace = {"error": str(e)}
             self.stats["errors"] += 1
@@ -632,9 +636,13 @@ def build_hier(
     note_llm = ChatJSON(api_key, getattr(settings, "hier_note_model", "gpt-4.1-mini"), concurrency=16, **kw)
     pick_model = getattr(settings, "hier_model", "gpt-4.1-mini")
     rank_model = getattr(settings, "hier_rank_model", "gpt-4.1") or pick_model
-    pick_llm = ChatJSON(api_key, pick_model, **kw)
-    rank_llm = pick_llm if rank_model == pick_model else ChatJSON(api_key, rank_model, **kw)
+    # recall-time calls fail fast (the stage is also bounded by timeout_s); note writing keeps the patient defaults
+    fast = dict(kw, timeout_s=float(getattr(settings, "hier_call_timeout_s", 4.0) or 4.0))
+    fast["retries"] = max(1, int(getattr(settings, "hier_retries", 2) or 2))
+    pick_llm = ChatJSON(api_key, pick_model, **fast)
+    rank_llm = pick_llm if rank_model == pick_model else ChatJSON(api_key, rank_model, **fast)
     cfg = HierConfig(
+        timeout_s=float(getattr(settings, "hier_timeout_s", 8.0)),
         gate_margin=float(getattr(settings, "hier_gate_margin", 0.0) or 0.0),
         base_pool=int(getattr(settings, "hier_base_pool", 30) or 30),
         hint_windows=int(getattr(settings, "hier_hint_windows", 10) or 10),

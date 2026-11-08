@@ -47,15 +47,6 @@ PROFILE_ENV = {
         "STT_PROVIDER": "openai",
         "TTS_PROVIDER": "openai",
         "SUMMARIZER_PROVIDER": "mock",
-        # recall: LLM block notes + pick/rank over the hybrid's candidates (bake-off #152); falls back to the
-        # hybrid on any LLM error and when OPENAI_API_KEY is absent. Notes live on the Volume, so a cold start
-        # reuses them; missing ones are written at query time (<=3 inline, a larger backlog in the background).
-        "RETRIEVER_BACKEND": "hier",
-        "HIER_MODEL": "gpt-4.1-mini",  # block pick; the model sweep in #152 picked this pair
-        "HIER_RANK_MODEL": "gpt-4.1",  # token rank
-        "HIER_NOTE_MODEL": "gpt-4.1-mini",
-        "HIER_CACHE_PATH": f"{DATA}/hier_notes.json",
-        "HIER_REFRESH_S": "300",  # background note refresh while the container is up
     },
     # no paid calls at all, even if a key leaks into the environment
     "mock": {
@@ -69,7 +60,6 @@ PROFILE_ENV = {
         "SUMMARIZER_PROVIDER": "mock",
         "MONTAGE_PLANNER": "offline",
         "ANTHROPIC_API_KEY": "",
-        "RETRIEVER_BACKEND": "hybrid",  # hier / ucc would call OpenAI / UCC
     },
 }
 

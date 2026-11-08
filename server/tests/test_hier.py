@@ -267,3 +267,61 @@ async def test_stage2_uses_the_rank_model():
     assert [x.token.id for x in res.ranked] == ["b1"]
     assert any("Pick up to" in c for c in pick.calls) and not any("Rank the token ids" in c for c in pick.calls)
     assert any("Rank the token ids" in c for c in rank.calls)
+
+
+async def _hier_over(llm, timeout_s: float):
+    store = await _store()
+    base = FixedRetriever([await store.get("a1"), await store.get("b1")])
+    memory = HierMemory(store, FakeLLM(), tz="UTC")
+    return HierRetriever(store, base, memory, llm, config=HierConfig(timeout_s=timeout_s))
+
+
+async def test_hung_llm_server_falls_back_to_hybrid_within_timeout():
+    import asyncio
+    import time
+
+    held = []
+
+    async def never_answer(reader, writer):
+        held.append(writer)  # accept, read the request, never respond
+        await reader.read(65536)
+
+    server = await asyncio.start_server(never_answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    llm = ChatJSON("k", "gpt-4.1-mini", base_url=f"http://127.0.0.1:{port}/v1", timeout_s=60, retries=2)
+    r = await _hier_over(llm, timeout_s=0.3)
+    t0 = time.perf_counter()
+    res = await r.retrieve("keys", k=1, now=datetime.fromtimestamp(T0 + 1250, UTC))
+    assert time.perf_counter() - t0 < 2.0
+    assert [x.token.id for x in res.ranked] == ["a1"] and held
+    assert r.stats["errors"] == 1 and "took > 0.3 s" in r.last_trace["error"]
+    await llm.aclose()
+    for w in held:
+        w.close()
+    server.close()
+
+
+async def test_llm_500s_fall_back_to_hybrid_within_timeout():
+    import time
+
+    llm = ChatJSON("k", "gpt-4.1-mini", transport=httpx.MockTransport(lambda req: httpx.Response(500)), retries=2)
+    r = await _hier_over(llm, timeout_s=0.3)
+    t0 = time.perf_counter()
+    res = await r.retrieve("keys", k=1, now=datetime.fromtimestamp(T0 + 1250, UTC))
+    assert time.perf_counter() - t0 < 2.0 and [x.token.id for x in res.ranked] == ["a1"] and r.stats["errors"] == 1
+    await llm.aclose()
+
+
+def test_build_hier_recall_calls_fail_fast_and_notes_stay_patient():
+    from megamind.retrieval.hier import build_hier
+
+    s = SimpleNamespace(hier_cache_path="", wearer_tz="UTC")
+    r = build_hier(s, None, None, "sk-test")
+    assert r.cfg.timeout_s == 8.0
+    assert (r.llm.retries, r.llm._client.timeout.read) == (2, 4.0)
+    assert (r.rank_llm.retries, r.rank_llm._client.timeout.read) == (2, 4.0)
+    assert (r.memory.llm.retries, r.memory.llm._client.timeout.read) == (6, 120.0)
+    tight = build_hier(
+        SimpleNamespace(**vars(s), hier_timeout_s=3, hier_call_timeout_s=1, hier_retries=1), None, None, "k"
+    )
+    assert (tight.cfg.timeout_s, tight.llm.retries, tight.llm._client.timeout.read) == (3.0, 1, 1.0)

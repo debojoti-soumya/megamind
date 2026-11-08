@@ -35,25 +35,33 @@ The Volumes are created on first deploy (`create_if_missing=True`).
 
 ### Recall backend
 
-The live profile recalls with `RETRIEVER_BACKEND=hier` (chosen by the hybrid / UCC / hier bake-off and model sweep
-in #152, `server/tools/eval_retrieval.py --backend all` / `--hier`): the local hybrid (vector + BM25 + OCR +
-temporal) proposes 30 candidates, then two OpenAI calls run: `HIER_MODEL=gpt-4.1-mini` picks the right 10-minute
-blocks from per-block notes, and `HIER_RANK_MODEL=gpt-4.1` ranks the moments inside them. ~1.9 s p50 / 2.3 s p95 per
-recall, ~$0.006 per question; the notes cost ~$0.04 per recorded day (`HIER_NOTE_MODEL=gpt-4.1-mini`).
+Both profiles recall with the plain hybrid (`RETRIEVER_BACKEND=hybrid`, the config default; vector + BM25 + OCR +
+temporal, no paid calls beyond the query embedding). `hier` and `combo` are opt-in: add `"RETRIEVER_BACKEND": "hier"`
+(or `"combo"`) to the live `PROFILE_ENV` and redeploy.
+
+- **On one 540-memory day** (#152, `server/tools/eval_retrieval.py`), hier wins on recall: R@1 0.90 vs combo 0.80 vs
+  hybrid 0.60. It costs about 1.9 s p50 per recall and ~$0.006 per question.
+- **On a 9.2k-memory week** (#149, `tools/eval_agent.py` on `long_week`), the hybrid answers 90 % at a 2.4 s turn. hier
+  answers 93 % but at 16.5 s, and combo answers 90 % at 5.8 s p50 / 68 s p95. That is why the default stays hybrid.
+
+Recommended values if you opt into hier (also the config defaults for the `HIER_*` settings, used by combo's hier
+route too):
 
 | Setting | Value | Why |
 |---|---|---|
-| `RETRIEVER_BACKEND` | `hier` (live), `hybrid` (mock) | mock must make zero paid calls |
-| `HIER_MODEL` / `HIER_RANK_MODEL` / `HIER_NOTE_MODEL` | `gpt-4.1-mini` / `gpt-4.1` / `gpt-4.1-mini` | best R@1 under 2 s p50 in the sweep; 2.7x cheaper than gpt-4.1 for both stages |
+| `HIER_MODEL` / `HIER_RANK_MODEL` / `HIER_NOTE_MODEL` | `gpt-4.1-mini` / `gpt-4.1` / `gpt-4.1-mini` | best R@1 under 2 s p50 in the #152 sweep; 2.7x cheaper than gpt-4.1 for both stages |
+| `HIER_TIMEOUT_S` | `8` | wall bound on the LLM stages of one recall; past it the hybrid's ranking answers |
+| `HIER_CALL_TIMEOUT_S` / `HIER_RETRIES` | `4` / `2` | recall-time chat calls fail fast (note writing keeps 120 s / 6 tries) |
 | `HIER_CACHE_PATH` | `/data/hier_notes.json` | notes survive scale-to-zero and redeploys; a cold start does not rewrite them |
-| `HIER_REFRESH_S` | `300` | background note refresh while the container is up; a recall writes up to 3 missing notes inline and schedules a bigger backlog, so `min_containers=0` still works |
-| key | `OPENAI_API_KEY` in `megamind-providers` (already needed for embeddings / STT) | `HIER_API_KEY` + `HIER_BASE_URL` override it for another OpenAI-compatible endpoint |
+| `HIER_REFRESH_S` | `300` | background note refresh while the container is up; a recall writes up to 3 missing notes inline and schedules a bigger backlog |
+| key | `OPENAI_API_KEY` in `megamind-providers` | `HIER_API_KEY` + `HIER_BASE_URL` override it for another OpenAI-compatible endpoint |
 | `HIER_GATE_MARGIN` | unset (0) | optional: skip the LLM when the hybrid's top-1 leads top-2 by this relative margin (0.25 saved 21% of LLM calls for -4 pts R@1) |
 
-Fallbacks: with no OpenAI key `build_retriever` logs a warning and uses the hybrid; any LLM error / timeout in a
-recall returns the hybrid's ranking for that question. To go back to the plain hybrid, set
-`"RETRIEVER_BACKEND": "hybrid"` in the live `PROFILE_ENV` and redeploy (the notes file can stay). UCC
-(`RETRIEVER_BACKEND=ucc`, `UCC_API_KEY`) remains available but scored below hier on the bake-off.
+Fallbacks: hier and combo fall back to the hybrid in two cases:
+- With no OpenAI / UCC key, `build_retriever` logs a warning and uses the hybrid.
+- Any LLM error, or a recall that runs past `HIER_TIMEOUT_S`, returns the hybrid's ranking for that question.
+
+The mock profile pins `hybrid` and makes zero paid calls.
 
 ## Deploy / stop
 
