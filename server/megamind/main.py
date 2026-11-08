@@ -17,7 +17,7 @@ from megamind.agent.tools import RecallMemory
 from megamind.agent.tts import build_tts
 from megamind.config import Settings, get_settings
 from megamind.ingest.audio import router as audio_router
-from megamind.ingest.enrich import build_enricher, build_image_embedder, build_text_embedder
+from megamind.ingest.enrich import build_enricher
 from megamind.ingest.filter import KeyframeFilter
 from megamind.ingest.privacy import build_face_blur
 from megamind.ingest.router import router as ingest_router
@@ -28,6 +28,7 @@ from megamind.replay import install as install_replay
 from megamind.retrieval import build_retriever
 from megamind.store import build_store
 from megamind.store.consolidate import Consolidator, build_summarizer
+from megamind.store.embeddings import build_image_embedder, build_text_embedder
 from megamind.ui.router import router as ui_router
 
 logging.basicConfig(level=logging.INFO)

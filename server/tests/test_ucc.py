@@ -124,6 +124,28 @@ async def test_indexer_pushes_enriched_tokens_once():
     assert await UCCIndexer(client, store, tz="UTC").sync_once() == 0
 
 
+async def test_indexer_picks_up_episode_summaries_written_behind_the_cursor():
+    fake = FakeUCC()
+    store, client, _, _ = await setup(fake)
+    idx = UCCIndexer(client, store, tz="UTC", lookback_s=60)
+    await store.add(tok("late", T0 + 7200, "Parking garage level 2."))
+    assert await idx.sync_once() == 5  # cursor now at T0 + 7200
+    # the consolidator closes an episode stamped with its start, far behind cursor - lookback
+    ep = tok("ep1-summary", T0, "Episode: morning at home, then the office.").model_copy(
+        update={"kind": "episode", "episode_id": "ep1"}
+    )
+    await store.add(ep)
+    assert await idx.sync_once() == 1
+    assert fake.docs[-1]["metadata"] == {
+        "token_id": "ep1-summary",
+        "device_id": "dev",
+        "ts": T0,
+        "kind": "episode",
+        "episode_id": "ep1",
+    }
+    assert await idx.sync_once() == 0
+
+
 def test_token_document_shape():
     d = token_document(TOKENS[1].model_copy(update={"episode_id": "ep1", "entities": ["laptop"]}))
     assert d["name"] == "b.txt" and d["metadata"]["episode_id"] == "ep1"
@@ -180,6 +202,8 @@ async def test_empty_corpus_and_pure_time_questions_use_hybrid():
     selects = fake.selects
     await retr.retrieve("what was I doing 10 minutes ago", k=3)
     assert fake.selects == selects  # temporal: no select
+    await retr.retrieve("what did I just see?", k=3)
+    assert fake.selects == selects  # recency: no select
 
 
 def test_build_retriever_selects_backend(tmp_path):
