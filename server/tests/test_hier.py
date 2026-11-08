@@ -3,6 +3,7 @@ ranking, id validation, time bounds and the hybrid fallback."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -212,6 +213,30 @@ async def test_large_note_backlog_builds_in_background_not_inline():
     assert f"block:{T0 + 1200:.0f}" in mem.notes  # a small backlog is written inline
 
 
+async def test_inline_notes_skip_the_rollups_which_land_in_the_background():
+    class SlowRollup(FakeLLM):
+        gate = asyncio.Event()
+
+        async def __call__(self, system, user, **kw):
+            if "Log entries" in user:
+                await self.gate.wait()
+            return await super().__call__(system, user, **kw)
+
+    store, llm = await _store(), SlowRollup(stage1={"blocks": []}, stage2={"ids": []})
+    mem = HierMemory(store, llm, tz="UTC")
+    r = HierRetriever(store, FixedRetriever([await store.get("a1")]), mem)
+    now = datetime.fromtimestamp(T0 + 3700, UTC)  # the hour closed too: 3 block notes + an hour rollup are due
+    await r.retrieve("keys", k=1, now=now)  # answers while the rollup is still stuck -> it is off the query path
+    notes = [c for c in llm.calls if "Lines from" in c]
+    assert len(notes) == 3 and len(mem.notes) == 3 and r._bg is not None and not r._bg.done()
+    llm.gate.set()
+    await r._bg
+    assert f"hour:{T0:.0f}" in mem.notes and len([c for c in llm.calls if "Lines from" in c]) == 3  # no rewrites
+    n = len(llm.calls)
+    await r.retrieve("keys", k=1, now=now)
+    assert all("Log entries" not in c and "Lines from" not in c for c in llm.calls[n:]) and r._bg.done()
+
+
 async def test_gate_margin_skips_the_llm_when_the_hybrid_is_confident():
     from megamind.retrieval.hier import top_margin
 
@@ -220,9 +245,16 @@ async def test_gate_margin_skips_the_llm_when_the_hybrid_is_confident():
     assert top_margin(await base.retrieve("keys")) == pytest.approx(0.5)
     llm = FakeLLM(stage2={"ids": ["b1"]})
     now = datetime.fromtimestamp(T0 + 1250, UTC)
-    gated = HierRetriever(store, base, HierMemory(store, llm, tz="UTC"), llm, config=HierConfig(gate_margin=0.4))
+    cfg = HierConfig(gate_margin=0.4, gate_min_hits=2)
+    gated = HierRetriever(store, base, HierMemory(store, llm, tz="UTC"), llm, config=cfg)
     res = await gated.retrieve("keys", k=1, now=now)
-    assert [x.token.id for x in res.ranked] == ["a1"] and gated.stats == {"llm": 0, "gated": 1, "errors": 0}
+    assert [x.token.id for x in res.ranked] == ["a1"]
+    assert gated.stats == {"llm": 0, "gated": 1, "direct": 0, "errors": 0}
+    # two hits are too few to trust the lead under the default gate_min_hits: the LLM runs
+    llm2 = FakeLLM(stage1={"blocks": ["B0"]}, stage2={"ids": ["a1"]})
+    few = HierRetriever(store, base, HierMemory(store, llm2, tz="UTC"), llm2, config=HierConfig(gate_margin=0.4))
+    await few.retrieve("keys", k=1, now=now)
+    assert few.stats["gated"] == 0 and few.stats["llm"] == 1
     assert not any("Rank the token ids" in c for c in llm.calls)
     open_ = HierRetriever(store, base, HierMemory(store, llm, tz="UTC"), llm, config=HierConfig(gate_margin=0.6))
     await open_.retrieve("keys", k=1, now=now)
@@ -340,3 +372,121 @@ async def test_block_ids_count_from_time_from():
     assert r.last_trace["blocks"][0] == T0 + 600 * 7  # the B0 the prompt showed: the first block in range, not T0
     assert res.ranked[0].token.id == "t7"
     assert "[B0] " + mem._fmt(T0 + 600 * 7) in llm.calls[-2]
+
+
+class DirectLLM(FakeLLM):
+    """Scripted stage 1 for direct mode: `direct` is the one-call answer, `stage1`/`stage2` the fallback path."""
+
+    def __init__(self, direct, **kw) -> None:
+        super().__init__(**kw)
+        self.direct = direct
+
+    async def __call__(self, system: str, user: str, *, max_tokens: int = 800) -> dict:
+        if "return no blocks" in user:
+            self.calls.append(user)
+            return self.direct
+        return await super().__call__(system, user, max_tokens=max_tokens)
+
+
+async def _direct(llm):
+    store = await _store()
+    base = FixedRetriever([await store.get("a1"), await store.get("b1")])
+    mem = HierMemory(store, FakeLLM(), tz="UTC")
+    r = HierRetriever(store, base, mem, llm, config=HierConfig(direct=True))
+    return r, await r.retrieve("keys", k=2, now=datetime.fromtimestamp(T0 + 1250, UTC))
+
+
+async def test_direct_mode_answers_from_the_hint_moments_in_one_call():
+    llm = DirectLLM({"ids": ["b1", "zz"], "blocks": []})
+    r, res = await _direct(llm)
+    assert [x.token.id for x in res.ranked][:1] == ["b1"]
+    assert len(llm.calls) == 1 and "[b1]" in llm.calls[0] and "[a1]" in llm.calls[0]
+    assert "Rank the token ids" not in llm.calls[0]
+    assert r.stats == {"llm": 1, "gated": 0, "direct": 1, "errors": 0} and r.last_trace["direct"] is True
+
+
+async def test_direct_mode_falls_through_to_stage_2_when_blocks_are_requested():
+    llm = DirectLLM({"ids": [], "blocks": ["B1"]}, stage2={"ids": ["b1"]})
+    r, res = await _direct(llm)
+    assert [x.token.id for x in res.ranked][:1] == ["b1"]
+    assert len(llm.calls) == 2 and "Rank the token ids" in llm.calls[1]
+    assert r.stats["direct"] == 0 and r.last_trace["blocks"] == [T0 + 600] and "stage2" in r.last_trace
+
+
+async def test_direct_mode_ignores_ids_when_blocks_are_also_requested():
+    # ids + blocks together means "read more": the ids are not trusted as the final answer
+    llm = DirectLLM({"ids": ["a1"], "blocks": ["B1"]}, stage2={"ids": ["b1"]})
+    r, res = await _direct(llm)
+    assert [x.token.id for x in res.ranked][:1] == ["b1"] and r.stats["direct"] == 0
+
+
+async def _week_store() -> InMemoryStore:
+    # three hours of blocks (18 blocks); every closed hour gets a note
+    s = InMemoryStore()
+    await s.add_many([tok(f"t{i}", T0 + 600 * i + 30, f"scene {i}") for i in range(18)])
+    return s
+
+
+async def test_pruned_outline_lists_blocks_of_expanded_hours_and_tags_the_rest():
+    store = await _week_store()
+    mem = HierMemory(store, FakeLLM(), tz="UTC")
+    until = T0 + 3 * 3600
+    await mem.build(until)
+    hours = mem.hours(until)
+    assert [h["start"] for h in hours] == [T0, T0 + 3600, T0 + 7200]
+    full = mem.outline(until)
+    assert "[B0]" in full and "[B17]" in full and "[H" not in full
+    pruned = mem.outline(until, expand={T0 + 3600})
+    assert "[H0] HOUR" in pruned and "[H2] HOUR" in pruned and "[H1]" not in pruned
+    assert "[B6]" in pruned and "[B11]" in pruned and "[B0]" not in pruned and "[B12]" not in pruned
+    assert len(pruned) < len(full)
+
+
+async def test_outline_hours_lets_stage_1_pick_an_hour_and_reads_its_blocks():
+    store = await _week_store()
+    llm = FakeLLM(stage1={"blocks": ["H0", "B13"]}, stage2={"ids": ["t2"]})
+    mem = HierMemory(store, llm, tz="UTC")
+    until = T0 + 3 * 3600
+    await mem.build(until)
+    base = FixedRetriever([await store.get("t13"), await store.get("t14")])
+    r = HierRetriever(store, base, mem, llm, config=HierConfig(outline_hours=1, max_blocks=4))
+    res = await r.retrieve("scene", k=1, now=datetime.fromtimestamp(until, UTC))
+    assert [x.token.id for x in res.ranked][:1] == ["t2"]
+    prompt = next(c for c in llm.calls if "Pick up to" in c)
+    assert "[H0] HOUR" in prompt and "[H1] HOUR" in prompt and "[H2]" not in prompt  # hits are in hour 2
+    assert "[B13]" in prompt and "[B0]" not in prompt
+    # H0 expands to its blocks up to max_blocks; B13 no longer fits
+    assert r.last_trace["blocks"] == [T0 + 600 * i for i in range(4)]
+    assert r.last_trace["outline_chars"] == len(prompt.split("\n\nNow:")[0].split("blocks):\n", 1)[1])
+    assert r.last_trace["stage1_ms"] >= 0 and r.last_trace["stage2_ms"] >= 0
+
+
+async def test_summary_reports_paths_and_stage_latency_percentiles():
+    store = await _store()
+    llm = FakeLLM(stage1={"blocks": ["B0"]}, stage2={"ids": ["a1"]})
+    base = FixedRetriever([await store.get("a1"), await store.get("b1")])
+    r = HierRetriever(
+        store, base, HierMemory(store, llm, tz="UTC"), llm, config=HierConfig(gate_margin=0.4, gate_min_hits=2)
+    )
+    now = datetime.fromtimestamp(T0 + 3600, UTC)
+    await r.retrieve("keys", k=1, now=now)  # gated
+    r.cfg.gate_margin = 0.0
+    await r.retrieve("keys", k=1, now=now)  # both stages
+    out = r.summary()
+    assert out["gated"] == 1 and out["llm"] == 1 and out["recent"] == 2
+    assert [x["path"] for x in r.recent] == ["gated", "llm"]
+    assert out["llm_ms"]["p50"] >= 0 and out["llm_ms"]["p95"] >= out["llm_ms"]["p50"]
+    assert out["stage1_ms"] is not None and out["stage2_ms"] is not None
+
+
+def test_build_hier_service_tier_applies_to_the_recall_calls_only():
+    from megamind.retrieval.hier import build_hier
+
+    s = SimpleNamespace(hier_model="gpt-5-mini", hier_service_tier="priority", hier_cache_path="", wearer_tz="UTC")
+    r = build_hier(s, InMemoryStore(), FixedRetriever([]), "k")
+    assert r.llm._body("s", "u", 10)["service_tier"] == "priority"
+    assert "service_tier" not in r.memory.llm._body("s", "u", 10)  # note writing stays on the standard tier
+    plain = build_hier(
+        SimpleNamespace(hier_model="gpt-5-mini", hier_cache_path=""), InMemoryStore(), FixedRetriever([]), "k"
+    )
+    assert "service_tier" not in plain.llm._body("s", "u", 10)

@@ -49,7 +49,7 @@ BACKENDS = {
     "ucc-notimeout": ("ucc", "same answers, 30 s timeout (UCC's own quality)"),
     "ucc-rerank": ("ucc", "UCC reranks hybrid top-N (UCC_CANDIDATES)"),
     "hier": ("openai", "LLM notes + 2-stage pick/rank over hybrid top-30"),
-    "hier-gated": ("openai", "hier only when hybrid top-1/top-2 margin < HIER_GATE_MARGIN"),
+    "hier-gated": ("openai", "hier only when hybrid top-1/top-2 margin < --gate-margin (default config: 0.25)"),
     "combo": ("", "per question (#149): recent / pure time -> hybrid, hard -> hier, else UCC"),
     "combo-hier": ("openai", "combo with hier in UCC's slot: recent / pure time -> hybrid, else hier"),
 }
@@ -77,7 +77,8 @@ async def main() -> int:
         action="append",
         default=[],
         metavar="LABEL:k=v,...",
-        help="extra hier row; keys note/pick/rank (models), effort, pool, hints, gate; e.g. m:pick=gpt-5-mini",
+        help="extra hier row; keys note/pick/rank (models), effort, tier, pool, hints, gate, minhits, hours, direct; "
+        "e.g. m:pick=gpt-5-mini,hours=8",
     )
     ap.add_argument("--max-usd", type=float, default=3.0, help="OpenAI budget across all runs (ledger)")
     ap.add_argument("--max-ucc", type=int, default=300, help="UCC facet-query budget across all runs (ledger)")
@@ -215,9 +216,13 @@ HIER_KEYS = {
     "pick": "hier_model",
     "rank": "hier_rank_model",
     "effort": "hier_reasoning_effort",
+    "tier": "hier_service_tier",
     "pool": "hier_base_pool",
     "hints": "hier_hint_windows",
     "gate": "hier_gate_margin",
+    "direct": "hier_direct",
+    "hours": "hier_outline_hours",
+    "minhits": "hier_gate_min_hits",
 }
 
 
@@ -228,7 +233,14 @@ def parse_hier_spec(spec: str) -> tuple[str, dict]:
         k, _, v = part.partition("=")
         if k not in HIER_KEYS:
             raise SystemExit(f"--hier {spec!r}: unknown key {k!r} (one of {', '.join(HIER_KEYS)})")
-        over[HIER_KEYS[k]] = int(v) if k in ("pool", "hints") else float(v) if k == "gate" else v
+        if k in ("pool", "hints", "hours", "minhits"):
+            over[HIER_KEYS[k]] = int(v)
+        elif k == "gate":
+            over[HIER_KEYS[k]] = float(v)
+        elif k == "direct":
+            over[HIER_KEYS[k]] = v.lower() in ("1", "true", "yes")
+        else:
+            over[HIER_KEYS[k]] = v
     return f"hier[{label}]", over
 
 

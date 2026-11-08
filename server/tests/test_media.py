@@ -411,3 +411,17 @@ def test_decode_all_falls_back_to_vsync_on_old_ffmpeg(tmp_path, monkeypatch):
     assert media._decode_all(tmp_path / "ck.mp4") == [b"jpg"]
     assert ["-fps_mode" in c for c in calls] == [True, False, False]
     assert all("-vsync" in c for c in calls[1:])
+
+
+async def test_stats_includes_hier_when_that_retriever_is_live(app_client):
+    c, app = app_client
+    assert "hier" not in (await c.get("/v1/stats")).json()
+
+    class Hier:
+        recent = [{"path": "gated", "llm_ms": 0}]
+
+        def summary(self):
+            return {"llm": 0, "gated": 1, "recent": 1}
+
+    app.state.retriever = Hier()
+    assert (await c.get("/v1/stats")).json()["hier"] == {"llm": 0, "gated": 1, "recent": 1}

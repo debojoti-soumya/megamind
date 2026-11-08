@@ -21,9 +21,11 @@ import logging
 import math
 import re
 import time
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import zip_longest
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -60,6 +62,14 @@ class HierConfig:
     # cheap gating: skip the LLM when the hybrid's top hit leads the runner-up by >= this relative margin
     # ((s1 - s2) / s1 of the non-context scores); 0 = always ask the LLM
     gate_margin: float = 0.0
+    gate_min_hits: int = 5  # gating also needs this many non-context hybrid hits (a 3-hit result inflates the margin)
+    # >0: stage 1 lists block notes only inside this many candidate hours (around the hybrid / vector hits); the other
+    # hours show their hour note as [H..], which the pick may name to read that hour's blocks. 0 = every block
+    # (the prompt then grows ~15k tokens per day)
+    outline_hours: int = 0
+    # direct mode: stage 1 also sees the lines around the top hybrid hits and may answer with token ids right away
+    # (one LLM call); stage 2 runs only when it asks for blocks instead
+    direct: bool = False
 
 
 class ChatJSON:
@@ -76,10 +86,12 @@ class ChatJSON:
         retries: int = 6,
         transport: httpx.AsyncBaseTransport | None = None,
         reasoning_effort: str = "low",
+        service_tier: str = "",
     ) -> None:
         self.model = model
         self.retries = retries
         self.reasoning_effort = reasoning_effort
+        self.service_tier = service_tier
         self._sem = asyncio.Semaphore(concurrency)
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -100,6 +112,8 @@ class ChatJSON:
             body["max_completion_tokens"] = max_tokens + 4000
         else:
             body["temperature"] = 0
+        if self.service_tier:
+            body["service_tier"] = self.service_tier
         return body
 
     async def __call__(self, system: str, user: str, *, max_tokens: int = 800) -> dict[str, Any]:
@@ -248,8 +262,11 @@ class HierMemory:
         """How many closed blocks before `until` still need a note."""
         return len(await self._missing(until, device_id))
 
-    async def build(self, until: float, *, device_id: str | None = None, full: bool = False) -> int:
-        """Write the missing notes for every block that closed before `until`; returns how many were written."""
+    async def build(
+        self, until: float, *, device_id: str | None = None, full: bool = False, rollup: bool = True
+    ) -> int:
+        """Write the missing notes for every block that closed before `until` (and, with `rollup`, the hour/day
+        overviews they complete); returns how many were written."""
         async with self._lock:
             todo = await self._missing(until, device_id, full=full)
             self._scanned[device_id] = max(until, self._scanned.get(device_id, until))
@@ -269,7 +286,7 @@ class HierMemory:
                 written += 1
 
             await asyncio.gather(*(one(s, ts) for s, ts in todo))
-            for level, span in (("hour", 3600.0), ("day", 86400.0)):
+            for level, span in (("hour", 3600.0), ("day", 86400.0)) if rollup else ():
                 written += await self._rollup(level, span, until)
             self._save()
             return written
@@ -318,14 +335,24 @@ class HierMemory:
             key=lambda n: n["start"],
         )
 
-    def outline(self, until: float, blocks: list[dict[str, Any]] | None = None) -> str:
+    def hours(self, until: float) -> list[dict[str, Any]]:
+        """Hour notes closed by `until`, oldest first: stage 1's H0, H1, ... in this order."""
+        return sorted(
+            (n for n in self.notes.values() if n["level"] == "hour" and n["end"] <= until), key=lambda n: n["start"]
+        )
+
+    def outline(
+        self, until: float, blocks: list[dict[str, Any]] | None = None, expand: set[float] | None = None
+    ) -> str:
         """The log a stage-1 prompt shows: day and hour overviews, then `blocks` (default: every block before
-        `until`) numbered B0, B1, ... in that order."""
+        `until`) numbered B0, B1, ... in that order. With `expand` (hour starts) only the blocks of those hours (and
+        of hours without a note yet) are listed; every other hour note carries an [H..] id (see `hours`)."""
         blocks = self.blocks(until) if blocks is None else blocks
         coarse = sorted(
             (n for n in self.notes.values() if n["level"] in ("day", "hour") and n["end"] <= until),
             key=lambda n: (n["start"], n["level"] != "day"),
         )
+        h_idx = {n["start"]: i for i, n in enumerate(self.hours(until))} if expand is not None else {}
         lines = []
         for n in coarse:
             span = (
@@ -333,9 +360,17 @@ class HierMemory:
                 if n["level"] == "day"
                 else (f"{self._fmt(n['start'])}-{self._fmt(n['end'], '%H:%M')}")
             )
-            lines.append(f"{n['level'].upper()} {span}: {n['summary']}")
+            tag = (
+                f"[H{h_idx[n['start']]}] "
+                if n["level"] == "hour" and expand is not None and n["start"] not in expand
+                else ""
+            )
+            lines.append(f"{tag}{n['level'].upper()} {span}: {n['summary']}")
         lines.append("")
         for i, n in enumerate(blocks):
+            hour = self._floor(n["start"], 3600)
+            if expand is not None and hour in h_idx and hour not in expand:
+                continue
             kw = ", ".join(n.get("keywords", [])[:20])
             lines.append(
                 f"[B{i}] {self._fmt(n['start'])}-{self._fmt(n['end'], '%H:%M')}: {n['summary']} (keywords: {kw})"
@@ -371,8 +406,22 @@ Now: {now}
 Question: {question}
 Keyword/embedding search hits fall in blocks: {hints}
 
-Pick up to {n} blocks most likely to contain the moment(s) that answer the question, best first.
-Return ONLY JSON: {{"reasoning": str (one sentence), "blocks": ["B.."]}}"""
+Pick up to {n} blocks most likely to contain the moment(s) that answer the question, best first. An [H..] hour \
+whose blocks are not listed can be picked instead to read its blocks.
+Return ONLY JSON: {{"reasoning": str (one sentence), "blocks": ["B.." or "H.."]}}"""
+STAGE1_DIRECT_PROMPT = """Memory log (overviews, then 10-minute blocks):
+{outline}
+
+Now: {now}
+Question: {question}
+
+Moments around the keyword/embedding search hits (blocks {hints}), each line "[token id] time seen/heard: ...":
+{lines}
+
+If these moments already show or state the moment that answers the question (the evidence a person would look at), \
+rank their token ids best first, up to {k}, and return no blocks. Otherwise return up to {n} blocks (best first) \
+whose moments should be read instead; an [H..] hour whose blocks are not listed can be named to read its blocks. \
+Return ONLY JSON: {{"reasoning": str (one sentence), "ids": [str], "blocks": ["B.." or "H.."]}}"""
 STAGE2_PROMPT = """Now: {now}
 Question: {question}
 
@@ -406,15 +455,36 @@ class HierRetriever(Retriever):
         self.cfg = config or memory.cfg
         self.auto_build = auto_build
         self.last_trace: dict[str, Any] = {}
-        self.stats = {"llm": 0, "gated": 0, "errors": 0}
+        self.stats = {"llm": 0, "gated": 0, "direct": 0, "errors": 0}
+        self.recent: deque[dict[str, Any]] = deque(maxlen=200)  # per recall: path + ms, for GET /v1/stats
         self._bg: asyncio.Task | None = None
 
+    def summary(self) -> dict[str, Any]:
+        """Counters plus p50/p95 of the LLM stages over the last `recent` recalls (gated ones count as 0 ms)."""
+
+        def pct(key: str) -> dict[str, int] | None:
+            xs = sorted(r[key] for r in self.recent if r.get(key) is not None)
+            if not xs:
+                return None
+            return {"p50": xs[len(xs) // 2], "p95": xs[min(len(xs) - 1, int(0.95 * len(xs)))]}
+
+        return {
+            **self.stats,
+            "recent": len(self.recent),
+            "llm_ms": pct("llm_ms"),
+            "stage1_ms": pct("stage1_ms"),
+            "stage2_ms": pct("stage2_ms"),
+        }
+
     async def _ensure_notes(self, until: float, device_id: str | None) -> None:
-        """Write a few missing notes inline; a large backlog (cold start, a long upload) is built in the
-        background so the query answers from the notes that exist instead of waiting on dozens of LLM calls."""
+        """Write a few missing block notes inline; a large backlog (cold start, a long upload) is built in the
+        background so the query answers from the notes that exist instead of waiting on dozens of LLM calls.
+        Hour/day overviews are never written inline: stage 1 lists the blocks either way, and the two serial
+        rollup calls (~2 s each) on top of a block note (~3 s) would eat the whole `timeout_s` budget."""
         if await self.memory.pending(until, device_id=device_id) <= self.cfg.inline_build_max:
-            await self.memory.build(until, device_id=device_id)
-        elif self._bg is None or self._bg.done():
+            if not await self.memory.build(until, device_id=device_id, rollup=False):
+                return
+        if self._bg is None or self._bg.done():
             self._bg = asyncio.create_task(self.memory.build(until, device_id=device_id))
 
     async def run_forever(self, interval_s: float) -> None:
@@ -451,9 +521,11 @@ class HierRetriever(Retriever):
         )
         if mode not in ("hybrid", None) or not query.strip():
             return _truncate(base, k)
-        if self.cfg.gate_margin > 0 and top_margin(base) >= self.cfg.gate_margin:
+        n_hits = sum(not r.is_context for r in base.tokens)
+        if self.cfg.gate_margin > 0 and n_hits >= self.cfg.gate_min_hits and top_margin(base) >= self.cfg.gate_margin:
             self.stats["gated"] += 1
             self.last_trace = {"gated": round(top_margin(base), 3)}
+            self.recent.append({"path": "gated", "llm_ms": 0})
             return _truncate(base, k)
         t0 = time.perf_counter()
         try:
@@ -465,9 +537,18 @@ class HierRetriever(Retriever):
             log.warning("hier recall fell back to hybrid: %s", e)
             self.last_trace = {"error": str(e)}
             self.stats["errors"] += 1
+            self.recent.append({"path": "error", "llm_ms": _ms(t0)})
             return _truncate(base, k)
         self.stats["llm"] += 1
-        self.last_trace["llm_ms"] = round(1000 * (time.perf_counter() - t0))
+        self.last_trace["llm_ms"] = _ms(t0)
+        self.recent.append(
+            {
+                "path": "direct" if self.last_trace.get("direct") else "llm",
+                "llm_ms": self.last_trace["llm_ms"],
+                "stage1_ms": self.last_trace.get("stage1_ms"),
+                "stage2_ms": self.last_trace.get("stage2_ms"),
+            }
+        )
         tokens = _interleave(_spread(picked, self.cfg.moment_s), base.ranked, k)
         return RetrievalResult(plan=base.plan, tokens=tokens, widened=base.widened, anchor_ts=base.anchor_ts)
 
@@ -487,7 +568,12 @@ class HierRetriever(Retriever):
         blocks = self.memory.blocks(until, time_from)
         now_s = self.memory._fmt(until)
         hits = base.ranked[: self.cfg.hint_windows]
-        vec_ids = await self._vector_blocks(query, blocks, time_from, until, device_id)
+        w = self.cfg.window_s
+        hint_spans = [(r.token.ts - w / 2, r.token.ts + w / 2) for r in hits]
+        vec_ids, hint_toks = await asyncio.gather(
+            self._vector_blocks(query, blocks, time_from, until, device_id),
+            self._tokens_in(hint_spans, time_from, until, device_id),
+        )
         hint_ids = [f"B{i}" for i in vec_ids]
         for r in hits:
             for i, b in enumerate(blocks):
@@ -495,47 +581,112 @@ class HierRetriever(Retriever):
                     hint_ids.append(f"B{i}")
         chosen: list[dict[str, Any]] = []
         if blocks:
-            outline = self.memory.outline(until, blocks)
-            out = await self.llm(
-                SEARCH_SYSTEM,
-                STAGE1_PROMPT.format(
-                    now=now_s,
-                    question=query,
-                    outline=outline,
-                    hints=", ".join(hint_ids) or "none",
-                    n=self.cfg.max_blocks,
-                ),
-                max_tokens=300,
-            )
-            for bid in out.get("blocks", [])[: self.cfg.max_blocks]:
-                m = re.fullmatch(r"\[?B(\d+)\]?", str(bid).strip())
-                if m and int(m.group(1)) < len(blocks) and blocks[int(m.group(1))] not in chosen:
-                    chosen.append(blocks[int(m.group(1))])
+            expand = self._expand_hours(hits, [blocks[i] for i in vec_ids]) if self.cfg.outline_hours > 0 else None
+            outline = self.memory.outline(until, blocks, expand)
+            hours = self.memory.hours(until) if expand is not None else []
+            t1 = time.perf_counter()
+            if self.cfg.direct and hint_toks:
+                lines = self._lines(hint_toks)
+                out = await self.llm(
+                    SEARCH_SYSTEM,
+                    STAGE1_DIRECT_PROMPT.format(
+                        now=now_s,
+                        question=query,
+                        outline=outline,
+                        hints=", ".join(hint_ids) or "none",
+                        lines="\n".join(lines),
+                        k=k,
+                        n=self.cfg.max_blocks,
+                    ),
+                    max_tokens=400,
+                )
+                picked = self._pick(out, lines, hint_toks, k)
+                if picked and not out.get("blocks"):
+                    self.stats["direct"] += 1
+                    self.last_trace = {"stage1": out, "direct": True, "stage1_ms": _ms(t1)}
+                    return picked
+            else:
+                out = await self.llm(
+                    SEARCH_SYSTEM,
+                    STAGE1_PROMPT.format(
+                        now=now_s,
+                        question=query,
+                        outline=outline,
+                        hints=", ".join(hint_ids) or "none",
+                        n=self.cfg.max_blocks,
+                    ),
+                    max_tokens=300,
+                )
+            for bid in out.get("blocks", []) or []:
+                m = re.fullmatch(r"\[?([BH])(\d+)\]?", str(bid).strip())
+                if not m:
+                    continue
+                i = int(m.group(2))
+                if m.group(1) == "B" and i < len(blocks):
+                    want = [blocks[i]]
+                elif m.group(1) == "H" and i < len(hours):
+                    want = [b for b in blocks if hours[i]["start"] <= b["start"] < hours[i]["end"]]
+                else:
+                    continue
+                for b in want:
+                    if b not in chosen and len(chosen) < self.cfg.max_blocks:
+                        chosen.append(b)
             for i in vec_ids[: self.cfg.vec_blocks]:
                 if blocks[i] not in chosen:
                     chosen.append(blocks[i])
-            self.last_trace = {"stage1": out, "blocks": [b["start"] for b in chosen]}
+            self.last_trace = {
+                "stage1": out,
+                "blocks": [b["start"] for b in chosen],
+                "stage1_ms": _ms(t1),
+                "outline_chars": len(outline),
+            }
 
         spans = [(b["start"], min(b["end"], until)) for b in chosen]
-        w = self.cfg.window_s
-        spans += [(r.token.ts - w / 2, r.token.ts + w / 2) for r in hits]
-        toks: dict[str, MemoryToken] = {}
-        for lo, hi in _merge(spans):
-            lo = max(lo, time_from) if time_from is not None else lo
-            for t in await self.store.range(lo, min(hi, until), 10**6, device_id=device_id, kinds=KINDS):
-                toks[t.id] = t
+        toks = dict(hint_toks)
+        toks.update(await self._tokens_in(spans, time_from, until, device_id))
         if not toks:
             return []
-        lines = window_lines(sorted(toks.values(), key=lambda t: t.ts), self.memory.tz, self.cfg)
-        shown = {ln[1 : ln.index("]")] for ln in lines}
+        lines = self._lines(toks)
+        t2 = time.perf_counter()
         out2 = await self.rank_llm(
             SEARCH_SYSTEM,
             STAGE2_PROMPT.format(now=now_s, question=query, lines="\n".join(lines), k=k),
             max_tokens=400,
         )
-        self.last_trace["stage2"] = out2
+        self.last_trace.update(stage2=out2, stage2_ms=_ms(t2))
+        return self._pick(out2, lines, toks, k)
+
+    def _expand_hours(self, hits: Sequence[RetrievedToken], vec_blocks: list[dict[str, Any]]) -> set[float]:
+        """The hours whose blocks stage 1 gets to read in full: around the top hybrid hits and the top vector-ranked
+        blocks, best first, interleaved, up to `outline_hours`."""
+        starts = [r.token.ts for r in hits]
+        cands = [x for pair in zip_longest(starts, [b["start"] for b in vec_blocks]) for x in pair if x is not None]
+        out: set[float] = set()
+        for ts in cands:
+            out.add(self.memory._floor(ts, 3600))
+            if len(out) >= self.cfg.outline_hours:
+                break
+        return out
+
+    async def _tokens_in(
+        self, spans: list[tuple[float, float]], time_from: float | None, until: float, device_id: str | None
+    ) -> dict[str, MemoryToken]:
+        toks: dict[str, MemoryToken] = {}
+        for lo, hi in _merge(spans):
+            lo = max(lo, time_from) if time_from is not None else lo
+            for t in await self.store.range(lo, min(hi, until), 10**6, device_id=device_id, kinds=KINDS):
+                toks[t.id] = t
+        return toks
+
+    def _lines(self, toks: dict[str, MemoryToken]) -> list[str]:
+        return window_lines(sorted(toks.values(), key=lambda t: t.ts), self.memory.tz, self.cfg)
+
+    @staticmethod
+    def _pick(out: dict[str, Any], lines: list[str], toks: dict[str, MemoryToken], k: int) -> list[RetrievedToken]:
+        """The LLM's `ids`, in its order, kept to ids that were actually shown."""
+        shown = {ln[1 : ln.index("]")] for ln in lines}
         picked: list[RetrievedToken] = []
-        for rank, tid in enumerate(out2.get("ids", [])):
+        for rank, tid in enumerate(out.get("ids", []) or []):
             tid = str(tid).strip().strip("[]")
             if tid in shown and tid in toks and all(p.token.id != tid for p in picked):
                 picked.append(RetrievedToken(toks[tid], 2.0 - 0.01 * rank, ["llm"]))
@@ -570,6 +721,10 @@ class HierRetriever(Retriever):
                 per.setdefault(i, []).append(score[t.id])
         top3 = {i: sum(sorted(v)[-3:]) / 3 for i, v in per.items()}
         return sorted(top3, key=lambda i: -top3[i])[: self.cfg.hint_windows]
+
+
+def _ms(t0: float) -> int:
+    return round(1000 * (time.perf_counter() - t0))
 
 
 def top_margin(res: RetrievalResult) -> float:
@@ -648,12 +803,17 @@ def build_hier(
     # recall-time calls fail fast (the stage is also bounded by timeout_s); note writing keeps the patient defaults
     fast = dict(kw, timeout_s=float(getattr(settings, "hier_call_timeout_s", 4.0) or 4.0))
     fast["retries"] = max(1, int(getattr(settings, "hier_retries", 2) or 2))
+    fast["service_tier"] = getattr(settings, "hier_service_tier", "") or ""
     pick_llm = ChatJSON(api_key, pick_model, **fast)
     rank_llm = pick_llm if rank_model == pick_model else ChatJSON(api_key, rank_model, **fast)
     cfg = HierConfig(
         timeout_s=float(getattr(settings, "hier_timeout_s", 8.0)),
         gate_margin=float(getattr(settings, "hier_gate_margin", 0.0) or 0.0),
+        direct=bool(getattr(settings, "hier_direct", False)),
+        gate_min_hits=int(getattr(settings, "hier_gate_min_hits", 5) or 0),
+        outline_hours=int(getattr(settings, "hier_outline_hours", 0) or 0),
         base_pool=int(getattr(settings, "hier_base_pool", 30) or 30),
+        inline_build_max=int(getattr(settings, "hier_inline_build_max", 3) or 0),
         hint_windows=int(getattr(settings, "hier_hint_windows", 10) or 10),
     )
     memory = HierMemory(
