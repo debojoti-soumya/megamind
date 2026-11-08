@@ -2,7 +2,9 @@
 
 Plain ES modules under `static/`, no build step; three.js loads from a pinned CDN via the page's importmap.
 The page only calls the public v1 API (`/v1/memories`, `/v1/chat`, `/v1/thumbs/*`, `/v1/replay.mp4`), so it
-adds no server-side behaviour beyond serving files. Wiring (`install`) is additive; `XR_ENABLED=false` turns it off.
+adds no server-side behaviour beyond serving files. Voice questions (`static/voice.js`) post a 16 kHz WAV to the
+existing multipart `/v1/chat`, so the configured STT provider transcribes them.
+Wiring (`install`) is additive; `XR_ENABLED=false` turns it off.
 """
 
 from __future__ import annotations

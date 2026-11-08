@@ -106,3 +106,112 @@ body {
 [hidden] {
   display: none !important;
 }
+
+/* Voice question button (voice.js), next to the ask box. Sized for a Quest controller ray: >= 60px.
+   Ported from Recall's VoiceButton.css (the "voice-lg" theater variant). */
+.voice {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+.voice-btn {
+  min-width: 60px;
+  min-height: 60px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #121826;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.voice-btn:hover {
+  border-color: var(--accent);
+}
+.voice-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.voice-dots {
+  font-size: 26px;
+  line-height: 1;
+}
+.voice-hide {
+  display: none;
+}
+.voice-label {
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  min-width: 2.4em;
+  text-align: left;
+}
+.voice-starting {
+  border-color: #fbbf24;
+}
+.voice-listening {
+  background: rgba(248, 113, 113, 0.18);
+  border-color: #f87171;
+  color: #ffd6d6;
+  animation: voice-pulse 1.1s ease-in-out infinite;
+}
+.voice-transcribing {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: voice-breathe 1s ease-in-out infinite;
+}
+.voice-error {
+  border-color: #f87171;
+}
+@keyframes voice-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.55);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(248, 113, 113, 0);
+  }
+}
+@keyframes voice-breathe {
+  50% {
+    opacity: 0.6;
+  }
+}
+/* The tip drops below the button: the bar is at the top of the page. */
+.voice-tip {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 2;
+  width: max-content;
+  max-width: min(22rem, 80vw);
+  background: #121826;
+  color: #dfe6f3;
+  border: 1px solid #2a3550;
+  border-radius: 10px;
+  padding: 7px 11px;
+  font-size: 15px;
+  line-height: 1.35;
+  pointer-events: none;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+.voice-tip.voice-tip-error {
+  background: #3a1d24;
+  color: #ffb4bd;
+  border-color: #6b2a35;
+}
+@media (prefers-reduced-motion: reduce) {
+  .voice-listening,
+  .voice-transcribing {
+    animation: none;
+  }
+}

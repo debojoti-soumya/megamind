@@ -25,6 +25,20 @@
         <form class="xr-ask" id="xr-ask" autocomplete="off">
           <input id="xr-q" placeholder="Ask about your day&hellip;" aria-label="Ask about your day" />
         </form>
+        <span class="voice voice-lg" id="xr-voice">
+          <button type="button" class="voice-btn voice-idle" id="xr-voice-btn" aria-pressed="false"
+            title="Ask by voice: hold to talk, or tap to start and tap again to stop"
+            aria-label="Ask by voice: hold to talk, or tap to start and tap again to stop">
+            <svg class="voice-mic" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="11" rx="3" />
+              <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+            </svg>
+            <span class="voice-dots" aria-hidden="true" hidden>&hellip;</span>
+            <span class="voice-label" hidden></span>
+          </button>
+          <span class="voice-tip" id="xr-voice-tip" role="status" hidden></span>
+        </span>
         <button type="button" class="xr-enter" id="xr-enter" hidden>Enter headset</button>
         <span class="xr-hint" id="xr-hint" title="WebXR needs a secure context: localhost or HTTPS">
           On Quest 3: <code>adb reverse tcp:8000 tcp:8000</code>, then open <code>localhost:8000/xr</code>
