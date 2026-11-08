@@ -371,3 +371,42 @@ def test_reassign_reruns_episode_tracker():
     assert toks[0].episode_id == toks[1].episode_id != toks[2].episode_id
     assert toks[4].episode_id == "old"  # non-frame tokens untouched
     assert stats["max_s"] == 30
+
+
+async def _lancedb_with(tmp_path, toks):
+    from megamind.store.lancedb_store import LanceDBStore
+
+    store = LanceDBStore(tmp_path / "db", vector_index_min_rows=10_000)
+    await store.add_many(toks)
+    return tmp_path / "db"
+
+
+def test_offline_backend_runs_hybrid_in_utc_and_reports_calibration(tmp_path, monkeypatch):
+    """--offline: main's retriever over a stored LanceDB, planner clock in UTC (the eval calendar), and "default"
+    calibration mirrors the server (store.image_calibration set from the embedder) instead of silently off."""
+    import asyncio
+
+    pytest.importorskip("lancedb")
+    for k in ("RETRIEVER_BACKEND", "WEARER_TZ", "SEARCH_CALIBRATE_IMAGE", "SPEECH_LINK_S"):
+        monkeypatch.setenv(k, "")  # OfflineBackend writes these; monkeypatch restores them afterwards
+        monkeypatch.delenv(k)
+    monkeypatch.setenv("EMBED_PROVIDER", "mock")
+    monkeypatch.setenv("IMAGE_EMBED_PROVIDER", "none")
+    emb = MockTextEmbedder()
+    base = ego.wall_ts(1, "11000000")
+
+    async def toks():
+        out = []
+        for i, cap in enumerate(["red mug on the desk", "walking in the park", "red mug in the sink"]):
+            t = MemoryToken(id=f"t{i}", device_id="d", ts=base + 600 * i, caption=cap, thumb_path="", frame_hash="")
+            t.text_vec = await emb.embed(cap)
+            out.append(t)
+        return out
+
+    path = asyncio.run(_lancedb_with(tmp_path, asyncio.run(toks())))
+    be = ego.OfflineBackend(path, k=5, calibrate="default", speech_link=None)
+    assert str(be.retriever.tz) == "UTC"  # not the server's WEARER_TZ default (America/Los_Angeles)
+    got = be.search("red mug", base + 900)  # only memories up to query time
+    assert [r["id"] for r in got] and {r["id"] for r in got} <= {"t0", "t1"}
+    assert got[0]["id"] == "t0" and got[0]["kind"] == "frame"
+    assert be.describe()["calibrated"] is False  # no image embedder -> nothing to calibrate

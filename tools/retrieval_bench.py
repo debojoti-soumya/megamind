@@ -147,7 +147,8 @@ def coco_subset(instances: dict, captions: dict, n: int = 500, seed: int = 0) ->
             {"cat": cats[a["category_id"]], "bbox": a["bbox"], "area": a["area"] / area, "crowd": a.get("iscrowd", 0)}
             for a in by[i]
         ]
-        out.append({"file": im["file_name"], "id": i, "captions": capby[i], "objects": objs})
+        # basename only: the name becomes a local path in prepare() (downloaded annotations are untrusted data)
+        out.append({"file": Path(im["file_name"]).name, "id": i, "captions": capby[i], "objects": objs})
     return out
 
 
@@ -195,7 +196,7 @@ def prepare(data: Path, n_coco: int = 500, n_flickr: int = 300) -> None:
             url = FLICKR_ROWS_URL.format(offset=off, length=min(100, n_flickr - off))
             with urllib.request.urlopen(url) as resp:  # noqa: S310
                 pages.append(json.load(resp))
-        rows = flickr_rows(pages)
+        rows = [r for r in flickr_rows(pages) if r["src"].startswith("https://")]  # urlretrieve also reads file://
         with ThreadPoolExecutor(16) as ex:
             list(ex.map(lambda r: urllib.request.urlretrieve(r["src"], flickr / "img" / r["file"]), rows))
         (flickr / "captions.json").write_text(

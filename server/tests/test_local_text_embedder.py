@@ -80,3 +80,16 @@ async def test_hybrid_retriever_embeds_the_query_with_embed_query():
     res = await HybridRetriever(store, emb).retrieve("red mug")
     assert emb.queries and [r.token.id for r in res.tokens] == ["t1"]
     assert isinstance(emb, TextEmbedder)
+
+
+def test_local_embed_model_is_read_from_the_env_file(tmp_path, monkeypatch):
+    """LOCAL_EMBED_MODEL in server/.env (as .env.example shows) must reach the embedder, not only a shell export."""
+    import megamind.store.embeddings as E
+
+    monkeypatch.delenv("LOCAL_EMBED_MODEL", raising=False)
+    env = tmp_path / ".env"
+    env.write_text("EMBED_PROVIDER=local\nLOCAL_EMBED_MODEL=BAAI/bge-base-en-v1.5\n")
+    seen = []
+    monkeypatch.setattr(E, "LocalTextEmbedder", lambda name: seen.append(name) or MockTextEmbedder())
+    build_text_embedder(Settings(_env_file=env))
+    assert seen == ["BAAI/bge-base-en-v1.5"]

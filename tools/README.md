@@ -64,7 +64,7 @@ The generator writes `scenes/*.mp4`, `scenes/*.srt` (what was said in each clip)
 
 ## Retrieval benchmarks (ported from PR #54)
 
-Two benchmarks measure different things from the example day:
+The three evals measure different things:
 
 - **The example day** checks end-to-end answers on a small scripted day.
 - **`retrieval_bench.py`** gives per-signal ablations on real photos. Use it to tune fusion weights,
@@ -148,6 +148,10 @@ its target time, searching only memories from before `query_time`. The default w
 
 **Speech with `--srt-dir`.** Each subtitle cue goes out once, as `FrameMeta.transcript`. Servers without the
 speech port PR ignore the field, so there `--audio` is the way to get speech in.
+
+**Offline eval.** `--offline` builds main's retriever from the server's env with `RETRIEVER_BACKEND=hybrid` and
+the planner clock in UTC (the eval calendar maps EgoLife wall-clock times onto UTC). `--calibrate default` follows
+`SEARCH_CALIBRATE_IMAGE` like the server does; `on`/`off` force it.
 
 **Waiting for enrichment.** Ingest waits on `/v1/stats.worker_queue` when the server has it (tiered-media port
 PR). Otherwise it waits until `/v1/health.store_count` stops changing.

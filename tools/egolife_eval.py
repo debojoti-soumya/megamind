@@ -404,6 +404,9 @@ class OfflineBackend:
         sys.path.insert(0, str(ROOT / "server"))
         # A/B switches also go in as env settings, so a Settings-driven implementation sees them too.
         os.environ["RETRIEVER_BACKEND"] = "hybrid"  # UCC needs its cloud corpus; offline is our retriever
+        # The eval calendar maps EgoLife wall-clock times onto UTC (DAY0), so the planner must resolve "this
+        # morning" / "at 3pm" in UTC too, not in the server's WEARER_TZ.
+        os.environ["WEARER_TZ"] = "UTC"
         if speech_link is not None:
             os.environ["SPEECH_LINK_S"] = str(speech_link)
         if calibrate != "default":
@@ -428,10 +431,12 @@ class OfflineBackend:
             elif not hasattr(s, "speech_link_s"):
                 self.notes.append("--speech-link ignored: no speech_link_s setting (speech PR not merged)")
         cal = calibration_of(self.image)
-        if calibrate != "default":
-            if cal is None:
-                self.notes.append("--calibrate ignored: image embedder has no calibration (PR 1 / no SigLIP)")
-            set_calibration(self.retriever, self.store, self.image, calibrate == "on")
+        if calibrate != "default" and cal is None:
+            self.notes.append("--calibrate ignored: image embedder has no calibration (PR 1 / no SigLIP)")
+        # main.py sets store.image_calibration in its lifespan; this store is built outside the app, so "default"
+        # must do the same (SEARCH_CALIBRATE_IMAGE, on when PR 1 has it) or offline would silently run uncalibrated.
+        on = calibrate == "on" or (calibrate == "default" and bool(getattr(s, "search_calibrate_image", True)))
+        set_calibration(self.retriever, self.store, self.image, on)
         self.k = k
         self.config = {
             "backend": "offline HybridRetriever",
@@ -439,6 +444,7 @@ class OfflineBackend:
             "image_embedder": _name(self.image),
             "image_calibration": cal,
             "calibrate": calibrate,
+            "calibrated": on and cal is not None,
             "speech_link_s": getattr(cfg, "speech_link_s", None),
             "notes": self.notes,
         }
