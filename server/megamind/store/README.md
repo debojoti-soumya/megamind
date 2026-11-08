@@ -27,8 +27,7 @@ server/data/
 ```
 
 Thumbnails are referenced by `MemoryToken.thumb_path` and served at `GET /v1/thumbs/<id>.jpg`.
-The store never stores raw frames or VLM visual tokens — only JPEG thumbnail + text + two vectors
-(see `research/digest/storage.md`).
+The store never stores raw frames or VLM visual tokens — only JPEG thumbnail + text + two vectors.
 
 ### Media tiers (`media.py`, ported from PR #54)
 

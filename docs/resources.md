@@ -25,7 +25,7 @@ READER_MODEL=google/gemma-4-31B-it                  # asap window; fallback nvid
 EMBED_PROVIDER=openai  STT_PROVIDER=openai  TTS_PROVIDER=openai   # OpenAI credits
 ```
 
-Sail image-input limits: ≤20 images/request, ≤20 MB per image, JPEG/PNG/WebP, base64 or public URL (URL fetch must finish in 10 s). Use `max_retries=0` on the OpenAI client plus an `Idempotency-Key` header and your own backoff (Sail bills retried requests); honour `Retry-After` on 429/503. Source: `research/reports/04-sail-api-limits-latency.md`. Our reader sends ≤12 thumbnails per call, so this fits; thumbnails should be sent as base64 (the server is not on the public internet).
+Sail image-input limits: ≤20 images/request, ≤20 MB per image, JPEG/PNG/WebP, base64 or public URL (URL fetch must finish in 10 s). Use `max_retries=0` on the OpenAI client plus an `Idempotency-Key` header and your own backoff (Sail bills retried requests); honour `Retry-After` on 429/503. Our reader sends ≤12 thumbnails per call, so this fits; thumbnails should be sent as base64 (the server is not on the public internet).
 
 ## Schedule and rules that affect us
 

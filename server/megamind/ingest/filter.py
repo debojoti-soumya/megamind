@@ -1,5 +1,5 @@
 """Keyframe filter v2: dark -> blur -> too_soon -> dedupe -> per-minute cap, with pose and
-settled-frame triggers (research/digest/capture.md items 1-5).
+settled-frame triggers.
 
 Pure PIL/NumPy, ~3-4 ms per 960 px frame (one grey decode, one 320 px downscale). Per-device state
 is keyed on frame timestamps (not wall clock) so video replays through tools/feeder.py are deterministic.

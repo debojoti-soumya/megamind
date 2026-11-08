@@ -123,7 +123,6 @@ headset-android/  optional native Kotlin capture app (frames, ambient audio, 30 
 deploy/           Modal app (modal_app.py) plus latency bench and keep-warm scripts
 docs/             design doc (LaTeX + PDF), API contract, Quest 3 guide, prior art, resources
 tools/            dev/eval scripts: feeder.py (fake headset), ask.py (CLI chat), example-day builders and evals
-research/         hackathon research notes and reports used to pick models/defaults (archived; research bot paused)
 .github/          CI: ruff + pytest on server/, FrameSpool C# tests, Unity APK build
 ```
 
