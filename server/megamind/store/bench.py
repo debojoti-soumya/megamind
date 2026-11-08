@@ -128,6 +128,7 @@ async def bench_store(
             QUERIES[r % len(QUERIES)], k, device_id="quest-0", kinds=frames
         ),
         "range 1h": lambda r: store.range(hour[0], hour[1], limit=1000),
+        "range day (consolidator)": lambda r: store.range(lo, hi, limit=1_000_000, kinds=frames),
         "get_many 12": lambda r: store.get_many(rnd.sample(ids, min(12, len(ids)))),
         "neighbors ±2": lambda r: store.neighbors(rnd.choice(ids)),
         "search hybrid": lambda r: store.search(qtext[r], qimg[r], QUERIES[r % len(QUERIES)], k=k),
