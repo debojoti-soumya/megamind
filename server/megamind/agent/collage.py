@@ -317,20 +317,20 @@ def _caption_matches(picks: list[smart.Pick], *, phrase: str) -> list[smart.Pick
     return hits
 
 
-async def make_collage(
-    st,
-    query: str,
-    t0: float | None = None,
-    t1: float | None = None,
-    device_id: str | None = None,
-    max_images: int | None = None,
-) -> CollageResponse:
-    """Gather -> verify -> one photo per moment -> render. Raises `CollageError` (404 nothing matches, 503 the
-    verifier failed before confirming anything, 409 memories deleted meanwhile, 400 bad request)."""
-    cache: CollageCache | None = getattr(st, "collage_cache", None)
-    if cache is None:
-        raise CollageError(404, "collage is disabled (COLLAGE_ENABLED=false)")
-    cfg: CollageSettings = st.collage_settings
+@dataclass
+class Found:
+    subject: smart.Subject | None  # None = a time-only query (unverified sample of that period)
+    phrase: str
+    title: str
+    candidates: list[MemoryToken]
+    picks: list[smart.Pick]  # non-empty; best first (verified by confidence, else retrieval rank)
+
+
+async def find_photos(
+    st, query: str, t0: float | None = None, t1: float | None = None, device_id: str | None = None
+) -> Found:
+    """The stored photos that show what `query` asks for (also used by the 3D model). Raises `CollageError`
+    (404 nothing matches, 503 the verifier failed before confirming anything, 400 bad request)."""
     mcfg = st.montage_settings
     tz = st.settings.wearer_tz
     zone = _zone(tz)
@@ -339,9 +339,6 @@ async def make_collage(
         raise CollageError(400, "say what the photos should show")
     if t0 is not None and t1 is not None and t1 < t0:
         raise CollageError(400, "time_to must be >= time_from")
-    cap = max(1, min(max_images or cfg.max_images, max(cfg.max_images, 1)))
-    gen = cache.generation
-
     subj = smart.detect_subject(query, tz=tz)
     stats = {"verify_errors": 0}
     if subj is None:  # only a time phrase ("photos from this afternoon"): sample that period
@@ -372,6 +369,31 @@ async def make_collage(
         where = " in that period" if ranged else " in your memories"
         what = f" of {smart.spoken(phrase)}" if phrase else ""
         raise CollageError(404, f"I couldn't find any photos{what}{where}.")
+    if any(p.verified for p in picks):
+        picks = sorted(picks, key=lambda p: -p.score)
+    return Found(subj, phrase, title, cands, picks)
+
+
+async def make_collage(
+    st,
+    query: str,
+    t0: float | None = None,
+    t1: float | None = None,
+    device_id: str | None = None,
+    max_images: int | None = None,
+) -> CollageResponse:
+    """Find the photos -> one per moment -> render. Raises `CollageError` (as `find_photos`; 409 memories deleted
+    meanwhile)."""
+    cache: CollageCache | None = getattr(st, "collage_cache", None)
+    if cache is None:
+        raise CollageError(404, "collage is disabled (COLLAGE_ENABLED=false)")
+    cfg: CollageSettings = st.collage_settings
+    tz = st.settings.wearer_tz
+    zone = _zone(tz)
+    cap = max(1, min(max_images or cfg.max_images, max(cfg.max_images, 1)))
+    gen = cache.generation
+    found = await find_photos(st, query, t0, t1, device_id)
+    subj, phrase, title, cands, picks = found.subject, found.phrase, found.title, found.candidates, found.picks
     if subj is None:
         chosen, n_moments = evenly(picks, cap), len(picks)
     else:

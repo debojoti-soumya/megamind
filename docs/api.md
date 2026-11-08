@@ -159,7 +159,7 @@ Response:
   "cited": [ { "id": "...", "ts": 1731000000.1, "caption": "...", "thumb_url": "/v1/thumbs/....jpg",
                "replay_url": "/v1/replay.mp4?device_id=quest3-abc&from=1731000000.100&to=1731000010.100" } ],
   "tool_calls": [ { "name": "recall_memory", "args": { "query": "keys", "k": 12 }, "confidence": "high" } ],
-  "device_id_used": "quest3-abc", "warning": null, "collage": null }
+  "device_id_used": "quest3-abc", "warning": null, "collage": null, "model3d": null }
 ```
 `collage` is `null` unless the turn made a photo montage: when the wearer asks to see pictures of something
 ("show me pictures of the red car", "make a collage of every coffee today"), Claude calls the `make_collage` tool
@@ -364,6 +364,44 @@ meanwhile; 404 when `COLLAGE_ENABLED=false`. The same picks always yield the sam
 ## `GET /collages/{id}.jpg`
 The collage JPEG (`GET` or `HEAD`). Bounded cache (newest `COLLAGE_CACHE_MAX_FILES`, 32): 404 once evicted, so POST
 again. `DELETE /memories` clears every collage.
+
+## `POST /model3d`
+3D from memory: the best stored photo of an object, the object cut out and lifted into 3D, plus a WebXR viewer.
+Also the chat tool `make_3d_model` ("make a 3D model of my mug"; `ChatResponse.model3d`).
+```json
+{ "device_id": "quest3-abc", "query": "make a 3D model of my blue mug", "time_from": null, "time_to": null }
+```
+- Photos: exactly `POST /collage`'s matching (framing "3D model of", "in 3D", "hologram of", "splat of" stripped),
+  so an absent object is the same 404. The top `MODEL3D_FRAMES_TRIED` (3) photos go to Grounding DINO with the
+  subject as prompt; the most confident detection picks the photo and the box (no detection: the centre of the best
+  photo, `detection_score` 0). SAM (box prompt) cuts the object out.
+- `MODEL3D_BACKEND=local` (default, CPU, ~10-20 s; `pip install -e ".[local-3d]"` + CPU torch, else 503): Depth
+  Anything V2 relative depth, masked pixels back-projected into an unlit vertex-coloured mesh (`format` glb, `kind`
+  mesh) or, `MODEL3D_LOCAL_FORMAT=splat`, one Gaussian per pixel (`format` ply, `kind` splat). `full_3d` false: a
+  relief of the side the camera saw, longest side `MODEL3D_SIZE_M` (0.4 m), not metric.
+- `MODEL3D_BACKEND=remote`: `POST MODEL3D_REMOTE_URL` multipart `image` (jpeg), `mask` (png, white = object; sent
+  when the local models are installed) and `prompt`, `Authorization: Bearer MODEL3D_REMOTE_TOKEN`; it answers with a
+  binary glTF or a .ply (splat when it has `f_dc_0`, else points), e.g. SAM 3D Objects on a GPU. `full_3d` true.
+Response:
+```json
+{ "id": "9b1f...", "url": "/v1/models3d/9b1f....glb", "viewer_url": "/ui/3d?m=9b1f...&f=glb", "format": "glb",
+  "kind": "mesh", "full_3d": false, "backend": "local", "title": "My blue mug",
+  "narration": "Here's your blue mug in 3D, from Friday at 9:12 AM. It only shows the side you saw.",
+  "subject": "my blue mug", "verified": true, "token_id": "...", "ts": 1731005000.2, "thumb_url": "/v1/thumbs/....jpg",
+  "box": [263.0, 145.0, 440.0, 264.0], "detection_score": 0.84, "candidates": 40, "vertices": 3633, "size_bytes": 141956 }
+```
+404 nothing matches / disabled (`MODEL3D_ENABLED=false`); 400 no object named; 422 the mask is too small to
+model; 502 the remote service failed; 503 deps or `MODEL3D_REMOTE_URL` missing; 409 `DELETE /memories` meanwhile.
+
+## `GET /models3d/{id}.glb` / `GET /models3d/{id}.ply`
+The model (`GET` or `HEAD`; `model/gltf-binary` or `application/octet-stream`). Newest `MODEL3D_CACHE_MAX_FILES`
+(16); `DELETE /memories` clears them all.
+
+`GET /ui/3d?m={id}&f={glb|ply}` (no `/v1`): three.js viewer (orbit on desktop; "View in AR" in Quest Browser puts
+the model ~0.7 m in front of you over passthrough, trigger/pinch re-places it, thumbstick turns it). WebXR needs a
+secure origin: open it over HTTPS or on `http://localhost` (`adb reverse tcp:8000 tcp:8000`). Optional params: `t`
+title, `when`, `full=1` (allow orbiting all the way round), `k` kind, `server` (API origin), `src` (model URL).
+Loads three.js / gaussian-splats-3d from jsDelivr.
 
 ## `GET /audio/{id}.wav`
 TTS output for a chat response.

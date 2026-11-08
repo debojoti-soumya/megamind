@@ -34,6 +34,10 @@ namespace Megamind
         public PanelHover panelHover;
 
         public event Action<ChatResponse> OnResponse;
+
+        [Tooltip("Open a 3D model the agent made (make_3d_model) in Quest Browser's WebXR viewer.")]
+        public bool open3DInBrowser = true;
+
         public float LastLatencySeconds { get; private set; }
         public bool IsRecording => _recordingActive;
         public bool IsThinking { get; private set; }
@@ -177,6 +181,11 @@ namespace Megamind
             if (echoTranscript && !string.IsNullOrEmpty(resp.transcript)) panel?.AddUserMessage(resp.transcript);
             panel?.AddAssistantMessage(resp.answer, resp.cited, false, resp.Confidence(), LastLatencySeconds,
                 resp.HasCollage() ? resp.collage : null);
+            if (open3DInBrowser && resp.HasModel3D())
+            {
+                var q = "&t=" + UnityWebRequest.EscapeURL(resp.model3d.title ?? "") + "&full=" + (resp.model3d.full_3d ? "1" : "0");
+                Application.OpenURL(config.Url(resp.model3d.viewer_url) + q);
+            }
             OnResponse?.Invoke(resp);
             if (!string.IsNullOrEmpty(resp.audio_url) && config.speakAnswers) StartCoroutine(PlayAudio(config.Url(resp.audio_url)));
         }
