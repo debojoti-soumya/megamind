@@ -121,12 +121,13 @@ MVDH can also deploy and show logs, but this guide does not cover its wireless f
 The app sends plain HTTP `POST <serverBaseUrl>/v1/frames` (multipart JPEG + JSON) once per second
 (`FrameUploader.cs`, [api.md](api.md)). The app does not call `/v1/health`. Health is a manual check.
 
-**The URL comes from (highest priority first)** (`CaptureSettings.cs`):
-1. PlayerPrefs key `megamind.serverBaseUrl`, written by the in-app settings panel (the chat UI path in [PR #2](https://github.com/debojoti-soumya/megamind/pull/2)).
-2. `megamind.json` in the app's files dir (`/sdcard/Android/data/com.megamind.quest/files/`), pushed over adb.
-3. `Assets/Megamind/MegamindConfig.asset` → `Server Base Url`. This is baked into the APK. The code default is `http://100.64.0.1:8000`.
+**The URL comes from (highest priority first)** (`RuntimeConfig.cs`; the device id, API token and ambient-audio toggle follow the same order):
+1. Launch-intent extras on `adb shell am start ... --es serverBaseUrl <url>` ([section 5](#5-pointing-the-app-at-the-server)). The app saves them to PlayerPrefs.
+2. PlayerPrefs saved earlier: by a previous intent launch, or by the in-app settings panel (the chat UI path in [PR #2](https://github.com/debojoti-soumya/megamind/pull/2)).
+3. `megamind.json` in the app's files dir (`/sdcard/Android/data/com.megamind.quest/files/`), only if the app can read it. On Quest 3 / Android 14 the app could not read a file written there by `adb shell` (`Access ... is denied`), so don't rely on it.
+4. `Assets/Megamind/MegamindConfig.asset` → `Server Base Url`. This is baked into the APK. The code default is `http://100.64.0.1:8000`.
 
-The HUD's third line shows the active URL and which source it came from (`url:asset|megamind.json|PlayerPrefs`).
+The HUD's last line shows the active URL and which source it came from (`url:intent|saved|panel|megamind.json|asset`).
 Setting the URL is covered in [section 5](#5-pointing-the-app-at-the-server).
 
 **HTTP vs HTTPS.** The project's `AndroidManifest.xml` sets `android:usesCleartextTraffic="true"`, so
@@ -143,8 +144,8 @@ HTTPS URL, leave off the port unless the tunnel uses one, and don't add a traili
 | B. Laptop/phone hotspot | `http://<laptop-ip-on-hotspot>:8000` | Yes, because the hotspot is your own network | Join the Quest to the hotspot [M-wifi]. Phone hotspot: laptop and Quest both join it. |
 | C. Tailscale on both ends (recommended) | `http://100.x.y.z:8000` (`tailscale ip -4` on the server) | Usually yes, because traffic is relayed when direct paths are blocked | Quest: sideload the Tailscale Android APK (`tailscale-android-universal-*.apk`, Android 8+) from https://pkgs.tailscale.com/stable/#android with `adb install`. Then open it from *Unknown Sources* and log in to the same tailnet. Signing in inside the headset may be fiddly (verify on device). |
 | D. `tailscale serve` on the server | `https://<machine>.<tailnet>.ts.net` | Yes (tailnet only) | Needs HTTPS certificates enabled for the tailnet. The Quest still needs Tailscale. `tailscale serve 8000` [T-serve] (exact CLI syntax varies by version; verify). |
-| E. Tailscale Funnel / ngrok / any public HTTPS URL | `https://...` | Yes, and the Quest does **not** need Tailscale | Funnel is public internet, disabled by default, only on ports 443/8443/10000, and DNS can take up to 10 min [T-funnel]. Set `API_TOKEN` on the server and `"apiToken"` in `megamind.json` ([api.md#auth](api.md#auth)). Without it anyone with the URL can read or wipe memories. Turn the tunnel off after the demo. |
-| F. Modal (public HTTPS, recommended) | `https://<workspace>--megamind-web.modal.run` | Yes. The server is in the cloud, so no hotspot, Tailscale, firewall rule or client isolation matters | Deploy with [deploy/README.md](../deploy/README.md) (one CPU container, memories on a Modal Volume). Put the deploy's `API_TOKEN` in `megamind.json` as `"apiToken"` (section 5). The native app (`headset-android/`) takes it as Settings → *API token* or `--es api_token <token>`. HTTPS needs nothing special in `UnityWebRequest`, and the manifest's cleartext flag doesn't affect `https://`. The first request after 10 min idle has a ~10-15 s cold start. The server-side checklist below does not apply. Test with `curl -H "Authorization: Bearer <token>" <url>/v1/health` then the Quest Browser at `<url>/v1/health?token=<token>` (verify on device). |
+| E. Tailscale Funnel / ngrok / any public HTTPS URL | `https://...` | Yes, and the Quest does **not** need Tailscale | Funnel is public internet, disabled by default, only on ports 443/8443/10000, and DNS can take up to 10 min [T-funnel]. Set `API_TOKEN` on the server and pass it to the app with `--es apiToken <token>` (section 5, [api.md#auth](api.md#auth)). Without it anyone with the URL can read or wipe memories. Turn the tunnel off after the demo. |
+| F. Modal (public HTTPS, recommended) | `https://<workspace>--megamind-web.modal.run` | Yes. The server is in the cloud, so no hotspot, Tailscale, firewall rule or client isolation matters | Deploy with [deploy/README.md](../deploy/README.md) (one CPU container, memories on a Modal Volume). Pass the deploy's `API_TOKEN` to the app with `--es apiToken <token>` on `am start` (section 5). The native app (`headset-android/`) takes it as Settings → *API token* or `--es api_token <token>`. HTTPS needs nothing special in `UnityWebRequest`, and the manifest's cleartext flag doesn't affect `https://`. The first request after 10 min idle has a ~10-15 s cold start. The server-side checklist below does not apply. Test with `curl -H "Authorization: Bearer <token>" <url>/v1/health` then the Quest Browser at `<url>/v1/health?token=<token>` (verify on device). |
 
 **Server side checklist:**
 1. Bind to all interfaces: `uvicorn megamind.main:app --host 0.0.0.0 --port 8000`. The default `127.0.0.1` is unreachable from the headset.
@@ -199,7 +200,7 @@ Windows PC.
 | `adb connect <ip>:5555` times out | Wireless adb / LAN (2.2) | Same Wi-Fi? Re-run `adb tcpip 5555` over USB. Venue Wi-Fi isolation → use a hotspot. |
 | HUD `NET ERR: ... Cannot connect to destination host` and `last net` | Quest → server (2.3) | Can you open `<url>/v1/health` in the Quest Browser? If not: is the server bound to `0.0.0.0`, is the firewall open, is Tailscale connected on the Quest? |
 | Laptop can reach `/v1/health` but phone/Quest can't | Firewall or client isolation (2.3) | Try from the phone. If the phone also fails, switch to a hotspot or Tailscale. |
-| HUD shows the wrong URL or `url:asset` with an old IP | Config (2.3, 5) | `adb shell cat /sdcard/Android/data/com.megamind.quest/files/megamind.json`. PlayerPrefs from the settings panel override the file. |
+| HUD shows the wrong URL or `url:asset` with an old IP | Config (2.3, 5) | `adb logcat -s Unity \| grep "\[Megamind\] config"` shows each value and its source. Force-stop, then relaunch with `--es serverBaseUrl <url>` (section 5). A pushed `megamind.json` is likely unreadable on Android 14 (`could not read megamind.json: Access ... is denied`). |
 | `https://` URL fails but `http://` works (or the reverse) | TLS / tunnel (2.3) | `curl -v <url>/v1/health` from the laptop. Funnel DNS can take 10 min [T-funnel]. Check that the URL has no `:8000` and no trailing path. |
 | Cast list is empty or casting fails | Phone ↔ Quest Wi-Fi (2.4) | Same Wi-Fi, same band, same Meta account? Venue network blocks casting → hotspot [M-cast-ts]. |
 | Battery drains while plugged into the laptop | Power (2.6) | Switch to the 18 W wall charger or a PD bank. Use wireless adb. |
@@ -234,7 +235,7 @@ adb uninstall com.megamind.quest                                # only if a buil
 adb install -r megamind.apk
 adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerGameActivity
 ```
-Then point it at your server with `megamind.json` (section 5) and continue at step 7 below. The capture-only native
+Then point it at your server with the launch-intent extras in section 5 and continue at step 7 below. The capture-only native
 app is `megamind-native.apk` (`adb install -r megamind-native.apk`, package `ai.megamind.quest`, see
 [`headset-android/README.md`](../headset-android/README.md)). Against a token-protected server (option F, Modal)
 the native app takes the token in Settings → *API token* or `adb shell am start -n ai.megamind.quest/.MainActivity
@@ -275,25 +276,36 @@ the native app takes the token in Settings → *API token* or `adb shell am star
 
 Pick the URL using [2.3](#23-quest--server-the-network-path). Then use **one** of:
 
-- **Baked in:** *Megamind → Select Config* → `Server Base Url`, then rebuild.
-- **No rebuild (adb):** use the editor menu *Megamind → Push config to headset (adb)*, or:
+- **No rebuild (adb, recommended):** relaunch the app with the values as launch-intent extras. The app saves them, so
+  later launches from the Library keep them. Use the editor menu *Megamind → Push config to headset (adb)*, or:
   ```sh
-  adb shell mkdir -p /sdcard/Android/data/com.megamind.quest/files
-  adb shell 'echo "{\"serverBaseUrl\":\"http://100.101.102.103:8000\",\"deviceId\":\"quest3-1\"}" > /sdcard/Android/data/com.megamind.quest/files/megamind.json'
   adb shell am force-stop com.megamind.quest
-  adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerGameActivity
+  adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerGameActivity \
+    --es serverBaseUrl http://100.101.102.103:8000 --es deviceId quest3-1
   ```
+  Force-stop first: the activity is `singleTask`, so `am start` on a running app doesn't re-read the extras (verify on device).
   Give each headset a unique `deviceId` (`quest3-1`, `quest3-2`, ...) so memories stay separate.
-  For a server with `API_TOKEN` set (option F, Modal), add the token to the same file:
-  `{"serverBaseUrl":"https://<workspace>--megamind-web.modal.run","deviceId":"quest3-1","apiToken":"<token>"}`.
+  For a server with `API_TOKEN` set (option F, Modal), add `--es apiToken <token>` with
+  `--es serverBaseUrl https://<workspace>--megamind-web.modal.run`.
   The app then sends `Authorization: Bearer <token>` on uploads, chat, health, thumbnails, audio and purge. A 401 in
-  logcat means the token is missing or wrong (verify on device). The token can also be baked into
-  `MegamindConfig.asset` → `Api Token`, but don't commit a real one.
-  Ambient audio uses the same URL and `deviceId`. To switch it off without rebuilding, add `"ambientAudio":"off"`
-  to the same JSON (`"on"` turns it back on; absent = `CaptureSettings.ambientAudio`, default on) and restart the app.
-- **In-app settings panel** (PR #2 chat UI path): writes PlayerPrefs, which override both options above. If a pushed `megamind.json` seems ignored, the panel's PlayerPrefs value is winning. Clear the app data with `adb shell pm clear com.megamind.quest` to reset it. This also resets the permissions.
+  logcat means the token is missing or wrong (verify on device).
+  Ambient audio uses the same URL and `deviceId`. To switch it off without rebuilding, add `--es ambientAudio off`
+  (`on` turns it back on; never passed = `CaptureSettings.ambientAudio`, default on).
+  `--es <key> "''"` (empty) removes one saved value, `--ez resetConfig true` removes all of them.
+  logcat prints `[Megamind] config: serverBaseUrl=<url> (intent) deviceId=<id> (intent) apiToken=(set, N chars) (intent) ambientAudio=on (asset)`.
+  The token itself is never logged. Requires an APK that includes `RuntimeConfig.cs`.
+- **`megamind.json` (unreliable on Android 14):** the app still reads `megamind.json` from its files dir *if it can*,
+  with the same keys (`serverBaseUrl`, `deviceId`, `apiToken`, `ambientAudio`, plus `captureFps`). On a Quest 3 on
+  Horizon OS / Android 14 a file written there with `adb shell 'echo ... > /sdcard/Android/data/com.megamind.quest/files/megamind.json'`
+  was not readable by the app (`could not read megamind.json: Access ... is denied`), even after deleting the folder
+  and letting the app recreate it. `adb push` writes it as the same shell user (not tested). `adb shell run-as` only works
+  for debuggable builds, and the CI/`BuildApk` APK is a release build. Shared folders like `/sdcard/Download` aren't
+  readable by this app under scoped storage. Use the intent extras instead.
+- **Baked in (fallback that worked on Android 14):** *Megamind → Select Config* → `Server Base Url`, `Device Id` and
+  `Api Token`, then rebuild. Don't commit a real token.
+- **In-app settings panel** (PR #2 chat UI path): writes PlayerPrefs (URL and device id). It overrides `megamind.json` and the asset, and is itself replaced by the next intent-extra launch. *Reset* (or `--ez resetConfig true`) clears every saved value. `adb shell pm clear com.megamind.quest` also resets it, together with the permissions.
 
-Confirm the result: logcat prints `[Megamind] capture: server=<url> device=<id> fps=1 url-source=<source>`, and the HUD's last line shows the same.
+Confirm the result: logcat prints `[Megamind] capture: server=<url> device=<id> fps=1 url-source=<source>` (and the `[Megamind] config:` line above), and the HUD's last line shows the same.
 
 ---
 
@@ -337,7 +349,7 @@ one of the resolutions Meta documents for PCA [D-pca-unity]. Meta documents abou
 | **Black passthrough / black camera image** | Is passthrough on? Re-run *Megamind → Check Project*, because PCA requires passthrough to be enabled [D-pca]. Is the room bright enough (≥ 50 lux [M-passthrough])? Make sure nothing is covering the front cameras. If the HUD shows `0x0`, the camera has not started. Check step 6 of the runbook. |
 | **No permission prompt** | It was already answered. Run `adb shell dumpsys package com.megamind.quest \| grep -i camera` to check (verify on device). The app asks once per session only (`MegamindPermissions.cs`). Grant it manually (4.8). After regenerating the manifest, re-add `HEADSET_CAMERA` [D-pca-unity]. |
 | **App not in the library** | Look under *Library → Unknown Sources*, not the main grid [D-deploy]. Check that `adb shell pm list packages \| grep megamind` prints `package:com.megamind.quest`. |
-| **`App not installed` / `INSTALL_FAILED_UPDATE_INCOMPATIBLE`** | A build signed with a different key (another teammate's debug keystore) is installed. Run `adb uninstall com.megamind.quest` and reinstall. This deletes the app data, `megamind.json`, and permission grants. |
+| **`App not installed` / `INSTALL_FAILED_UPDATE_INCOMPATIBLE`** | A build signed with a different key (another teammate's debug keystore) is installed. Run `adb uninstall com.megamind.quest` and reinstall. This deletes the app data (including the saved server URL / token from intent extras or the settings panel) and permission grants. |
 | **Boundary / "Guardian" blocks the view or pauses capture** | Megamind is boundaryless [D-boundaryless], so the boundary should not appear (verify on device). If it still does, or logcat shows `app backgrounded (OnApplicationPause): pausing capture` / the HUD `bg N` rises as you cross it: check *Megamind → Check Project* reports `BOUNDARYLESS_APP`, and that you launched the installed APK, not a Link session [D-boundaryless]. Fallbacks: MVDH can disable the boundary system [D-mvdh]; the headset's *Developer* settings may have a boundary toggle (verify on device); or draw one large roomscale boundary covering the whole walk [M-boundary]. `app focus lost … capture keeps running` in logcat is normal: a system overlay had focus and capture continued [D-focus]. |
 | **Headset falls asleep or the app restarts when removed** | The proximity sensor suspends apps when the headset is off a head. Disable it in MVDH [D-mvdh], or keep the headset on. The commonly used adb broadcast `adb shell am broadcast -a com.oculus.vrpowermanager.prox_close` is **not** in the Meta docs checked here (verify on device). Power/sleep timeout settings are in the headset's *Settings* (exact path not verified). `SensorLockActivity` in logcat means it was idle: put it on, press power once, then relaunch. |
 | **Overheating / throttling** | Stop casting and recording, and take it off the charger and out of direct sun. Let it cool before continuing. This advice is general and not from a Meta doc. |

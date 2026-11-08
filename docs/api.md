@@ -7,7 +7,7 @@ and the C# DTOs in `headset/` must match it.
 ## Auth
 Off by default. When the server's `API_TOKEN` is set (always on the Modal deploy, [deploy/README.md](../deploy/README.md)),
 every route (`/v1/*`, `/ui`, `/xr`, static assets, the SSE stream, thumbnails, replays, audio) needs the token:
-- `Authorization: Bearer <token>` (feeder, ask.py, Unity `MegamindConfig.apiToken` / `megamind.json` `"apiToken"`), or
+- `Authorization: Bearer <token>` (feeder, ask.py, Unity `MegamindConfig.apiToken` / `--es apiToken` launch-intent extra), or
 - `?token=<token>` on any URL, for `<img>`/`<video>`/`<audio>` and pasted links. A request authorized this way also
   gets `Set-Cookie: megamind_token=<token>; Path=/; HttpOnly; SameSite=Lax` (`; Secure` over https), so the page it
   opened (`/ui?token=...`, `/xr?token=...`) authenticates its own later fetches and media without code changes.

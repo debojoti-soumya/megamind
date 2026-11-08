@@ -4,7 +4,7 @@
 //   Megamind > 2. Apply Android Player Settings
 //   Megamind > 3. Build APK                 -> Builds/megamind.apk
 //   Megamind > 4. Build and Run             -> installs + launches on the connected headset
-//   Megamind > Push config to headset (adb) -> writes megamind.json (server URL etc.) without rebuilding
+//   Megamind > Push config to headset (adb) -> relaunches the app with the server URL etc. as intent extras (no rebuild)
 //   Megamind > Check Project                -> prints what is still missing
 using System;
 using System.Diagnostics;
@@ -177,20 +177,21 @@ namespace Megamind.EditorTools
         [MenuItem("Megamind/Push config to headset (adb)", false, 20)]
         public static void PushConfig()
         {
+            // Intent extras, not megamind.json: on Android 11+ the app can't read a file adb writes into its files dir.
+            // The app saves the extras to PlayerPrefs (RuntimeConfig.cs), so later launches from the Library keep them.
             var config = GetOrCreateConfig();
-            var capture = GetOrCreateCaptureSettings();
-            var json = JsonUtility.ToJson(new OverrideJson
-            {
-                serverBaseUrl = config.serverBaseUrl,
-                deviceId = config.deviceId,
-                captureFps = capture.captureFps,
-            });
-            var dir = $"/sdcard/Android/data/{PackageName}/files";
-            var tmp = Path.Combine(Path.GetTempPath(), CaptureSettings.OverrideFileName);
-            File.WriteAllText(tmp, json);
-            var output = Adb($"shell mkdir -p {dir}") + Adb($"push \"{tmp}\" {dir}/{CaptureSettings.OverrideFileName}");
-            Debug.Log($"[Megamind] pushed {json} -> {dir}/{CaptureSettings.OverrideFileName}\n{output}\nRestart the app to apply.");
+            var extras = $"--es {RuntimeConfig.ServerBaseUrlKey} {ShellQuote(config.serverBaseUrl)} --es {RuntimeConfig.DeviceIdKey} {ShellQuote(config.deviceId)}";
+            if (!string.IsNullOrWhiteSpace(config.apiToken)) extras += $" --es {RuntimeConfig.ApiTokenKey} {ShellQuote(config.apiToken.Trim())}";
+            var output = Adb($"shell am force-stop {PackageName}") +
+                         Adb($"shell am start -n {PackageName}/{LaunchActivity} {extras}");
+            Debug.Log($"[Megamind] relaunched {PackageName} with serverBaseUrl={config.serverBaseUrl} deviceId={config.deviceId}" +
+                      $" apiToken={RuntimeConfig.Display(RuntimeConfig.ApiTokenKey, config.apiToken)}\n{output}");
         }
+
+        private const string LaunchActivity = "com.unity3d.player.UnityPlayerGameActivity";
+
+        // adb shell joins its arguments into one remote sh command line, so quote each value for the device shell.
+        private static string ShellQuote(string v) => "\"'" + (v ?? "").Trim().Replace("'", "'\\''") + "'\"";
 
         [MenuItem("Megamind/Check Project", false, 21)]
         public static void CheckProject()
@@ -252,14 +253,6 @@ namespace Megamind.EditorTools
             AssetDatabase.CreateAsset(cs, CaptureSettingsPath);
             AssetDatabase.SaveAssets();
             return cs;
-        }
-
-        [Serializable]
-        private class OverrideJson
-        {
-            public string serverBaseUrl;
-            public string deviceId;
-            public float captureFps;
         }
 
         private static string Adb(string args)
