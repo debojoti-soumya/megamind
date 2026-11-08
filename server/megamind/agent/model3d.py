@@ -96,8 +96,13 @@ def wants_3d(text: str) -> bool:
 
 def strip_3d_framing(query: str) -> str:
     """'make a 3D model of my mug' -> 'my mug'; 'show me the red car in 3d' -> 'show me the red car'."""
-    q = " ".join(_SUFFIX.sub(" ", " ".join((query or "").split())).split())
+    q = " ".join((query or "").split())
+    if _SUFFIX.search(q):  # "turn my mug into a 3D model": the verb only made sense with the suffix
+        q = _LEAD.sub("", " ".join(_SUFFIX.sub(" ", q).split()), count=1)
     return _FRAMING.sub("", q, count=1).strip(" ?.!")
+
+
+_LEAD = re.compile(r"^(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?(?:turn|convert|make|render)\s+", re.I)
 
 
 class Model3DSettings(BaseSettings):
