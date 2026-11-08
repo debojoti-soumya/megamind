@@ -83,7 +83,7 @@ _FRAMING = re.compile(
     r"(?:of|from|for)?\s+",
     re.I,
 )
-_SUFFIX = re.compile(r"\s+(?:in|into|as)\s+(?:a\s+)?(?:3d|3-d|three[- ]d|hologram|(?:gaussian\s+)?splats?)\b.*$", re.I)
+_SUFFIX = re.compile(r"\s+(?:in|into|as)\s+(?:a\s+)?(?:3d|3-d|three[- ]d|hologram|(?:gaussian\s+)?splats?)\b", re.I)
 
 
 def wants_3d(text: str) -> bool:
@@ -92,7 +92,7 @@ def wants_3d(text: str) -> bool:
 
 def strip_3d_framing(query: str) -> str:
     """'make a 3D model of my mug' -> 'my mug'; 'show me the red car in 3d' -> 'show me the red car'."""
-    q = _SUFFIX.sub("", " ".join((query or "").split()))
+    q = " ".join(_SUFFIX.sub(" ", " ".join((query or "").split())).split())
     return _FRAMING.sub("", q, count=1).strip(" ?.!")
 
 

@@ -73,6 +73,7 @@ def test_splat_ply_header_and_payload():
         ("gaussian splat of my keyboard", "my keyboard"),
         ("hologram of the giraffe", "the giraffe"),
         ("my mug", "my mug"),
+        ("show me my mug in 3D from yesterday", "show me my mug from yesterday"),
     ],
 )
 def test_strip_3d_framing(q, subject):
