@@ -14,14 +14,15 @@ happens elsewhere (the Unity app's chat panel, `tools/ask.py`, or the Quest Brow
 | | `headset/` (Unity) | `headset-android/` (this, native Kotlin) |
 |---|---|---|
 | What | Capture **and** AR chat panel (push-to-talk, TTS, cited thumbnails) | Capture only (frames + ambient audio) |
-| Device status | Written against the docs, **not yet tested on a device** | **Verified on a real Quest 3, Horizon OS v209** (2026-11-07), see below |
+| Device status | Playtested on a Quest 3 (Horizon OS v74), see [`headset/README.md`](../headset/README.md) | Capture/service code **verified on a real Quest 3, Horizon OS v209** (2026-11-07, as Recall's app); the Megamind upload path is verified against a local server only, see below |
 | Build | Unity 6 + Meta XR SDK 85 (package `com.megamind.quest`) | `./gradlew assembleDebug` (JDK 17 + Android SDK, no Unity), ~2.6 MB APK, package `ai.megamind.quest` |
 | Background | Horizon suspends it when it loses focus | Foreground service (`camera\|microphone`): keeps capturing behind the Quest Browser and after Home |
 | Offline | - | Persistent on-disk queue, resumes uploads after outages (3 GB cap) |
 | Pose | Sends head pose | No pose (`pose` is optional in the contract; a 2D panel app has no head pose) |
 
-The two are independent: this directory does not change the Unity app or the server. Use the native app to get
-real memories into the server today; use the Unity app for the full AR experience once it is verified on device.
+The two are independent: this directory does not change the Unity app or the server. Use the native app to stream
+memories into the server from a background service with an offline queue; use the Unity app for the full AR experience
+(capture plus the chat panel).
 Running both at once would capture twice (two `device_id`s); pick one for capture.
 
 ## What it does

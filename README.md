@@ -55,7 +55,7 @@ docs/       design doc (LaTeX + PDF), api.md, prior-art.md, resources.md
 server/     FastAPI backend — ingest, memory store, agent (Python 3.11+)
 tools/      feeder.py (webcam/video → /v1/frames), ask.py (CLI chat)
 headset/    Unity project for Quest 3 — setup README + C# scripts
-headset-android/  optional native Quest 3 capture app (Kotlin; frames + ambient audio, verified on device)
+headset-android/  optional native Quest 3 capture app (Kotlin; frames + ambient audio, background + offline queue)
 .github/    CI: ruff + pytest on server/
 ```
 
@@ -133,8 +133,8 @@ Build and run Meta's *unmodified* sample first; only then add our scripts.
 
 Optional, capture only: [`headset-android/`](headset-android/README.md) is a small native Kotlin app (no Unity) that
 streams passthrough frames to `/v1/frames` and ambient audio to `/v1/audio`, keeps capturing behind the Quest
-Browser, and queues uploads while offline. Its capture code is verified on a Quest 3 (Horizon OS v209); the Unity
-app above is not yet tested on device and remains the full experience (AR chat panel).
+Browser (foreground service), and queues uploads on disk while offline. Its capture code is verified on a Quest 3
+(Horizon OS v209). The Unity app above remains the full experience (capture plus the AR chat panel).
 
 ## Development
 
