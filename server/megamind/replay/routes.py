@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import math
 import re
@@ -145,11 +146,17 @@ async def replay_mp4(
     if ffmpeg is None:
         raise HTTPException(503, FFMPEG_HINT)
 
+    face_blur = getattr(st, "face_blur", None)  # PRIVACY_BLUR_FACES(_VLM): same blur as stored thumbnails
+    if face_blur is not None:
+        tag = "fb|" + tag
     raw = f"{tag}{dev}|{frames[0].ts:.6f}|{frames[-1].ts:.6f}|{len(frames)}|{cfg.out_fps}|{cfg.max_width}"
     key = hashlib.sha1(raw.encode()).hexdigest()[:20]
-    if toks and not st.replay_cache.path(key).exists():  # read (decode, for cold frames) only on a cache miss
-        frames = await kept_frames(st, toks)
-        if not frames:
+    if not st.replay_cache.path(key).exists():  # read (decode, for cold frames) and blur only on a cache miss
+        if toks:
+            frames = await kept_frames(st, toks)
+        if face_blur is not None:
+            frames = await asyncio.to_thread(st.replay_blur.blur, face_blur, f"{source}|{dev}", frames)
+        if not frames and toks:
             raise HTTPException(404, "kept frames are no longer readable")
     try:
         p = await st.replay_cache.get_or_render(key, frames, ffmpeg=ffmpeg, fps=cfg.out_fps, max_width=cfg.max_width)
