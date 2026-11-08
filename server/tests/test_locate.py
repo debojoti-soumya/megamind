@@ -203,7 +203,7 @@ async def test_openai_provider_is_the_default_and_returns_marker(client):
         [{"found": True, "image": 0, "label": "pen", "box": [160, 0, 320, 120], "confidence": 0.8}, 500]
     )
     loc = build_locator(app.state, _settings(), LocateSettings(_env_file=None), client=fake.client())
-    assert loc.provider == "openai" and loc.model == "gpt-4.1"
+    assert loc.provider == "openai" and loc.model == "gpt-5.6-terra"
     app.state.locator = loc
 
     body = {"session_id": "s", "device_id": "dev1", "text": "where is my pen right now?"}
@@ -212,7 +212,7 @@ async def test_openai_provider_is_the_default_and_returns_marker(client):
     (m,) = r.json()["markers"]
     assert m["box"] == [0.5, 0.0, 1.0, 0.5] and m["ts"] == ts[-1] and m["device_id"] == "dev1"
     req = fake.requests[0]
-    assert req["model"] == "gpt-4.1"
+    assert req["model"] == "gpt-5.6-terra" and req["reasoning_effort"] == "none"
     assert req["tool_choice"] == {"type": "function", "function": {"name": "report_location"}}
     parts = req["messages"][0]["content"]
     assert parts[1]["type"] == "image_url" and parts[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
@@ -308,3 +308,15 @@ async def test_refine_has_its_own_budget_beyond_the_llm_timeout():
     ref.delay = 0.3
     (m,) = await _locate_with(ref, timeout_s=2.0, refine_timeout_s=0.05)
     assert m.box == [0.0, 0.0, 0.5, 0.5]  # refine timed out: the LLM box survives
+
+
+async def test_reasoning_effort_only_sent_to_reasoning_models():
+    for model, sent in (("gpt-4.1", False), ("gpt-5.5", True)):
+        fake = ScriptedOpenAI([{"found": False}])
+
+        async def load(c):
+            return _jpeg(), "dev1"
+
+        loc = Locator(_settings(), _cfg(provider="openai", model=model), load, client=fake.client())
+        await loc.markers("where is my pen?", "", [_cit()], now=100.0)
+        assert ("reasoning_effort" in fake.requests[0]) is sent

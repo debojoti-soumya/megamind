@@ -43,12 +43,13 @@ class LocateSettings(BaseSettings):
 
     enabled: bool = True  # needs the provider's key as well
     provider: str = "openai"  # openai (OPENAI_API_KEY) | anthropic (ANTHROPIC_API_KEY)
-    model: str = ""  # "" -> gpt-4.1 (openai) / CLAUDE_MODEL (anthropic)
+    model: str = ""  # "" -> gpt-5.6-terra (openai) / CLAUDE_MODEL (anthropic)
     max_frames: int = 2  # cited frames shown to the locator (live NOW frames first, then newest)
     max_age_s: float = 1800.0  # only frames this recent (older ones are from another headset session anyway)
     max_px: int = 1024  # longest side sent (we must know the exact size the model sees)
     timeout_s: float = 8.0
     min_confidence: float = 0.5
+    reasoning_effort: str = "none"  # gpt-5*/o* only; chat-completions function tools need "none" on gpt-5.4+
     refine: str = "auto"  # auto (OWLv2 if torch + transformers are installed) | owlv2 | none
     refine_model: str = "google/owlv2-base-patch16-ensemble"
     refine_timeout_s: float = 8.0  # on top of timeout_s; ~0.1 s on a GPU, ~4-7 s on 8 CPU cores
@@ -209,7 +210,7 @@ class Locator:
         self.cfg = cfg
         self.refiner = refiner
         self.provider = cfg.provider.lower()
-        self.model = cfg.model or (settings.claude_model if self.provider == "anthropic" else "gpt-4.1")
+        self.model = cfg.model or (settings.claude_model if self.provider == "anthropic" else "gpt-5.6-terra")
         self.load = load
         self._client = client
         if self._client is None and cfg.enabled:
@@ -323,8 +324,11 @@ class Locator:
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}}
             )
         content.append({"type": "text", "text": prompt})
+        reasoning = self.cfg.reasoning_effort and self.model.startswith(("gpt-5", "o1", "o3", "o4"))
+        extra = {"reasoning_effort": self.cfg.reasoning_effort} if reasoning else {}
         resp = await self._client.chat.completions.create(
             model=self.model,
+            **extra,
             tools=[OPENAI_LOCATE_TOOL],
             tool_choice={"type": "function", "function": {"name": LOCATE_TOOL["name"]}},
             messages=[{"role": "user", "content": content}],
