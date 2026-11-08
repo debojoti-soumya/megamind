@@ -165,6 +165,27 @@ async def test_claude_planner_failure_falls_back_offline():
     assert who == "offline"
 
 
+async def test_claude_planner_retries_with_auto_when_forced_tool_rejected():
+    import anthropic
+    import httpx
+
+    class _RejectForced(_FakeMessages):
+        async def create(self, **kw):
+            if kw["tool_choice"]["type"] == "tool":
+                self.calls.append(kw)
+                req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+                msg = 'tool_choice: type "tool" and "any" are not supported for this model.'
+                raise anthropic.BadRequestError(msg, response=httpx.Response(400, request=req), body=None)
+            return await super().create(**kw)
+
+    cands = [_tok(i, f"moment {i}") for i in range(1, 4)]
+    msgs = _RejectForced({"title": "t", "narration": "n", "clips": [{"label": "S2", "title": "two"}]})
+    plan, who = await _planner(msgs).plan("x", cands, 2)
+    assert who == "claude" and [c.label for c in plan.clips] == ["S2"]
+    assert [c["tool_choice"]["type"] for c in msgs.calls] == ["tool", "auto"]
+    assert "Call montage_plan" in msgs.calls[1]["messages"][0]["content"]
+
+
 def test_planner_offline_without_key():
     p = MontagePlanner(Settings(anthropic_api_key="", _env_file=None), MontageSettings(_env_file=None))
     assert not p.enabled

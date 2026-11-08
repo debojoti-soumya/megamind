@@ -4,6 +4,8 @@ import io
 import struct
 import wave
 
+import pytest
+
 from megamind.agent import stt as stt_mod
 from megamind.agent import tts as tts_mod
 from megamind.config import Settings
@@ -38,6 +40,15 @@ def test_provider_factories_fall_back_to_mock_without_keys():
     assert isinstance(tts_mod.build_tts(s), tts_mod.MockTTS)
     s = Settings(stt_provider="deepgram", deepgram_api_key="x", _env_file=None)
     assert isinstance(stt_mod.build_stt(s), stt_mod.DeepgramSTT)
+
+
+def test_stt_faster_whisper_is_keyless():
+    pytest.importorskip("faster_whisper")
+    from megamind.ingest import transcribe
+
+    s = Settings(stt_provider="faster-whisper", _env_file=None)
+    expected = transcribe.FasterWhisperSTT if transcribe.have_ffmpeg() else stt_mod.MockSTT
+    assert isinstance(stt_mod.build_stt(s), expected)
 
 
 async def test_chat_multipart_audio_roundtrip(client):
