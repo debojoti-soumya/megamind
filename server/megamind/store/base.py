@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from megamind.models import MemoryEpisode, MemoryHit, MemoryToken, SearchMode
+from megamind.models import MemoryEpisode, MemoryHit, MemorySummary, MemoryToken, SearchMode
 
 
 class MemoryStore(ABC):
@@ -74,6 +74,15 @@ class MemoryStore(ABC):
         limit: int = 50,
     ) -> list[MemoryEpisode]:
         """Episodes overlapping [time_from, time_to], oldest first."""
+
+    @abstractmethod
+    async def upsert_summary(self, summary: MemorySummary) -> None: ...
+
+    @abstractmethod
+    async def list_summaries(
+        self, device_id: str | None = None, time_from: float | None = None, time_to: float | None = None
+    ) -> list[MemorySummary]:
+        """Summaries overlapping [time_from, time_to], oldest first."""
 
     @abstractmethod
     async def purge(self, device_id: str | None = None) -> int:

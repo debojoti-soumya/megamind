@@ -119,6 +119,7 @@ async def purge_memories(request: Request, device_id: str | None = None):
     n = await app.store.purge(device_id)
     request.app.state.keyframe_filter.reset(device_id)
     request.app.state.episodes.reset(device_id)
+    request.app.state.summaries.reset(device_id)
     return {"deleted": n}
 
 

@@ -94,3 +94,38 @@ async def test_lancedb_persists(tmp_path):
 def test_diversify_backfills():
     ordered = [("a", 3.0), ("b", 2.0), ("c", 1.0)]
     assert diversify(ordered, {"a": "e", "b": "e", "c": "e"}, k=3, cap=1) == ordered
+
+
+async def test_summary_hit_resolves_to_member_token(store):
+    from megamind.models import MemorySummary
+
+    await store.add(_tok(1, 100, caption="kitchen counter", text_vec=_vec(1)))
+    await store.add(_tok(2, 130, caption="kitchen counter", text_vec=_vec(2)))
+    await store.add(_tok(3, 900, caption="office desk", text_vec=_vec(3)))
+    # the speech that answers the question spans the window, not any one frame's text
+    await store.upsert_summary(
+        MemorySummary(
+            id="s1",
+            device_id="dev1",
+            start_ts=60,
+            end_ts=180,
+            text="we agreed to bake banana bread for the party",
+            text_vec=_vec(2),
+            token_ids=["t1", "t2"],
+        )
+    )
+    hits = await store.search(_vec(2), None, "what did we plan to bake", mode="semantic")
+    assert hits[0].id == "t2"
+    hits = await store.search(None, None, "banana bread", mode="semantic")
+    assert hits[0].id in ("t1", "t2")
+    assert [s.id for s in await store.list_summaries(time_to=50)] == []
+    # summaries never surface members outside the time filter
+    hits = await store.search(None, None, "banana bread", mode="semantic", time_from=120)
+    assert all(h.id != "t1" for h in hits)
+
+
+async def test_description_is_searchable(store):
+    await store.add(_tok(1, 100, caption="a kitchen", description="Shure is cutting strawberries on a board"))
+    await store.add(_tok(2, 200, caption="a kitchen"))
+    hits = await store.search(None, None, "who was cutting strawberries", mode="semantic")
+    assert hits[0].id == "t1" and "strawberries" in hits[0].description

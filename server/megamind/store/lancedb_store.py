@@ -17,12 +17,13 @@ from pathlib import Path
 
 import pyarrow as pa
 
-from megamind.models import MemoryEpisode, MemoryHit, MemoryToken, Pose, SearchMode
+from megamind.models import MemoryEpisode, MemoryHit, MemorySummary, MemoryToken, Pose, SearchMode
 from megamind.store.base import MemoryStore
-from megamind.store.fusion import POOL, FusionWeights, diversify, tokenize, weighted_rrf
+from megamind.store.fusion import POOL, SUMMARY_POOL, FusionWeights, diversify, summary_picks, tokenize, weighted_rrf
 
 _TABLE = "tokens"
 _EPISODES = "episodes"
+_SUMMARIES = "summaries"
 _OPTIMIZE_EVERY = 200
 _KEEP_VERSIONS = timedelta(minutes=5)
 
@@ -48,6 +49,14 @@ class LanceDBStore(MemoryStore):
         else:
             self._t = self._db.create_table(_TABLE, schema=self._schema())
             self._t.create_fts_index("search_text", use_tantivy=False)
+        if "description" not in self._t.schema.names:  # stores created before frame descriptions
+            self._t.add_columns({"description": "CAST('' AS STRING)"})
+        if _SUMMARIES in self._db.table_names():
+            self._s = self._db.open_table(_SUMMARIES)
+        else:
+            self._s = self._db.create_table(_SUMMARIES, schema=self._summary_schema())
+            self._s.create_fts_index("text", use_tantivy=False)
+        self._summary_writes = 0
         if _EPISODES in self._db.table_names():
             self._e = self._db.open_table(_EPISODES)
         else:
@@ -69,6 +78,21 @@ class LanceDBStore(MemoryStore):
                 ("rep_token_id", s),
                 ("entities", pa.list_(s)),
                 ("pose_centroid", s),
+            ]
+        )
+
+    def _summary_schema(self) -> pa.Schema:
+        s = pa.string()
+        return pa.schema(
+            [
+                ("id", s),
+                ("device_id", s),
+                ("start_ts", pa.float64()),
+                ("end_ts", pa.float64()),
+                ("text", s),
+                ("text_vec", pa.list_(pa.float16(), self.text_dim)),
+                ("has_text_vec", pa.bool_()),
+                ("token_ids", pa.list_(s)),
             ]
         )
 
@@ -99,6 +123,7 @@ class LanceDBStore(MemoryStore):
                 ("tier", s),
                 ("chunk_id", s),
                 ("chunk_offset", pa.int32()),
+                ("description", s),
             ]
         )
 
@@ -135,6 +160,7 @@ class LanceDBStore(MemoryStore):
             "tier": t.tier,
             "chunk_id": t.chunk_id,
             "chunk_offset": t.chunk_offset,
+            "description": t.description,
         }
 
     @staticmethod
@@ -144,6 +170,7 @@ class LanceDBStore(MemoryStore):
             device_id=r["device_id"],
             ts=r["ts"],
             caption=r["caption"] or "",
+            description=r.get("description") or "",
             ocr_text=r["ocr_text"] or "",
             entities=list(r["entities"] or []),
             transcript=r["transcript"] or "",
@@ -293,6 +320,8 @@ class LanceDBStore(MemoryStore):
             hits = rows_of(q, where("has_image_vec = true"), "_distance")
             rankings.append((weight, [(r["id"], w.image_conf(1.0 - r["_distance"])) for r in hits]))
 
+        if mode in ("semantic", "hybrid"):
+            rankings += self._summary_rankings(query_text_vec, query_text, weighted_rrf(rankings), base, conds)
         fused = weighted_rrf(rankings)
         if not fused:
             return []
@@ -304,6 +333,43 @@ class LanceDBStore(MemoryStore):
         cap = w.per_episode_cap if per_episode_cap is None else per_episode_cap
         picked = diversify(ordered, {i: tokens[i].episode_id for i in tokens}, k, cap)
         return [MemoryHit.from_token(tokens[i], s) for i, s in picked]
+
+    def _summary_rankings(
+        self, qvec: list[float] | None, query_text: str, base_scores: dict[str, float], token_where: str, conds: list
+    ) -> list:
+        sconds = [c.replace("ts >=", "end_ts >=").replace("ts <=", "start_ts <=") for c in conds]
+        sw = " AND ".join(sconds) or None
+
+        def top(q, extra: str | None = None) -> list[dict]:
+            w = " AND ".join(p for p in (sw, extra) if p)
+            if w:
+                q = q.where(w, prefilter=True)
+            return q.limit(SUMMARY_POOL).select(["id", "token_ids"]).to_list()
+
+        ranked = []
+        terms = " ".join(tokenize(query_text, stem=False))
+        if terms:
+            ranked.append(top(self._s.search(terms, query_type="fts")))
+        if qvec is not None and len(qvec) == self.text_dim:
+            ranked.append(
+                top(self._s.search(qvec, vector_column_name="text_vec").metric("cosine"), "has_text_vec = true")
+            )
+        ids = {i for r in ranked for row in r for i in row["token_ids"] or []}
+        if not ids:
+            return []
+        w = " AND ".join(p for p in (f"id IN ({', '.join(_q(i) for i in ids)})", token_where) if p)
+        rows = self._t.search().where(w).select(["id", "text_vec", "has_text_vec"]).limit(len(ids)).to_list()
+        live = {r["id"] for r in rows}
+        sim = {}
+        if qvec is not None and len(qvec) == self.text_dim:
+            sim = {r["id"]: sum(a * b for a, b in zip(qvec, r["text_vec"])) for r in rows if r["has_text_vec"]}
+        return [
+            (
+                self.weights.summary,
+                summary_picks([[i for i in row["token_ids"] if i in live] for row in r], base_scores, sim),
+            )
+            for r in ranked
+        ]
 
     async def search(
         self,
@@ -381,6 +447,52 @@ class LanceDBStore(MemoryStore):
 
         return await asyncio.to_thread(run)
 
+    def _upsert_summary_sync(self, x: MemorySummary) -> None:
+        tv = x.text_vec if x.text_vec is not None and len(x.text_vec) == self.text_dim else None
+        row = x.model_dump() | {"text_vec": tv or [0.0] * self.text_dim, "has_text_vec": tv is not None}
+        with self._lock:
+            self._s.delete(f"id = {_q(x.id)}")
+            self._s.add([row])
+            self._summary_writes += 1
+            if self._summary_writes >= _OPTIMIZE_EVERY:
+                self._summary_writes = 0
+                self._s.optimize(cleanup_older_than=_KEEP_VERSIONS)
+
+    async def upsert_summary(self, summary: MemorySummary) -> None:
+        await asyncio.to_thread(self._upsert_summary_sync, summary)
+
+    async def list_summaries(
+        self, device_id: str | None = None, time_from: float | None = None, time_to: float | None = None
+    ) -> list[MemorySummary]:
+        conds = []
+        if device_id:
+            conds.append(f"device_id = {_q(device_id)}")
+        if time_from is not None:
+            conds.append(f"end_ts >= {float(time_from)}")
+        if time_to is not None:
+            conds.append(f"start_ts <= {float(time_to)}")
+
+        def run() -> list[MemorySummary]:
+            q = self._s.search()
+            if conds:
+                q = q.where(" AND ".join(conds))
+            out = []
+            for r in q.limit(None).to_list():
+                out.append(
+                    MemorySummary(
+                        id=r["id"],
+                        device_id=r["device_id"],
+                        start_ts=r["start_ts"],
+                        end_ts=r["end_ts"],
+                        text=r["text"],
+                        text_vec=list(r["text_vec"]) if r["has_text_vec"] else None,
+                        token_ids=list(r["token_ids"] or []),
+                    )
+                )
+            return sorted(out, key=lambda x: x.start_ts)
+
+        return await asyncio.to_thread(run)
+
     async def purge(self, device_id: str | None = None) -> int:
         def run() -> int:
             with self._lock:
@@ -388,6 +500,7 @@ class LanceDBStore(MemoryStore):
                 n = self._t.count_rows(None if device_id is None else w)
                 self._t.delete(w)
                 self._e.delete(w)
+                self._s.delete(w)
                 return n
 
         return await asyncio.to_thread(run)

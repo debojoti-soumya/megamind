@@ -14,6 +14,7 @@ def fusion_weights(settings: Settings, image_calibration: tuple[float, float] | 
         image=settings.search_w_image,
         image_visual_mode=settings.search_w_image_visual,
         per_episode_cap=settings.search_per_episode_cap,
+        summary=settings.search_w_summary,
     )
 
 

@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     search_w_image_visual: float = 1.5
     search_calibrate_image: bool = True  # scale image hits by the embedder's match probability
     search_per_episode_cap: int = 3
+    search_w_summary: float = 1.0  # each of summary-vector and summary-BM25 rankings
+
+    summary_window_s: float = 120.0  # 0 disables sliding-window summaries
+    summary_step_s: float = 60.0
 
     @property
     def enrich_url(self) -> str:

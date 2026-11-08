@@ -40,6 +40,7 @@ class MemoryToken(BaseModel):
     device_id: str
     ts: float
     caption: str = ""
+    description: str = ""  # free-form VLM description of the frame (people, actions, objects)
     ocr_text: str = ""
     entities: list[str] = Field(default_factory=list)
     pose: Pose | None = None
@@ -58,7 +59,8 @@ class MemoryToken(BaseModel):
     chunk_offset: int | None = None
 
     def search_text(self) -> str:
-        return "\n".join(p for p in (self.caption, self.ocr_text, " ".join(self.entities), self.transcript) if p)
+        parts = (self.caption, self.description, self.ocr_text, " ".join(self.entities), self.transcript)
+        return "\n".join(p for p in parts if p)
 
     @property
     def thumb_url(self) -> str:
@@ -69,6 +71,7 @@ class MemoryHit(BaseModel):
     id: str
     ts: float
     caption: str
+    description: str = ""
     ocr_text: str = ""
     entities: list[str] = Field(default_factory=list)
     thumb_url: str
@@ -83,6 +86,7 @@ class MemoryHit(BaseModel):
             id=t.id,
             ts=t.ts,
             caption=t.caption,
+            description=t.description,
             ocr_text=t.ocr_text,
             entities=t.entities,
             thumb_url=t.thumb_url,
@@ -91,6 +95,19 @@ class MemoryHit(BaseModel):
             episode_id=t.episode_id,
             tier=t.tier,
         )
+
+
+class MemorySummary(BaseModel):
+    """Searchable text for a sliding time window (frame descriptions + speech + time words); a hit
+    resolves to its best member token, so results stay frame-level evidence."""
+
+    id: str
+    device_id: str
+    start_ts: float
+    end_ts: float
+    text: str
+    text_vec: list[float] | None = None
+    token_ids: list[str] = Field(default_factory=list)
 
 
 class SearchResponse(BaseModel):

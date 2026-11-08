@@ -18,6 +18,7 @@ from megamind.ingest.enrich import build_enricher, build_image_embedder, build_t
 from megamind.ingest.episodes import EpisodeTracker
 from megamind.ingest.filter import KeyframeFilter
 from megamind.ingest.router import router as ingest_router
+from megamind.ingest.summaries import SummaryBuilder
 from megamind.ingest.worker import EnrichmentWorker
 from megamind.models import HealthResponse
 from megamind.store import build_store
@@ -56,8 +57,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.media = MediaStore(settings, st.store)
         st.keyframe_filter = KeyframeFilter(settings)
         st.episodes = EpisodeTracker(settings, st.image_embedder)
+        st.summaries = SummaryBuilder(settings, st.store, st.text_embedder)
         st.worker = EnrichmentWorker(
-            st.store, build_enricher(settings, st.image_embedder), st.text_embedder, st.image_embedder, st.episodes
+            st.store,
+            build_enricher(settings, st.image_embedder),
+            st.text_embedder,
+            st.image_embedder,
+            st.episodes,
+            summaries=st.summaries,
         )
         st.reader = build_reader(settings, st.media)
         st.recall = RecallMemory(st.store, st.text_embedder, st.image_embedder, st.reader)

@@ -7,6 +7,7 @@ import logging
 
 from megamind.ingest.enrich import Enricher, ImageEmbedder, TextEmbedder
 from megamind.ingest.episodes import EpisodeTracker
+from megamind.ingest.summaries import SummaryBuilder
 from megamind.models import MemoryToken
 from megamind.store.base import MemoryStore
 
@@ -22,8 +23,10 @@ class EnrichmentWorker:
         image_embedder: ImageEmbedder | None,
         episodes: EpisodeTracker | None = None,
         concurrency: int = 2,
+        summaries: SummaryBuilder | None = None,
     ) -> None:
         self.episodes = episodes
+        self.summaries = summaries
         self.store = store
         self.enricher = enricher
         self.text_embedder = text_embedder
@@ -66,6 +69,8 @@ class EnrichmentWorker:
         stored.transcript = t.transcript
         stored.text_vec = await self.text_embedder.embed(stored.search_text())
         await self.store.add(stored)
+        if self.summaries is not None:
+            await self.summaries.add(stored)
         return t.id
 
     async def _run(self) -> None:
@@ -92,5 +97,7 @@ class EnrichmentWorker:
             token.text_vec = await self.text_embedder.embed(text)
         self._pending.discard(token.id)
         await self.store.add(token)
+        if self.summaries is not None:
+            await self.summaries.add(token)
         if episode is not None:
             await self.store.upsert_episode(episode)

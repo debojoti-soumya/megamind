@@ -11,6 +11,7 @@ from dataclasses import dataclass
 _WORD = re.compile(r"[a-z0-9]+")
 RRF_C = 60
 POOL = 50
+SUMMARY_POOL = 30
 
 
 # Same idea as LanceDB's native FTS (stop words removed, English stemming) so both backends rank alike.
@@ -28,6 +29,7 @@ class FusionWeights:
     image: float = 1.5
     image_visual_mode: float = 1.5
     per_episode_cap: int = 3
+    summary: float = 1.0
     # Sigmoid calibration of image-text cosine (SigLIP is trained with p = sigmoid(scale * cos + bias)).
     # When set, each image hit's RRF contribution is scaled by p, so questions with no visual match
     # (a wifi password, something someone said) don't let unrelated photos outrank the text hits.
@@ -114,3 +116,13 @@ def cosine(a: Sequence[float], b: Sequence[float]) -> float:
     na = math.sqrt(sum(x * x for x in a)) or 1.0
     nb = math.sqrt(sum(x * x for x in b)) or 1.0
     return dot / (na * nb)
+
+
+def summary_picks(summary_hits: Sequence[Sequence[str]], base: dict[str, float], sim: dict[str, float]) -> list[str]:
+    """Resolve ranked summaries to their best member token: the member already ranked highest by the
+    token-level signals, else the one closest to the query; duplicates keep their first rank."""
+    picks: list[str] = []
+    for members in summary_hits:
+        if members:
+            picks.append(max(members, key=lambda i: (base.get(i, 0.0), sim.get(i, 0.0))))
+    return list(dict.fromkeys(picks))

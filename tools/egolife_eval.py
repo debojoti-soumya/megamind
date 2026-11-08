@@ -32,8 +32,12 @@ def wall_ts(day: int, hhmmssff: str) -> float:
     return DAY0 + (day - 1) * 86400 + h * 3600 + m * 60 + s + f / 100
 
 
+def day_no(date: str) -> int:
+    return int(date.upper().removeprefix("DAY"))
+
+
 def qa_ts(t: dict) -> float:
-    return wall_ts(int(t["date"].removeprefix("DAY")), t["time"])
+    return wall_ts(day_no(t["date"]), t["time"])
 
 
 def extract(clips: Path, out: Path, fps: float, width: int) -> None:
@@ -45,7 +49,20 @@ def extract(clips: Path, out: Path, fps: float, width: int) -> None:
             return 0
         d.mkdir(exist_ok=True)
         vf = f"fps={fps},scale={width}:-2"
-        cmd = ["ffmpeg", "-v", "error", "-threads", "2", "-i", str(p), "-vf", vf, "-q:v", "4", str(d / "%04d.jpg")]
+        cmd = [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-threads",
+            "2",
+            "-i",
+            str(p),
+            "-vf",
+            vf,
+            "-q:v",
+            "4",
+            str(d / "%04d.jpg"),
+        ]
         subprocess.run(cmd, check=True)
         return 1
 
@@ -60,7 +77,9 @@ def load_cues(srt_dir: Path, day: int) -> list[tuple[float, str]]:
     cues = []
     for f in sorted(srt_dir.glob("Transcript_*.srt")):
         hour = int(f.stem.split("_")[1])
-        for block in re.split(r"\n\s*\n", f.read_text(encoding="utf-8", errors="ignore")):
+        for block in re.split(
+            r"\n\s*\n", f.read_text(encoding="utf-8", errors="ignore")
+        ):
             m = re.search(r"(\d+):(\d+):(\d+)[,.](\d+)\s*-->", block)
             if not m:
                 continue
@@ -68,11 +87,20 @@ def load_cues(srt_dir: Path, day: int) -> list[tuple[float, str]]:
             en = [ln for ln in lines if re.search(r"[A-Za-z]{3}", ln.split(":", 1)[-1])]
             if en:
                 off = int(m[1]) * 3600 + int(m[2]) * 60 + int(m[3]) + int(m[4]) / 1000
-                cues.append((DAY0 + (day - 1) * 86400 + hour * 3600 + off, " ".join(en)))
+                cues.append(
+                    (DAY0 + (day - 1) * 86400 + hour * 3600 + off, " ".join(en))
+                )
     return sorted(cues)
 
 
-def ingest(server: str, frames: Path, srt_dir: Path | None, fps: float, device: str, max_queue: int) -> None:
+def ingest(
+    server: str,
+    frames: Path,
+    srt_dir: Path | None,
+    fps: float,
+    device: str,
+    max_queue: int,
+) -> None:
     clips = sorted(frames.iterdir())
     first = CLIP_RE.search(clips[0].name)
     cues = load_cues(srt_dir, int(first[1])) if srt_dir else []
@@ -100,9 +128,15 @@ def ingest(server: str, frames: Path, srt_dir: Path | None, fps: float, device: 
                 r = body.get("reason") or body.get("trigger") or "ok"
                 reasons[r] = reasons.get(r, 0) + 1
                 if kept and kept % 25 == 0 and body.get("accepted"):
-                    while http.get("/v1/stats").json().get("worker_queue", 0) > max_queue:
+                    while (
+                        http.get("/v1/stats").json().get("worker_queue", 0) > max_queue
+                    ):
                         time.sleep(1)
-            print(f"\r{clip.name} sent {sent} kept {kept} {time.time() - t0:.0f}s", end="", flush=True)
+            print(
+                f"\r{clip.name} sent {sent} kept {kept} {time.time() - t0:.0f}s",
+                end="",
+                flush=True,
+            )
         while http.get("/v1/stats").json().get("worker_queue", 0) > 0:
             time.sleep(2)
         stats = http.get("/v1/stats").json()
@@ -116,66 +150,134 @@ def iso(ts: float) -> str:
 
 def _targets(t: dict) -> list[float]:
     times = t.get("time_list") or [t["time"]]
-    return [wall_ts(int(t["date"].removeprefix("DAY")), x) for x in times]
+    return [wall_ts(day_no(t["date"]), x) for x in times]
 
 
 def _rank(ts_list: list[float], targets: list[float], w: float) -> int | None:
-    return next((i + 1 for i, ts in enumerate(ts_list) if min(abs(ts - t) for t in targets) <= w), None)
+    return next(
+        (
+            i + 1
+            for i, ts in enumerate(ts_list)
+            if min(abs(ts - t) for t in targets) <= w
+        ),
+        None,
+    )
 
 
 def evaluate(
-    server: str, qa_path: Path, day: str, windows: list[float], k: int, out: Path | None, lancedb: Path | None
+    server: str,
+    qa_path: Path,
+    day: str,
+    windows: list[float],
+    k: int,
+    out: Path | None,
+    lancedb: Path | None,
+    max_lag: int = 0,
 ) -> dict:
     """Scores /v1/memories against two baselines that need no retrieval: `recent` (the k newest memories
     before query_time — strong for "just now" questions) and `chance` (k uniformly random earlier memories)."""
+
+    def lag(q: dict) -> int:
+        return day_no(q["query_time"]["date"]) - day_no(q["target_time"]["date"])
+
     qa = [
-        q for q in json.loads(qa_path.read_text()) if q["target_time"]["date"] == day and q["query_time"]["date"] == day
+        q
+        for q in json.loads(qa_path.read_text())
+        if q["query_time"]["date"] == day and 0 <= lag(q) <= max_lag
     ]
     all_ts: list[float] = []
     if lancedb:
         import lancedb as ldb
 
-        all_ts = sorted(ldb.connect(str(lancedb)).open_table("tokens").to_arrow().column("ts").to_pylist())
+        all_ts = sorted(
+            ldb.connect(str(lancedb))
+            .open_table("tokens")
+            .to_arrow()
+            .column("ts")
+            .to_pylist()
+        )
     w_max = max(windows)
     rows = []
     with httpx.Client(base_url=server, timeout=60) as http:
         for q in qa:
             tq, tt = qa_ts(q["query_time"]), _targets(q["target_time"])
-            res = http.get("/v1/memories", params={"q": q["question"], "k": k, "to": iso(tq)}).json()["results"]
+            res = http.get(
+                "/v1/memories", params={"q": q["question"], "k": k, "to": iso(tq)}
+            ).json()["results"]
             got = [r["ts"] for r in res]
             before = [x for x in all_ts if x <= tq]
             row = {
                 "id": q["ID"],
                 "type": q["type"],
                 "need_audio": q["need_audio"],
+                "lag_days": lag(q),
                 "q": q["question"],
                 "dt_top1": min(abs(got[0] - t) for t in tt) if got else None,
                 "best_rank": {str(w): _rank(got, tt, w) for w in windows},
-                "top": [{"id": r["id"], "dt": round(r["ts"] - tt[0]), "caption": r["caption"]} for r in res[:5]],
+                "top": [
+                    {
+                        "id": r["id"],
+                        "dt": round(r["ts"] - tt[0]),
+                        "caption": r["caption"],
+                    }
+                    for r in res[:5]
+                ],
             }
             if before:
-                row["recent_rank"] = {str(w): _rank(before[::-1][:k], tt, w) for w in windows}
+                row["recent_rank"] = {
+                    str(w): _rank(before[::-1][:k], tt, w) for w in windows
+                }
                 row["chance"] = {
                     str(w): {
-                        n: 1 - (1 - sum(min(abs(x - t) for t in tt) <= w for x in before) / len(before)) ** n
+                        n: 1
+                        - (
+                            1
+                            - sum(min(abs(x - t) for t in tt) <= w for x in before)
+                            / len(before)
+                        )
+                        ** n
                         for n in (1, 5, k)
                     }
                     for w in windows
                 }
             rows.append(row)
             br = row["best_rank"][str(w_max)]
-            print(f"{'OK' if br == 1 else (f'@{br}' if br else 'XX'):3} {q['type']:12} {q['question'][:60]}")
+            print(
+                f"{'OK' if br == 1 else (f'@{br}' if br else 'XX'):3} {q['type']:12} {q['question'][:60]}"
+            )
     summary: dict = {}
-    for t in sorted({r["type"] for r in rows}) + ["ALL"]:
-        rs = [r for r in rows if t in ("ALL", r["type"])]
+    groups = {
+        t: [r for r in rows if r["type"] == t]
+        for t in sorted({r["type"] for r in rows})
+    }
+    if max_lag:
+        groups |= {
+            f"lag{d}d": [r for r in rows if r["lag_days"] == d]
+            for d in range(max_lag + 1)
+        }
+    groups["ALL"] = rows
+    for t, rs in groups.items():
+        if not rs:
+            continue
         summary[t] = {"n": len(rs)}
         for w in windows:
             ranks = [r["best_rank"][str(w)] for r in rs]
-            m = {f"R@{n}": round(sum(bool(x) and x <= n for x in ranks) / len(rs), 2) for n in (1, 5, k)}
+            m = {
+                f"R@{n}": round(sum(bool(x) and x <= n for x in ranks) / len(rs), 2)
+                for n in (1, 5, k)
+            }
             if all("chance" in r for r in rs):
                 rec = [r["recent_rank"][str(w)] for r in rs]
-                m["recent"] = {f"R@{n}": round(sum(bool(x) and x <= n for x in rec) / len(rs), 2) for n in (1, 5, k)}
-                m["chance"] = {f"R@{n}": round(sum(r["chance"][str(w)][n] for r in rs) / len(rs), 2) for n in (1, 5, k)}
+                m["recent"] = {
+                    f"R@{n}": round(sum(bool(x) and x <= n for x in rec) / len(rs), 2)
+                    for n in (1, 5, k)
+                }
+                m["chance"] = {
+                    f"R@{n}": round(
+                        sum(r["chance"][str(w)][n] for r in rs) / len(rs), 2
+                    )
+                    for n in (1, 5, k)
+                }
             summary[t][f"±{w:g}s"] = m
     print(json.dumps(summary, indent=1))
     if out:
@@ -211,6 +313,45 @@ def reepisode(lancedb_path: Path) -> None:
     asyncio.run(run())
 
 
+def summarize(lancedb_path: Path, captions: Path | None) -> None:
+    """Backfill (server stopped): optional per-frame descriptions from a captions.jsonl ({id, caption}),
+    re-embedding those tokens, then rebuild every sliding-window summary."""
+    import asyncio
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
+    from megamind.config import Settings
+    from megamind.ingest.enrich import build_text_embedder
+    from megamind.ingest.summaries import SummaryBuilder
+    from megamind.store.lancedb_store import LanceDBStore
+
+    async def run() -> None:
+        s = Settings(embed_provider="local")
+        emb = build_text_embedder(s)
+        store = LanceDBStore(lancedb_path, text_dim=emb.dim, image_dim=768)
+        toks = await store.list_tokens()
+        if captions:
+            desc = {
+                d["id"]: d["caption"]
+                for d in map(json.loads, captions.read_text().splitlines())
+            }
+            changed = [
+                t for t in toks if desc.get(t.id) and t.description != desc[t.id]
+            ]
+            for t in changed:
+                t.description = desc[t.id]
+                t.text_vec = await emb.embed(t.search_text())
+            await store.add_many(changed)
+            print(f"descriptions: {len(changed)} tokens updated")
+        store._s.delete("true")
+        builder = SummaryBuilder(s, store, emb)
+        for t in toks:
+            await builder.add(t)
+        print(f"{len(toks)} tokens -> {len(await store.list_summaries())} summaries")
+
+    asyncio.run(run())
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -228,6 +369,9 @@ def main() -> None:
     i.add_argument("--max-queue", type=int, default=60)
     r = sub.add_parser("reepisode")
     r.add_argument("--lancedb", type=Path, required=True)
+    sm = sub.add_parser("summarize")
+    sm.add_argument("--lancedb", type=Path, required=True)
+    sm.add_argument("--captions", type=Path, default=None)
     v = sub.add_parser("eval")
     v.add_argument("--server", default="http://localhost:8000")
     v.add_argument("--qa", type=Path, required=True)
@@ -235,7 +379,18 @@ def main() -> None:
     v.add_argument("--windows", default="30,120,600")
     v.add_argument("--k", type=int, default=12)
     v.add_argument("--out", type=Path, default=None)
-    v.add_argument("--lancedb", type=Path, default=None, help="token store, for the recent/chance baselines")
+    v.add_argument(
+        "--lancedb",
+        type=Path,
+        default=None,
+        help="token store, for the recent/chance baselines",
+    )
+    v.add_argument(
+        "--max-lag",
+        type=int,
+        default=0,
+        help="also score questions whose answer is up to N days earlier",
+    )
     a = ap.parse_args()
     if a.cmd == "extract":
         extract(a.clips, a.out, a.fps, a.width)
@@ -243,8 +398,19 @@ def main() -> None:
         ingest(a.server, a.frames, a.srt_dir, a.fps, a.device_id, a.max_queue)
     elif a.cmd == "reepisode":
         reepisode(a.lancedb)
+    elif a.cmd == "summarize":
+        summarize(a.lancedb, a.captions)
     else:
-        evaluate(a.server, a.qa, a.day, [float(x) for x in a.windows.split(",")], a.k, a.out, a.lancedb)
+        evaluate(
+            a.server,
+            a.qa,
+            a.day,
+            [float(x) for x in a.windows.split(",")],
+            a.k,
+            a.out,
+            a.lancedb,
+            a.max_lag,
+        )
 
 
 if __name__ == "__main__":
