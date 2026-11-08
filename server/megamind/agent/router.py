@@ -38,7 +38,7 @@ async def chat(request: Request):
         raise HTTPException(415, "use application/json or multipart/form-data")
 
     resp = await app.agent.chat(session_id, text, device_id)
-    annotate_citations(app, resp.cited, device_id)
+    await annotate_citations(app, resp.cited, device_id)
     resp.audio_url = await app.tts.synthesize(resp.answer, str(ULID()))
     return resp
 

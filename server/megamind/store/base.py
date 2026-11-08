@@ -59,6 +59,12 @@ class MemoryStore(ABC):
         for t in tokens:
             await self.add(t)
 
+    async def rewrite_many(self, tokens: Sequence[MemoryToken]) -> None:
+        """Overwrite already-stored tokens in place, without episode assignment (media tiering rewrites old
+        frames; re-feeding them to the tracker would disturb the live episode window). Optional; backends
+        whose `add_many` episodizes should override it."""
+        await self.add_many(tokens)
+
     @abstractmethod
     async def get(self, token_id: str) -> MemoryToken | None: ...
 
@@ -130,6 +136,31 @@ class MemoryStore(ABC):
         time_to: float | None = None,
         device_id: str | None = None,
     ) -> list[MemoryHit]: ...
+
+    async def list_tokens(
+        self,
+        *,
+        time_from: float | None = None,
+        time_to: float | None = None,
+        device_id: str | None = None,
+        kinds: Sequence[str] | None = None,
+        tier: str | None = None,
+        chunk_id: str | None = None,
+        vectors: bool = True,
+    ) -> list[MemoryToken]:
+        """Every token matching the filters, oldest first (media tiering / stats). Optional: the default is
+        built on `range()`; backends may push the `tier` / `chunk_id` filters down. `vectors=False` lets a
+        backend skip loading `text_vec` / `image_vec` (planning scans over many rows); such tokens must never
+        be written back, since a write replaces the whole row."""
+        toks = await self.range(time_from, time_to, limit=10**9, device_id=device_id, kinds=kinds)
+        return [t for t in toks if (tier is None or t.tier == tier) and (chunk_id is None or t.chunk_id == chunk_id)]
+
+    async def tier_counts(self, kinds: Sequence[str] | None = ("frame",)) -> dict[str, int]:
+        """{"hot": n, "cold": n, "text": n} over `kinds`. Optional; the default scans `list_tokens`."""
+        out = {"hot": 0, "cold": 0, "text": 0}
+        for t in await self.list_tokens(kinds=kinds):
+            out[t.tier] = out.get(t.tier, 0) + 1
+        return out
 
     @abstractmethod
     async def purge(

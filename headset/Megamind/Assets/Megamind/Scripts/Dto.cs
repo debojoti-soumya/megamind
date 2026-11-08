@@ -18,7 +18,8 @@ namespace Megamind
 
     [Serializable] public class AudioAccepted { public string audio_id; public double duration_s; public string transcript; public List<string> token_ids = new List<string>(); }
 
-    // thumb_url is "" for tokens without an image (kind="transcript", heard speech): skip the thumbnail.
+    // thumb_url is "" for tokens without an image (kind="transcript", heard speech, or a frame whose pixels aged
+    // out, tier="text" on the server): skip the thumbnail. replay_url may be keyframe-rate for older memories.
     // thumb_url: /v1/thumbs/{id}.jpg, or /v1/live/{id}.jpg for live "NOW" frames (id "now_..."), or "" (speech)
     [Serializable] public class Citation { public string id; public double ts; public string caption; public string thumb_url; public string replay_url; }
 
