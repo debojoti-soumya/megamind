@@ -28,6 +28,23 @@ class MegamindApiTest {
   }
 
   @Test
+  fun videoMetaMatchesContract() {
+    assertEquals("{\"device_id\":\"quest3-native\",\"ts_start\":1762000000.250}", MegamindApi.videoMetaJson("quest3-native", t0))
+  }
+
+  @Test
+  fun videoMultipartLayout() {
+    val mp4 = testClip()
+    val mp = MegamindApi.videoRequest("dev", t0, MegamindApi.Body.Bytes(mp4), "20261107_120000_000.mp4")
+    val text = String(mp.toByteArray(), Charsets.ISO_8859_1)
+    val b = mp.boundary
+    assertTrue(text.startsWith("--$b\r\nContent-Disposition: form-data; name=\"meta\"\r\n\r\n{\"device_id\":\"dev\",\"ts_start\":1762000000.250}\r\n"))
+    assertTrue(text.contains("--$b\r\nContent-Disposition: form-data; name=\"video\"; filename=\"20261107_120000_000.mp4\"\r\nContent-Type: video/mp4\r\n\r\n"))
+    assertTrue(text.endsWith(String(mp4, Charsets.ISO_8859_1) + "\r\n--$b--\r\n"))
+    assertEquals(MegamindApi.VIDEO_PATH, "/v1/video")
+  }
+
+  @Test
   fun jsonStringEscapes() {
     assertEquals("\"a\\\"b\\\\c\\n\"", MegamindApi.jsonString("a\"b\\c\n"))
   }
@@ -96,6 +113,9 @@ class MegamindApiTest {
   /** 640x480 checkerboard JPEG (test resource): bright and sharp, so the keyframe filter keeps it. */
   private fun testJpeg(): ByteArray = javaClass.classLoader!!.getResourceAsStream("frame.jpg")!!.use { it.readBytes() }
 
+  /** 1 s 160x120 30 fps H.264 mp4 (test resource), shaped like a chunk's video.mp4. */
+  private fun testClip(): ByteArray = javaClass.classLoader!!.getResourceAsStream("clip.mp4")!!.use { it.readBytes() }
+
   private fun tonePcm(seconds: Double, rate: Int = 16000): ByteArray {
     val n = (seconds * rate).toInt()
     val buf = ByteBuffer.allocate(n * 2).order(ByteOrder.LITTLE_ENDIAN)
@@ -126,5 +146,17 @@ class MegamindApiTest {
     assertEquals(200, r.code)
     assertTrue(r.body.contains("\"audio_id\""))
     assertTrue(r.body.contains("\"duration_s\":5.0"))
+  }
+
+  @Test
+  fun liveVideoAccepted() {
+    assumeTrue("set -Pmegamind.url to run", liveUrl.isNotEmpty())
+    val base = MegamindApi.normalizeBaseUrl(liveUrl)!!
+    val ts = System.currentTimeMillis() / 1000.0
+    val r = MegamindApi.post(base, MegamindApi.VIDEO_PATH, MegamindApi.videoRequest("quest3-native-test", ts, MegamindApi.Body.Bytes(testClip()), "chunk.mp4"))
+    println("POST /v1/video -> ${r.code} ${r.body}")
+    assertEquals(200, r.code)
+    assertTrue(r.body.contains("\"video_id\""))
+    assertTrue(r.body.contains("\"accepted\":true"))
   }
 }

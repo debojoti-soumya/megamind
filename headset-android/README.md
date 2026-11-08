@@ -5,6 +5,8 @@ API** (plain Camera2) plus the headset mic, and streams it to the Megamind serve
 
 - frames: `POST /v1/frames`, one JPEG per request, `meta = {"device_id", "ts"}`
 - ambient audio: `POST /v1/audio`, one 16 kHz mono PCM16 WAV per chunk, `meta = {"device_id", "ts_start"}`
+- real video: `POST /v1/video`, one 30 fps H.264 mp4 per chunk, `meta = {"device_id", "ts_start"}` (on by default;
+  replays and montages then use real video instead of 1 fps frames)
 
 exactly as [`docs/api.md`](../docs/api.md) specifies. It is a capture-only client: asking questions still
 happens elsewhere (the Unity app's chat panel, `tools/ask.py`, or the Quest Browser).
@@ -13,7 +15,7 @@ happens elsewhere (the Unity app's chat panel, `tools/ask.py`, or the Quest Brow
 
 | | `headset/` (Unity) | `headset-android/` (this, native Kotlin) |
 |---|---|---|
-| What | Capture **and** AR chat panel (push-to-talk, TTS, cited thumbnails) | Capture only (frames + ambient audio) |
+| What | Capture **and** AR chat panel (push-to-talk, TTS, cited thumbnails) | Capture only (frames + ambient audio + real video) |
 | Device status | Playtested on a Quest 3 (Horizon OS v74), see [`headset/README.md`](../headset/README.md) | Capture/service code **verified on a real Quest 3, Horizon OS v209** (2026-11-07, as Recall's app); the Megamind upload path is verified against a local server only, see below |
 | Build | Unity 6 + Meta XR SDK 85 (package `com.megamind.quest`) | `./gradlew assembleDebug` (JDK 17 + Android SDK, no Unity), ~2.6 MB APK, package `ai.megamind.quest` |
 | Background | Horizon suspends it when it loses focus | Foreground service (`camera\|microphone`): keeps capturing behind the Quest Browser and after Home |
@@ -32,19 +34,36 @@ Running both at once would capture twice (two `device_id`s); pick one for captur
 - Camera: left passthrough camera, picked by Meta metadata (`camera_source==0`, `position==0`, camera id `50` on
   our headset), YUV_420_888 at 1280x960 / 15 fps. One frame per interval (default 1 s) goes NV21 -> JPEG and is
   downscaled to 960x720 (`docs/api.md` recommends <= 960 px wide).
+- Video (ported from Recall's app, `VideoRecorder.kt`): a hardware H.264 encoder (`MediaCodec`, `video/avc`) records
+  **real 30 fps video** at 1280x960, ~3 Mbps VBR, IDR every 1 s. Its input `Surface` is a second Camera2 output in
+  the same session as the YUV `ImageReader` (zero-copy, no CPU-side YUV conversion); with it on, the camera runs at
+  30 fps (`TEMPLATE_RECORD`) instead of 15. One `MediaMuxer` per chunk writes `video.mp4` (video only); at each chunk
+  boundary the app requests a sync frame, so every clip starts on a keyframe, and the previous chunk's mp4 is
+  finalized before the chunk is queued. `meta.video` = `{file, offset, duration, frames, fps, width, height, codec,
+  bitrate}`, `offset` = first frame's time after the chunk start (codec PTS = sensor timestamp, mapped to wall clock
+  like the JPEG times). **Fallback:** if the encoder fails to start or errors, if the 2-output session fails to
+  configure, or if it delivers no camera frames within 5 s, the camera reopens JPEG-only at 15 fps (exactly the
+  previous behaviour) and keeps capturing. Turn video off with the **Record real video** setting or
+  `--ez video false` (applies from the next Start).
 - Audio: `AudioRecord` 16 kHz mono PCM16 (VOICE_RECOGNITION source).
 - Chunks: every chunk length (default 5 s) the current `files/chunks/<id>.partial/` is closed into `<id>/`
-  (`meta.json` + JPEGs + `audio.pcm16`). The upload thread sends a chunk's frames to `/v1/frames`
+  (`meta.json` + JPEGs + `audio.pcm16` + `video.mp4`). The upload thread sends a chunk's frames to `/v1/frames`
   (`ts` = chunk start + frame offset), then its audio to `/v1/audio` as a WAV (`ts_start` = chunk start; late
-  mic audio is padded with leading silence so offsets line up). Each accepted part is recorded in `sent.txt`, so
-  a retry never re-sends; the chunk is deleted once every part got a 2xx.
+  mic audio is padded with leading silence so offsets line up), then its `video.mp4` to `/v1/video` (`ts_start` =
+  chunk start + `meta.video.offset`). Each accepted part is recorded in `sent.txt`, so a retry never re-sends; the
+  chunk is deleted once every part got a 2xx. The 1 fps JPEGs still drive memory; the video only feeds replay and
+  montage on the server.
 - Retries: unreachable backend or 5xx -> exponential backoff (2 s doubling to 60 s; "Retry uploads" skips the
   wait). `/v1/frames` 400/413/415/422 -> the chunk moves to `files/chunks_failed/` ("Retry uploads" re-queues
   it). A rejected audio part (400/413/415/422), a server without `/v1/audio` (404), or 3 consecutive 5xx on audio
-  (e.g. STT provider down, 502) skip that chunk's audio so frames keep flowing. Filtered frames
+  (e.g. STT provider down, 502) skip that chunk's audio so frames keep flowing. Video works the same way: a
+  rejected clip (400/409/413/415/422) or 3 consecutive 5xx skip that chunk's video; a server without `/v1/video`
+  (404/405, an older server or `VIDEO_ENABLED=false`) turns video uploads off until "Retry uploads" / Save. A
+  `"reason":"privacy"` answer (server face blur on) means the server discarded the clip. Filtered frames
   (`accepted: false`) are normal and count as sent.
 - Settings (in-app or by intent): backend URL (default `http://localhost:8000`), frame interval (1 s), chunk
-  length (5 s; also the length of each audio clip), device ID (default `quest3-native`). Cleartext HTTP is allowed.
+  length (5 s; also the length of each audio and video clip), device ID (default `quest3-native`), record real video
+  (on). Cleartext HTTP is allowed.
 
 Audio clip length: `docs/api.md` suggests 15-30 s audio chunks; this app sends one clip per chunk, 5 s by default
 so frames reach the server within ~5 s ("what am I looking at right now?"). The server accepts any length up to
@@ -117,8 +136,10 @@ those bytes. Two checks:
   ./gradlew testDebugUnitTest -Pmegamind.url=http://127.0.0.1:8300
   # POST /v1/frames -> 202 {"frame_id":"...","accepted":true,"reason":null}
   # POST /v1/audio  -> 200 {"audio_id":"...","duration_s":5.0,"transcript":"[mock transcript]","token_ids":[...]}
+  # POST /v1/video  -> 200 {"video_id":"...","accepted":true,"reason":null,"ts_start":...,"duration_s":1.0,...}
   ```
-  Without `-Pmegamind.url` (or `MEGAMIND_URL`) the two live tests are skipped.
+  Without `-Pmegamind.url` (or `MEGAMIND_URL`) the three live tests are skipped. The video test posts
+  `app/src/test/resources/clip.mp4` (1 s, 160x120, 30 fps H.264, made with ffmpeg).
 - **Server pytest** (`server/tests/test_quest_native_payloads.py`, runs in CI): replays the same bytes through the
   FastAPI app with mocks, so a server-side contract change that would break this app fails CI.
 
@@ -151,5 +172,13 @@ See [RESEARCH.md](RESEARCH.md) for the Passthrough Camera API facts (camera ids,
   from the background). If the process is killed while recording, the sticky restart may be refused; reopen and
   press Start.
 - One camera (left), no head pose, no on-device privacy filtering (the server's filters still apply).
-- Battery: a partial wake lock plus 15 fps camera streaming run until Stop, including while the headset sleeps.
+- Battery: a partial wake lock plus 15 fps camera streaming (30 fps + the H.264 encoder with video on) run until
+  Stop, including while the headset sleeps.
+- Video is new and not yet verified on a headset: the Camera2 2-output session + `MediaCodec` surface encoder is
+  Recall's code, built here, and the upload/server path is verified with a synthetic clip against a local server.
+  Check logcat for `MegamindQuest:Video` (`Encoder ... started`, `Video <chunk>: N frames, X fps, KB, offset`) and
+  the UI's `video:` line. If the headset can't feed both outputs, the app falls back to JPEG-only by itself.
+- Bandwidth/disk with video on: ~1.9 MB of H.264 per 5 s chunk (3 Mbps) on top of the JPEGs and PCM, ~1.8 GB/hour;
+  the 3 GB offline backlog then holds ~1.7 h. Lower `VideoRecorder.BITRATE` or turn video off to trade quality for
+  size. The server keeps clips for `HOT_RETENTION_H` (72 h) by default (`VIDEO_*` in `server/.env.example`).
 - `adb reverse` must be re-run after every USB reconnect; otherwise uploads retry with "Backend unreachable".

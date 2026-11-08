@@ -8,8 +8,10 @@ with HTTP Range.
 - Planner: Claude (forced `montage_plan` tool call, same key/model/timeout settings as the chat agent) when
   `ANTHROPIC_API_KEY` is set and `MONTAGE_PLANNER` is not `offline`; otherwise, or when the call fails, the
   deterministic offline plan (evenly spaced informative moments, de-duplicated).
-- Clip sources: the #58 replay ring buffer when it still holds frames around the moment (`source="replay"`,
-  real frame rate; skipped when `PRIVACY_BLUR_FACES` is on, since buffered frames are not blurred), else a
+- Clip sources: real headset video (`POST /v1/video`, `megamind.video`) when stored clips cover at least
+  `VIDEO_MIN_COVERAGE` of the clip (`source="video"`), else the #58 replay ring buffer when it still holds frames
+  around the moment (`source="replay"`, real frame rate; both skipped when `PRIVACY_BLUR_FACES` is on, since
+  neither is blurred), else a
   timelapse of the stored keyframe thumbnails from that moment on, each held `MONTAGE_TIMELAPSE_STEP_S`
   (`source="timelapse"`, ~1 fps; keyframes are seconds apart).
 - Rendering reuses #58: `render_mp4` (with `extra_vf` for captions/fades) per clip, `ReplayCache` for the
@@ -47,6 +49,8 @@ from megamind.agent import smart_montage as smart
 from megamind.models import MemoryToken, MontageClip, MontageRequest, MontageResponse
 from megamind.replay.render import FFMPEG_HINT, ReplayCache, find_ffmpeg, render_mp4
 from megamind.replay.routes import parse_ts, ranged_file_response
+from megamind.video.render import render_video, timeline_s
+from megamind.video.store import Segment, covered_s
 
 log = logging.getLogger("megamind.montage")
 
@@ -276,13 +280,19 @@ class ClipSpec:
     when: str  # burned-in time label
     frames: tuple[tuple[float, bytes], ...]  # (ts, jpeg); held until the next frame
     tail_s: float
-    source: str  # "replay" | "timelapse"
+    source: str  # "video" | "replay" | "timelapse"
+    video: tuple[Segment, ...] = ()  # source="video": pieces of stored clips (frames is empty)
 
     @property
     def duration(self) -> float:
+        if self.video:
+            return timeline_s(self.video)
         return self.frames[-1][0] - self.frames[0][0] + self.tail_s
 
     def key(self) -> tuple:
+        if self.video:
+            segs = tuple((s.clip.id, round(s.start, 3), round(s.end, 3)) for s in self.video)
+            return (self.token.id, self.source, self.title, self.when, segs)
         return (self.token.id, self.source, self.title, self.when, self.frames[0][0], self.frames[-1][0],
                 len(self.frames), round(self.tail_s, 3))  # fmt: skip
 
@@ -333,12 +343,21 @@ def render_montage(clips: list[ClipSpec], out: Path, *, ffmpeg: str, cfg: Montag
         parts = []
         for i, c in enumerate(clips):
             part = tmp / f"p{i:03d}.mp4"
-            kw = dict(ffmpeg=ffmpeg, fps=cfg.fps, max_width=cfg.width, tail_s=c.tail_s)
+            if c.video:  # same size/fps/codec as render_mp4's parts, so the stream-copy concat still works
+
+                def draw(vf: str, c: ClipSpec = c, part: Path = part) -> None:
+                    render_video(c.video, part, ffmpeg=ffmpeg, fps=cfg.fps, max_width=cfg.width, extra_vf=vf)
+            else:
+                kw = dict(ffmpeg=ffmpeg, fps=cfg.fps, max_width=cfg.width, tail_s=c.tail_s)
+
+                def draw(vf: str, c: ClipSpec = c, part: Path = part, kw: dict = kw) -> None:
+                    render_mp4(c.frames, part, extra_vf=vf, **kw)
+
             try:
-                render_mp4(c.frames, part, extra_vf=overlay_vf(c, cfg), **kw)
+                draw(overlay_vf(c, cfg))
             except RuntimeError as e:  # e.g. ffmpeg built without libfreetype (no drawtext): uncaptioned clip
                 log.warning("montage: captions failed (%s); rendering clip %d without text", e, i)
-                render_mp4(c.frames, part, extra_vf=overlay_vf(c, cfg, text=False), **kw)
+                draw(overlay_vf(c, cfg, text=False))
             parts.append(part)
         (tmp / "list.txt").write_text("".join(f"file '{p.name}'\n" for p in parts))
         tmp_out = tmp / "montage.mp4"
@@ -384,8 +403,15 @@ async def _timelapse_frames(store, t: MemoryToken, n: int) -> list[MemoryToken]:
 async def build_clip(
     st, t: MemoryToken, title: str, duration: float, cfg: MontageSettings, zone: ZoneInfo, *, use_replay=True
 ):
-    """Clip frames for one moment: buffered replay frames if any, else a timelapse of stored keyframes."""
+    """Clip for one moment: stored real video if it covers the clip, else buffered replay frames if any, else a
+    timelapse of stored keyframes. `use_replay=False` (face blur on) skips both unblurred sources."""
     dur = min(max(float(duration or cfg.clip_s), 2.5), 6.0)
+    video = getattr(st, "video", None) if use_replay else None
+    if video is not None:
+        t0 = t.ts - cfg.pre_s
+        segs = video.segments(t.device_id, t0, t0 + dur)
+        if segs and covered_s(segs) >= st.video_settings.min_coverage * dur:
+            return ClipSpec(t, title, _clock(t.ts, zone), (), 0.0, "video", video=tuple(segs))
     buf = getattr(st, "replay", None) if use_replay else None
     if buf is not None:
         t0 = t.ts - cfg.pre_s
@@ -487,7 +513,7 @@ async def _build_clips(st, cfg: MontageSettings, moments: list[tuple[MemoryToken
         if spec is not None:
             clips.append(spec)
     if not clips:
-        raise HTTPException(404, "no buffered frames or stored thumbnails for the chosen moments")
+        raise HTTPException(404, "no stored video, buffered frames or stored thumbnails for the chosen moments")
     return clips
 
 
@@ -496,6 +522,8 @@ async def _render_response(st, cache, cfg, ffmpeg, gen, clips, title, narration,
     try:
         await cache.get_or_render(key, clips, ffmpeg=ffmpeg, fps=cfg.fps, max_width=cfg.width)
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as e:
+        if cache.generation != gen:  # a purge deleted a stored video clip mid-render: same answer as below
+            raise HTTPException(409, "memories were deleted while the montage was being made; try again") from None
         raise HTTPException(500, f"montage render failed: {e}") from None
     if cache.generation != gen:  # DELETE /v1/memories ran meanwhile: the reel may show deleted moments
         cache.path(key).unlink(missing_ok=True)

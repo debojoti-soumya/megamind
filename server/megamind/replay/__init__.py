@@ -61,7 +61,7 @@ def replay_url(device_id: str, t0: float, t1: float) -> str:
 
 async def annotate_citations(state, cited: list[Citation], device_id: str | None = None) -> None:
     """Set `replay_url` (in place) on citations that have buffered frames around their ts, or failing that
-    kept keyframes with pixels (keyframe-rate replay of older memories); else leave null."""
+    kept keyframes with pixels (keyframe-rate replay of older memories) or stored real video; else leave null."""
     buf: ReplayBuffer | None = getattr(state, "replay", None)
     if buf is None:
         return
@@ -73,6 +73,9 @@ async def annotate_citations(state, cited: list[Citation], device_id: str | None
         dev = buf.resolve_device(t0, t1, device_id)
         if dev is None:
             dev, _ = await kept_tokens(state, t0, t1, device_id)
+        if dev is None and (video_plan := getattr(state, "video_plan", None)) is not None:
+            plan = video_plan(state, device_id, t0, t1, ())  # stored real video (megamind.video)
+            dev = plan[0] if plan else None
         if dev is not None:
             cited[i] = c.model_copy(update={"replay_url": replay_url(dev, t0, t1)})
 
