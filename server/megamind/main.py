@@ -7,6 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from megamind.agent.claude_agent import ClaudeAgent
 from megamind.agent.reader import build_reader
@@ -28,6 +29,7 @@ from megamind.retrieval import build_retriever
 from megamind.store import build_store
 from megamind.store.consolidate import Consolidator, build_summarizer
 from megamind.store.embeddings import build_image_embedder, build_text_embedder
+from megamind.ui.router import router as ui_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -109,6 +111,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ingest_router, prefix="/v1")
     app.include_router(audio_router, prefix="/v1")
     app.include_router(agent_router, prefix="/v1")
+    app.include_router(ui_router)
+    # the browser panel may be served from a different origin (e.g. file:// or another laptop)
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     install_replay(app, settings)  # moment replay: frame tap + GET /v1/replay.mp4
 
     @app.get("/v1/health", response_model=HealthResponse)

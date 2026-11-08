@@ -76,6 +76,18 @@ async def test_chat_json_fallback(client):
     assert body["cited"]
 
 
+async def test_chat_unrelated_query_is_not_found(client):
+    c, app = client
+    await _post_frame(c, _noisy_jpeg(5), 2500.0)
+    await app.state.worker.queue.join()
+    r = await c.post("/v1/chat", json={"session_id": "s", "text": "zebra"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["cited"] == []
+    assert body["tool_calls"][0]["confidence"] == "not_found"
+    assert body["answer"] == "I don't have a memory of that."
+
+
 async def test_chat_json_bad_body_is_422_not_500(client):
     c, _ = client
     r = await c.post("/v1/chat", json={"text": "hi"})  # missing session_id (issue #49)
@@ -174,8 +186,8 @@ async def test_health_reports_live_providers_and_unwired_ones(tmp_path):
     assert models["claude"] == "claude-sonnet-4-6"
     assert models["reader"] == "google/gemma-4-31B-it"
     assert models["embed"] == "openai:text-embedding-3-small"  # real builder from store.embeddings (#71)
-    # keyed but the app still builds a mock for this role: say so rather than claim the provider is live
-    assert models["tts"] == "mock (elevenlabs configured, not implemented)"
+    # ElevenLabs TTS is wired (agent/tts.py), so a key makes it the live provider
+    assert models["tts"] == "elevenlabs"
 
 
 async def test_health_says_not_installed_for_local_embeddings_without_torch(tmp_path, monkeypatch):

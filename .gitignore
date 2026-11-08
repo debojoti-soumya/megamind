@@ -15,3 +15,4 @@ docs/*.aux docs/*.log docs/*.out docs/*.toc docs/*.fls docs/*.fdb_latexmk docs/*
 .DS_Store
 .idea/
 .vscode/
+

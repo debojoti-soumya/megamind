@@ -5,9 +5,15 @@ server, and (2) hosts the voice-first AR chat panel. Both streams share this pro
 (design doc §2, decision D1). The project in `headset/Megamind/` is a complete Unity
 project: open it in Unity Hub, let the packages resolve, run one menu item, build.
 
-> Status: the project has been assembled and compile-checked against the Meta SDK
-> 85 / MRUK 85 API surface, but **not yet built or run on a headset**. Expect to
-> iterate on device; the troubleshooting list below covers the likely failures.
+> Status: **playtested on a Quest 3 (Horizon OS v74 / Android 14), 2026-11-07.** Built headless
+> (Unity 6000.0.66f2 + Meta SDK 85 / MRUK 85) into `Builds/megamind.apk`, sideloaded over USB and run
+> against a laptop server with mock providers via `adb reverse tcp:8000 tcp:8000` +
+> `megamind.json` (`{"serverBaseUrl":"http://127.0.0.1:8000"}`). Verified on device: camera + mic
+> permission prompts, passthrough capture at 1280x960 / 1 fps uploading to `/v1/frames`, the
+> world-locked panel in passthrough, B/Y re-anchor, right-trigger push-to-talk → `/v1/chat` →
+> transcript bubble + reply with 3 cited thumbnails. Not yet exercised on device: hand-pinch PTT,
+> the settings sub-panel buttons (controller-ray UI), TTS playback (mock TTS returns no audio),
+> and real STT/TTS (needs API keys on the server).
 
 New to Quest? Start with the **[Quest 3 guide](../docs/quest3-guide.md)**: headset basics, every physical
 connection (USB/adb, wireless adb, Wi-Fi/Tailscale to the server, casting, power), a test runbook, and a
@@ -78,6 +84,18 @@ component (the current official path; the older `WebCamTextureManager` sample is
     Expected lines: `[Megamind] permissions: camera=True`, `[Megamind] capture: server=…`,
     `[Megamind] camera playing: 1280x960 maxFps=30`, and on the server `POST /v1/frames … 200`.
 
+### Headless build (CI / a box without a display)
+Each `Megamind` menu item is a static method, so the whole flow runs from a shell (`U=~/Unity/Hub/Editor/6000.0.66f2/Editor/Unity`):
+```sh
+sh headset/tools/patch-metaxr-linux.sh   # Linux only
+for m in MegamindSceneBuilder.CreateScene MegamindChatPanelBuilder.Build \
+         MegamindSceneBuilder.ApplyAndroidSettings MegamindSceneBuilder.CheckProject MegamindSceneBuilder.BuildApk; do
+  $U -batchmode -nographics -quit -buildTarget Android -projectPath headset/Megamind \
+     -executeMethod Megamind.EditorTools.$m -logFile /tmp/$m.log || { grep -h "error\|\[Megamind\]" /tmp/$m.log; break; }
+done
+```
+`Builds/megamind.apk` is the output. The first run also downloads/imports the Meta packages (several minutes).
+
 ### Pointing the app at a different server without rebuilding
 The URL is resolved in this order: PlayerPrefs (`megamind.serverBaseUrl`, written by the
 settings panel) → `megamind.json` pushed over adb → `MegamindConfig.asset`. From the editor use
@@ -139,9 +157,33 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | `MegamindPermissions.cs` | 1 | requests `HEADSET_CAMERA` + mic at start, exposes `CameraGranted` |
 | `FrameUploader.cs` | 1 | 1 fps sample of `PassthroughCameraAccess.GetTexture()` → JPEG → `POST /v1/frames` with pose meta |
 | `CaptureHud.cs` | 1 | world-locked capture status HUD + recording indicator, A/X pause |
-| `ChatClient.cs` | 3 | mic record on push-to-talk → `POST /v1/chat` → play audio |
-| `ChatPanel.cs` | 3 | transcript bubbles + cited thumbnails on the world-locked canvas |
+| `ChatClient.cs` | 3 | push-to-talk (trigger or index pinch) → 16 kHz WAV → `POST /v1/chat` → play audio; barge-in, latency |
+| `ChatPanel.cs` | 3 | transcript bubbles, cited thumbnails, confidence/latency line, status HUD (`/v1/health` poll) |
+| `PanelAnchor.cs` | 3 | places the canvas `panelDistance` m ahead on first use; hold B/Y 0.5 s to re-anchor |
+| `SettingsPanel.cs` | 3 | runtime server URL / device id, new session, purge memory |
 | `Editor/MegamindSceneBuilder.cs` | 1 | the `Megamind` menu: create scene, apply player settings, build, build & run, push config, check project |
+| `Editor/MegamindChatPanelBuilder.cs` | 3 | `Megamind > 1b. Add Chat Panel To Current Scene`: bubble/thumb prefabs + the world-locked chat panel, all references wired |
+
+## Stream 3 chat panel
+
+After **Megamind > 1. Create Capture Scene**, run **Megamind > 1b. Add Chat Panel To Current Scene** before
+building. It creates `Assets/Megamind/Prefabs/{UserBubble,AssistantBubble,ThumbRow,Thumb}.prefab` and this
+hierarchy (one World Space Canvas, 600x720 px, scaled by `PanelAnchor` to `panelWidthMeters`), wires every
+field on `ChatPanel`/`ChatClient`/`PanelAnchor`/`SettingsPanel`, finds `CenterEyeAnchor`, `OVRHand`s and the
+`FrameUploader`, and adds an `EventSystem` with Meta's `OVRInputModule` + `OVRRaycaster` (right-controller
+ray) when the SDK provides them:
+```
+MegamindPanel (Canvas)  + PanelAnchor + ChatPanel + ChatClient + SettingsPanel + AudioSource
+  Background, Header (StatusLine, ServerDot, Settings button)
+  Scroll -> Viewport -> Content (VerticalLayoutGroup)        = ChatPanel.content
+  EmptyHint, Indicators (ListeningIndicator, ThinkingIndicator)
+  Settings (inactive): ServerUrl, DeviceId, Save / New session / Purge, Reset / Close, Feedback
+```
+Re-running the menu item replaces a previous `MegamindPanel`; tweak the result in the Inspector and save.
+Push-to-talk: hold the controller trigger (or index pinch); hold B/Y 0.5 s to drag the panel to your gaze.
+
+A browser prototype of the same panel (same API calls, same states) is served by the server at
+`http://<server>:8000/ui` — use it to agree on layout/behaviour and as a hardware-free demo fallback.
 
 ## Quest test checklist (first human run — please report back)
 
@@ -178,6 +220,7 @@ Nothing in this project has run on a headset yet. Hour-0, in this order:
 | Most frames `too_soon` / `duplicate` | Expected when the scene is static — the server filter keeps ~10–30 % at 1 fps. Walk around. |
 | Many `blurry` / `dark` | Raise room light; the camera auto-exposes slowly after passthrough starts. |
 | `INSTALL_FAILED_UPDATE_INCOMPATIBLE` on `adb install` | A build with a different signing key is installed: `adb uninstall com.megamind.quest` then reinstall. |
+| Linux editor: `MetaXRSimulator/Installer.cs(88): error CS0103 'downloadedInstallerPath'` | Meta XR Core 85 bug (variable only declared for Windows/macOS). Run `sh headset/tools/patch-metaxr-linux.sh` (patches `Library/PackageCache`; re-run after a package re-resolve). |
 | `adb devices` shows `unauthorized` / nothing | Put the headset on and accept the USB debugging dialog; enable developer mode in the Meta Horizon phone app; try another cable/port. |
 | Build fails with Gradle/JDK error | Use the Hub-installed OpenJDK/SDK/NDK (Edit → Preferences → External Tools: all "Installed with Unity" ticked). |
 | App restarts when the headset is taken off | Normal: Horizon OS suspends background apps. Keep the headset on or set proximity sensor off in developer settings while testing. |
