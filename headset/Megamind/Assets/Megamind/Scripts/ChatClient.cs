@@ -184,6 +184,8 @@ namespace Megamind
             if (open3DInBrowser && resp.HasModel3D())
             {
                 var q = "&t=" + UnityWebRequest.EscapeURL(resp.model3d.title ?? "") + "&full=" + (resp.model3d.full_3d ? "1" : "0");
+                // Quest Browser has no bearer header: ?token= (auth.py) sets the session cookie the model fetch then uses
+                if (!string.IsNullOrWhiteSpace(config.apiToken)) q += "&token=" + UnityWebRequest.EscapeURL(config.apiToken.Trim());
                 Application.OpenURL(config.Url(resp.model3d.viewer_url) + q);
             }
             OnResponse?.Invoke(resp);
