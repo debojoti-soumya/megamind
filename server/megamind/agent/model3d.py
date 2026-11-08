@@ -509,7 +509,7 @@ async def make_model3d(
             raise CollageError(502, f"the 3D service is unreachable ({type(e).__name__})") from None
         if cache.generation != gen:
             raise CollageError(409, "memories were deleted while the model was being made; try again")
-        p = await asyncio.to_thread(cache.put, key, lifted.fmt, lifted.data)
+        p = cache.put(key, lifted.fmt, lifted.data)  # no await since the generation check: a purge can't slip in
         zone = _zone(st.settings.wearer_tz)
         when = datetime.fromtimestamp(pick.token.ts, zone).strftime("%A at %-I:%M %p")
         said = smart.spoken(phrase)
