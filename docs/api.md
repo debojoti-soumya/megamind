@@ -159,7 +159,9 @@ Response:
   "cited": [ { "id": "...", "ts": 1731000000.1, "caption": "...", "thumb_url": "/v1/thumbs/....jpg",
                "replay_url": "/v1/replay.mp4?device_id=quest3-abc&from=1731000000.100&to=1731000010.100" } ],
   "tool_calls": [ { "name": "recall_memory", "args": { "query": "keys", "k": 12 }, "confidence": "high" } ],
-  "device_id_used": "quest3-abc", "warning": null }
+  "device_id_used": "quest3-abc", "warning": null,
+  "markers": [ { "label": "keys", "token_id": "...", "device_id": "quest3-abc", "ts": 1731000000.1,
+                 "x": 0.42, "y": 0.61, "box": [0.38, 0.55, 0.46, 0.67], "confidence": 0.9 } ] }
 ```
 `device_id` (optional) limits the search to that device's memories; omitted/null = all devices.
 `device_id_used` is the device that was actually searched (`null` = all devices). `warning` is `null` normally;
@@ -177,6 +179,14 @@ stored real video (`POST /video`) around the citation (pixels aged out, replay d
 For questions about the present ("what am I looking at right now", "what did I just see") the evidence also
 includes live short-term memory (see `GET /live/{id}.jpg`): a cited raw frame has an id starting `now_`, a
 caption starting `LIVE NOW-<n>:` and `thumb_url` `/v1/live/{id}.jpg`. Treat `thumb_url` as an opaque URL.
+`markers` is `[]` except for "where is X" questions ("where's my pen right now?", "find my keys") whose answer
+cites a frame with pixels: then a vision model (`LOCATE_PROVIDER=openai` GPT by default, `anthropic` = Claude)
+looks at the newest cited frames (live `now_*` first) and reports X's box in one of them. `token_id` is that
+`cited[].id`; `device_id` + `ts` identify the uploaded frame (`FrameMeta.ts`). `x`/`y` (box centre) and `box`
+(`[x_min, y_min, x_max, y_max]`) are normalized to the frame, origin top-left. The headset projects `(x, y)`
+through the camera pose it had at `ts` and depth-raycasts it into the room to pin X (headset `ObjectMarkers`);
+`/ui` outlines the box on the thumbnail. Best effort: no key, a timeout (`LOCATE_TIMEOUT_S`), "not visible" or a
+low confidence (`LOCATE_MIN_CONFIDENCE`) gives `[]` and the turn still answers. Opt out with `LOCATE_ENABLED=false`.
 
 ## `POST /chat/stream`
 The same turn as `POST /chat` (same request body, JSON or multipart, same 400/415/422 errors before the stream

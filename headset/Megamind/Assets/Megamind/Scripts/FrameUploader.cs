@@ -52,6 +52,7 @@ namespace Megamind
         public double LastUploadTs { get; private set; }
         public bool ServerReachable => Sent > 0 && _consecutiveFailures == 0;
         public Vector2Int CameraResolution => cameraAccess != null ? cameraAccess.CurrentResolution : Vector2Int.zero;
+        public int poseHistory = 600; // camera poses of the last N uploaded frames, for ObjectMarkers
         public string ServerBaseUrl => settings.ServerBaseUrl(config);
         public string DeviceId => settings.DeviceId(config);
         /// <summary>Why capture is paused: "A/X", "background", "focus lost"; null while capture is allowed.</summary>
@@ -326,6 +327,7 @@ namespace Megamind
             {
                 var p = camPose.position;
                 meta.pose = new Pose { x = p.x, y = p.y, z = p.z, yaw = camPose.rotation.eulerAngles.y };
+                RememberPose(ts, camPose);
             }
             else if (headPose != null)
             {
@@ -333,6 +335,29 @@ namespace Megamind
                 meta.pose = new Pose { x = p.x, y = p.y, z = p.z, yaw = headPose.eulerAngles.y };
             }
             return meta;
+        }
+
+        private struct FramePose { public double ts; public UnityEngine.Pose pose; }
+        private readonly Queue<FramePose> _poses = new Queue<FramePose>();
+
+        private void RememberPose(double ts, UnityEngine.Pose pose)
+        {
+            _poses.Enqueue(new FramePose { ts = ts, pose = pose });
+            while (_poses.Count > Mathf.Max(1, poseHistory)) _poses.Dequeue();
+        }
+
+        /// <summary>Full RGB camera pose of the uploaded frame with FrameMeta.ts == ts (nearest within toleranceS).</summary>
+        public bool TryGetFramePose(double ts, out UnityEngine.Pose pose, double toleranceS = 0.05)
+        {
+            pose = default;
+            double best = toleranceS;
+            bool found = false;
+            foreach (var f in _poses)
+            {
+                double d = Math.Abs(f.ts - ts);
+                if (d <= best) { best = d; pose = f.pose; found = true; }
+            }
+            return found;
         }
 
         /// <summary>Downscale the camera texture to <= jpegMaxWidth into _scratch (Blit + ReadPixels, a few ms on device).</summary>

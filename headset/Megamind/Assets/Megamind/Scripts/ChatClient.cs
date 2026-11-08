@@ -175,7 +175,7 @@ namespace Megamind
             // A future STT-only endpoint (e.g. /v1/stt) would let commands skip the agent turn.
             if (echoTranscript && menu != null && menu.TryVoiceCommand(resp.transcript)) return;
             if (echoTranscript && !string.IsNullOrEmpty(resp.transcript)) panel?.AddUserMessage(resp.transcript);
-            panel?.AddAssistantMessage(resp.answer, resp.cited, false, resp.Confidence(), LastLatencySeconds);
+            panel?.AddAssistantMessage(resp.answer, resp.cited, false, resp.Confidence(), LastLatencySeconds, resp.markers);
             OnResponse?.Invoke(resp);
             if (!string.IsNullOrEmpty(resp.audio_url) && config.speakAnswers) StartCoroutine(PlayAudio(config.Url(resp.audio_url)));
         }

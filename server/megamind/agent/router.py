@@ -45,12 +45,17 @@ async def _chat_input(request: Request) -> tuple[str, str, str | None]:
 
 
 async def _finish(app, resp: ChatResponse, dev: ChatDevice) -> ChatResponse:
-    """Replay links + TTS, concurrently (independent: one reads `cited`, the other `answer`)."""
+    """Replay links + TTS + object markers, concurrently (each reads `cited` / `answer`, writes its own field)."""
 
     async def tts() -> None:
         resp.audio_url = await app.tts.synthesize(resp.answer, str(ULID()))
 
-    await asyncio.gather(annotate_citations(app, resp.cited, dev.device_id), tts())
+    async def markers() -> None:
+        locator = getattr(app, "locator", None)
+        if locator is not None and resp.cited:
+            resp.markers = await locator.markers(resp.transcript, resp.answer, list(resp.cited))
+
+    await asyncio.gather(annotate_citations(app, resp.cited, dev.device_id), tts(), markers())
     resp.device_id_used, resp.warning = dev.device_id, dev.warning
     return resp
 

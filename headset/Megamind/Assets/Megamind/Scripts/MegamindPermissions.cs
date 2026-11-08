@@ -2,6 +2,7 @@
 // one OVRPermissionsRequester.Request(...) call, once per process, for
 //   horizonos.permission.HEADSET_CAMERA  (Passthrough Camera API, v74+; OVRPermissionsRequester.Permission.PassthroughCameraAccess)
 //   android.permission.RECORD_AUDIO      (push-to-talk, stream 3; ambient audio memory, AmbientAudioRecorder)
+//   com.oculus.permission.USE_SCENE      (depth raycasts that pin "where is X" markers on surfaces, ObjectMarkers)
 // Nothing else may request camera permission: keep OVRManager "Permission Requests On Startup" empty (the scene builder
 // clears it) and do not add the sample's PassthroughCameraPermissions/RequestPermissionsOnce to the scene.
 // PassthroughCameraAccess itself waits until the permission is granted, so this can run any time before/after it.
@@ -14,6 +15,7 @@ namespace Megamind
     public class MegamindPermissions : MonoBehaviour
     {
         public bool requestMicrophone = true;
+        public bool requestScene = true;
 
         private static bool s_requested;
 
@@ -22,6 +24,9 @@ namespace Megamind
 
         public static bool MicrophoneGranted =>
             OVRPermissionsRequester.IsPermissionGranted(OVRPermissionsRequester.Permission.RecordAudio);
+
+        public static bool SceneGranted =>
+            OVRPermissionsRequester.IsPermissionGranted(OVRPermissionsRequester.Permission.Scene);
 
         private void Start()
         {
@@ -35,8 +40,9 @@ namespace Megamind
             var wanted = new List<OVRPermissionsRequester.Permission>();
             if (!CameraGranted) wanted.Add(OVRPermissionsRequester.Permission.PassthroughCameraAccess);
             if (requestMicrophone && !MicrophoneGranted) wanted.Add(OVRPermissionsRequester.Permission.RecordAudio);
+            if (requestScene && !SceneGranted) wanted.Add(OVRPermissionsRequester.Permission.Scene);
             if (wanted.Count > 0) OVRPermissionsRequester.Request(wanted);
-            Debug.Log($"[Megamind] permissions: camera={CameraGranted} mic={MicrophoneGranted} (requested {wanted.Count})");
+            Debug.Log($"[Megamind] permissions: camera={CameraGranted} mic={MicrophoneGranted} scene={SceneGranted} (requested {wanted.Count})");
         }
 
         private void OnDestroy() => OVRPermissionsRequester.PermissionGranted -= OnGranted;

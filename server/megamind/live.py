@@ -160,6 +160,11 @@ class LiveMemory:
             return None
         return c.path
 
+    def source(self, frame_id: str) -> tuple[str, float] | None:
+        """(device_id, ts) of a cached live frame whose source frame is still buffered."""
+        c = self._cache.get(frame_id)
+        return (c.device_id, c.ts) if c is not None and self.lookup(frame_id) is not None else None
+
     def prune(self) -> int:
         """Delete cached frames whose source frame left the replay buffer (e.g. after DELETE /memories)."""
         dead = [fid for fid, c in self._cache.items() if not self._alive(c)]

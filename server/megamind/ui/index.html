@@ -76,6 +76,10 @@
   .thumb { position: relative; width: 132px; height: 99px; border-radius: 10px; overflow: hidden; background: rgba(0,0,0,0.4);
     border: 1px solid rgba(255,255,255,0.12); cursor: zoom-in; flex: none; }
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb.marked img { object-fit: fill; } /* uncropped, so the marker box lines up */
+  .mbox { position: absolute; border: 2px solid #ffcc1a; border-radius: 3px; box-shadow: 0 0 0 1px rgba(0,0,0,0.6); pointer-events: none; }
+  .mbox span { position: absolute; left: -2px; bottom: 100%; font-size: 11px; padding: 0 4px; background: #ffcc1a; color: #000; white-space: nowrap; border-radius: 3px 3px 0 0; }
+  #lbwrap { position: relative; line-height: 0; }
   .thumb .ts { position: absolute; left: 6px; bottom: 5px; font-size: 11px; padding: 1px 6px; border-radius: 6px;
     background: rgba(0,0,0,0.6); color: #fff; font-variant-numeric: tabular-nums; }
   .empty { margin: auto; text-align: center; color: var(--muted); font-size: 14px; max-width: 320px; }
@@ -196,7 +200,7 @@
   </div>
 </section>
 
-<div id="lightbox"><img id="lbimg" alt=""><div class="cap" id="lbcap"></div></div>
+<div id="lightbox"><div id="lbwrap"><img id="lbimg" alt=""></div><div class="cap" id="lbcap"></div></div>
 
 <script>
 (() => {
@@ -330,7 +334,15 @@
     el.innerHTML = `<div class="bubble"></div><div class="meta"><span>${fmtTime(Date.now() / 1000)}</span></div>`;
     el.querySelector('.bubble').textContent = text; transcript.appendChild(el); scrollEnd();
   }
-  function addAssistant(text, cited, toolCalls, isError, ms) {
+  // ChatResponse.markers: normalized box (origin top-left) on the cited frame token_id.
+  function markerBox(m) {
+    const [x0, y0, x1, y1] = m.box;
+    const d = document.createElement('div'); d.className = 'mbox';
+    Object.assign(d.style, { left: `${x0 * 100}%`, top: `${y0 * 100}%`, width: `${(x1 - x0) * 100}%`, height: `${(y1 - y0) * 100}%` });
+    const s = document.createElement('span'); s.textContent = m.label; d.appendChild(s);
+    return d;
+  }
+  function addAssistant(text, cited, toolCalls, isError, ms, markers) {
     $('empty')?.remove();
     const el = document.createElement('div'); el.className = 'msg assistant';
     const b = document.createElement('div'); b.className = 'bubble' + (isError ? ' error' : ''); b.textContent = text; el.appendChild(b);
@@ -340,7 +352,13 @@
         const t = document.createElement('div'); t.className = 'thumb'; t.title = c.caption || '';
         t.innerHTML = `<img alt="" loading="lazy"><span class="ts">${ago(c.ts)}</span>`;
         t.querySelector('img').src = media(c.thumb_url);
-        t.onclick = () => { $('lbimg').src = media(c.thumb_url); $('lbcap').textContent = `${fmtTime(c.ts)} (${ago(c.ts)}) — ${c.caption || ''}`; $('lightbox').classList.add('show'); };
+        const marks = (markers || []).filter(m => m.token_id === c.id && m.box?.length === 4);
+        if (marks.length) { t.classList.add('marked'); for (const m of marks) t.appendChild(markerBox(m)); }
+        t.onclick = () => {
+          $('lbimg').src = media(c.thumb_url); $('lbcap').textContent = `${fmtTime(c.ts)} (${ago(c.ts)}) — ${c.caption || ''}`;
+          $('lbwrap').querySelectorAll('.mbox').forEach(e => e.remove()); for (const m of marks) $('lbwrap').appendChild(markerBox(m));
+          $('lightbox').classList.add('show');
+        };
         row.appendChild(t);
       }
       el.appendChild(row);
@@ -404,7 +422,7 @@
     const j = await r.json();
     if (echoTranscript && j.transcript) addUser(j.transcript);
     if (j.warning) addAssistant('Note: ' + j.warning, [], null, true);
-    addAssistant(j.answer, j.cited, j.tool_calls, false, ms);
+    addAssistant(j.answer, j.cited, j.tool_calls, false, ms, j.markers);
     $('latency').textContent = (ms / 1000).toFixed(1) + 's';
     if (j.audio_url && cfg.autoplay) {
       try { speaker?.pause(); speaker = new Audio(media(j.audio_url)); await speaker.play(); } catch (e) { console.warn('audio playback failed', e); }
