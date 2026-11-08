@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     api_token: str = ""  # shared secret for a public deployment; empty = no auth (megamind/auth.py)
 
     anthropic_api_key: str = ""
-    claude_model: str = "claude-haiku-4-5"  # 1.3 s/turn vs 2.9 s Sonnet 4.6 (deploy/bench_modal.py); CLAUDE_MODEL
+    claude_model: str = "claude-sonnet-5-5"  # 1.6 s p50 / 2.1 s p95 live (deploy/bench_modal.py); CLAUDE_MODEL
     claude_timeout_s: float = 30.0
     claude_max_retries: int = 2
 

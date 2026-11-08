@@ -144,7 +144,7 @@ async def test_single_tool_call_with_claude_cites(recall):
 
     # request shape: system prompt, tool schema, tool_result fed back
     first, second = script.requests
-    assert first["model"] == "claude-haiku-4-5"
+    assert first["model"] == "claude-sonnet-5-5"
     assert first["tools"][0]["name"] == "recall_memory"
     assert "in UTC that is" in first["system"] and "America/Los_Angeles" in first["system"]
     assert "Pass short keywords as query" in first["system"]
@@ -271,7 +271,7 @@ def test_claude_model_default_is_not_the_retiring_sonnet_4_5_and_is_overridable(
     from megamind.config import Settings
 
     monkeypatch.delenv("CLAUDE_MODEL", raising=False)
-    assert Settings(_env_file=None).claude_model == "claude-haiku-4-5"
+    assert Settings(_env_file=None).claude_model == "claude-sonnet-5-5"
     monkeypatch.setenv("CLAUDE_MODEL", "claude-sonnet-5-5")
     assert Settings(_env_file=None).claude_model == "claude-sonnet-5-5"
 

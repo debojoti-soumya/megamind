@@ -37,6 +37,10 @@ secrets = [modal.Secret.from_name("megamind-providers")]
 SAIL = {"READER_BASE_URL": "https://api.sailresearch.com/v1", "READER_PROVIDER": "vlm"}
 CONFIGS: dict[str, dict[str, str]] = {
     "defaults": {},
+    "haiku55": {"CLAUDE_MODEL": "claude-haiku-5-5"},
+    "sonnet55": {"CLAUDE_MODEL": "claude-sonnet-5-5"},
+    "opus55": {"CLAUDE_MODEL": "claude-opus-5-5"},
+    "sonnet55_8img": {"CLAUDE_MODEL": "claude-sonnet-5-5", "READER_MAX_IMAGES": "8"},
     "combo": {
         "RETRIEVER_BACKEND": "combo"
     },  # hybrid / UCC / hier routed per question  # whatever config.py ships (CLAUDE_MODEL, READER_PROVIDER=auto, ...)
@@ -115,7 +119,12 @@ def speech() -> dict:
     wav = c.audio.speech.create(
         model="tts-1", voice="alloy", input="Where did I leave my keys this morning?", response_format="wav"
     ).read()
-    for model in ("whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"):
+    for model in ("whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe", "gpt-live-transcribe"):
+        try:
+            c.audio.transcriptions.create(model=model, file=("q.wav", wav, "audio/wav"))
+        except Exception as e:  # noqa: BLE001
+            res[f"stt {model}"] = {"error": str(e)[:120]}
+            continue
         res[f"stt {model}"] = _ms(
             lambda m=model: c.audio.transcriptions.create(model=m, file=("q.wav", wav, "audio/wav"))
         )
