@@ -49,13 +49,14 @@ route too):
 
 | Setting | Value | Why |
 |---|---|---|
-| `HIER_MODEL` / `HIER_RANK_MODEL` / `HIER_NOTE_MODEL` | `gpt-4.1-mini` / `gpt-4.1` / `gpt-4.1-mini` | best R@1 under 2 s p50 in the #152 sweep; 2.7x cheaper than gpt-4.1 for both stages |
+| `HIER_MODEL` / `HIER_RANK_MODEL` / `HIER_NOTE_MODEL` | `gpt-5-mini` / `gpt-5-mini` / `gpt-4.1-mini` | long_week sweep: gpt-5-mini at `HIER_REASONING_EFFORT=minimal` for both stages gives R@1 0.74 vs 0.60 for the old 4.1-mini / 4.1 split, at the same latency and 3.7x less per question |
 | `HIER_TIMEOUT_S` | `8` | wall bound on the LLM stages of one recall; past it the hybrid's ranking answers |
 | `HIER_CALL_TIMEOUT_S` / `HIER_RETRIES` | `4` / `2` | recall-time chat calls fail fast (note writing keeps 120 s / 6 tries) |
 | `HIER_CACHE_PATH` | `/data/hier_notes.json` | notes survive scale-to-zero and redeploys; a cold start does not rewrite them |
 | `HIER_REFRESH_S` | `300` | background note refresh while the container is up; a recall writes up to 3 missing notes inline and schedules a bigger backlog |
 | key | `OPENAI_API_KEY` in `megamind-providers` | `HIER_API_KEY` + `HIER_BASE_URL` override it for another OpenAI-compatible endpoint |
-| `HIER_GATE_MARGIN` | unset (0) | optional: skip the LLM when the hybrid's top-1 leads top-2 by this relative margin (0.25 saved 21% of LLM calls for -4 pts R@1) |
+| `HIER_GATE_MARGIN` / `HIER_GATE_MIN_HITS` | `0.25` / `5` | the hybrid answers alone when its top hit leads the runner-up by the margin *and* it found at least that many hits (a 3-hit result inflates the lead). On long_week this skips the LLM on 10 of 29 questions with no loss (R@1 0.81 vs 0.74 un-gated); `0` margin = always ask |
+| `HIER_OUTLINE_HOURS` | `0` | >0: stage 1 lists block notes only for that many candidate hours (hour notes elsewhere, pickable as `[H..]`). The full outline is ~15k tokens/day, so this is for long histories; on a week it saves nothing (prompt caching) |
 
 Fallbacks: hier and combo fall back to the hybrid in two cases:
 - With no OpenAI / UCC key, `build_retriever` logs a warning and uses the hybrid.
