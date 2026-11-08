@@ -257,6 +257,7 @@ class Turn:
     cost_usd: float
     request_id: str
     error: str | None = None
+    extra: dict = field(default_factory=dict)  # TurnStats.extra: prefetch hit/miss, reader_skipped
     extra: dict = field(default_factory=dict)
 
 
@@ -348,6 +349,7 @@ async def run(
                 cost_usd=claude_cost(stats, price_in, price_out) + reader_tokens * reader_price / 1e6,
                 request_id=stats.request_id,
                 error=stats.error,
+                extra=dict(stats.extra),
             )
         )
     return turns

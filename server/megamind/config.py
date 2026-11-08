@@ -8,14 +8,14 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     anthropic_api_key: str = ""
-    claude_model: str = "claude-sonnet-4-5"
+    claude_model: str = "claude-sonnet-4-6"  # claude-sonnet-4-5* retires 2026-11-30; override via CLAUDE_MODEL
     claude_timeout_s: float = 30.0
     claude_max_retries: int = 2
 
     reader_base_url: str = "http://localhost:8001/v1"
     reader_api_key: str = "none"
     reader_model: str = "google/gemma-4-31B-it"  # Qwen3.6-35B-A3B is flex-only on Sail (research/reports/04)
-    reader_fallback_model: str = "nvidia/Gemma-4-31B-IT-NVFP4"  # tried once when the primary 429/503s; "" disables
+    reader_fallback_model: str = "nvidia/Gemma-4-31B-IT-NVFP4"  # retry model on 429/503/timeout; "" disables
     reader_provider: str = "auto"  # auto (vlm iff READER_API_KEY set) | vlm | mock
     reader_timeout_s: float = 5.0  # per attempt; Sail Gemma asap calls take ~3 s
     reader_deadline_s: float = 6.0  # wall budget for all attempts of one call, then captions-only
@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     reader_max_tokens: int = 300
     reader_json_mode: str = "schema"  # schema (json_schema) | object (json_object) | off; downgraded on HTTP 400
     reader_completion_window: str = ""  # Sail: asap | balanced; sent as X-Sail-Completion-Window when set
+    reader_skip_on_ocr: bool = True  # Claude path: skip the VLM when every query keyword is in a top hit's OCR
+    recall_prefetch: bool = True  # run recall_memory on the raw question while Claude picks its tool call
     reader_extra_body: str = ""  # JSON merged into the request, e.g. {"chat_template_kwargs":{"enable_thinking":false}}
     enrich_base_url: str = ""
     enrich_model: str = ""
