@@ -12,6 +12,7 @@ namespace Megamind
         public GameObject root;         // the drawer (inactive until opened)
         public GameObject backdrop;     // transparent full-panel raycast target behind the drawer; click = close
         public PanelDrawer drawer;      // optional: animates root/backdrop (slide down the right edge); without it they just toggle
+        public Lightbox lightbox;       // optional: closed by CloseAll ("close" by voice)
         public GameObject debugRoot;    // debug sub-panel
         public GameObject controlsRoot; // controls cheat-sheet sub-panel
         public Text debugText;
@@ -74,6 +75,7 @@ namespace Megamind
         public void CloseAll()
         {
             Close();
+            if (lightbox) lightbox.Close();
             CloseDebug();
             CloseControls();
             if (settings) settings.Hide();
