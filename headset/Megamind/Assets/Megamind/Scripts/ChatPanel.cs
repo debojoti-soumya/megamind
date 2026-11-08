@@ -1,15 +1,15 @@
 // Stream 3: world-locked transcript panel with cited memory thumbnails + status HUD.
 //
 // Prefab layout (see headset/README.md):
-//   Canvas (World Space, 0.6 m wide)  <- PanelAnchor
-//     Header: statusLine (Text), settings button
+//   Canvas (World Space, 0.6 m wide x uiScale)  <- PanelAnchor (tag-along / pinned, A-/A+ scale)
+//     Header: statusLine (Text), A- / A+ / Pin / Settings buttons
 //     ScrollRect -> Viewport -> Content (VerticalLayoutGroup + ContentSizeFitter)   <- `content`
 //     Indicators: listeningIndicator, thinkingIndicator
 // Message prefabs:
 //   userBubblePrefab      : Text inside a right-aligned bubble
 //   assistantBubblePrefab : Text inside a left-aligned bubble
 //   thumbnailRowPrefab    : HorizontalLayoutGroup; thumbnails are instantiated under it
-//   thumbnailPrefab       : RawImage (132x99 px canvas units) with optional child Text for "n min ago"
+//   thumbnailPrefab       : RawImage (180x135 px canvas units) with optional child Text for "n min ago"
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
