@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import json
 import logging
 import math
@@ -8,9 +7,9 @@ from datetime import datetime
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
-from PIL import Image
 from ulid import ULID
 
+from megamind.ingest.filter import decode_frame
 from megamind.ingest.worker import purge_all
 from megamind.models import FrameAccepted, FrameMeta, MemoryToken, PurgeResponse, SearchMode, SearchResponse
 
@@ -37,8 +36,7 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
 
     jpeg = await image.read()
     try:
-        img = Image.open(io.BytesIO(jpeg))
-        img.load()
+        img = decode_frame(jpeg)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, "image is not a decodable JPEG") from exc
     for tap in getattr(app, "frame_taps", ()):  # every decodable frame, before the filter (e.g. replay buffer)

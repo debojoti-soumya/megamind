@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import io
 import random
 
 import numpy as np
+import pytest
 from PIL import Image, ImageFilter
 
 from megamind.config import Settings
-from megamind.ingest.filter import KeyframeFilter, dhash, hamming, sharpness
+from megamind.ingest.filter import KeyframeFilter, decode_frame, dhash, frame_metrics, hamming, mean_luma, sharpness
 from megamind.models import FrameMeta, Pose
 
 W, H = 320, 240
@@ -190,3 +192,24 @@ def test_speed():
     for i in range(20):
         f.decide(img, FrameMeta(device_id="d", ts=float(i)), [])
     assert (time.perf_counter() - t0) / 20 < 0.05
+
+
+def test_frame_metrics_matches_individual_metrics():
+    for img in (scene(1), blurred(scene(2)), Image.new("RGB", (W, H), (8, 8, 8))):
+        h, luma, sharp = frame_metrics(img)
+        assert h == dhash(img)
+        assert abs(luma - mean_luma(img)) < 1.0
+        assert sharp == pytest.approx(sharpness(img), rel=0.2, abs=1.0)
+
+
+def test_decode_frame_is_grey_and_hash_compatible():
+    buf = io.BytesIO()
+    scene(3).save(buf, format="JPEG", quality=75)
+    grey = decode_frame(buf.getvalue())
+    assert grey.mode == "L" and grey.size == (W, H)
+    rgb = Image.open(io.BytesIO(buf.getvalue())).convert("RGB")
+    assert hamming(dhash(grey), dhash(rgb)) <= 1  # stored frame_hash values stay comparable
+    assert (sharpness(grey) < 40) == (sharpness(rgb) < 40)
+    png = io.BytesIO()
+    scene(3).save(png, format="PNG")
+    assert decode_frame(png.getvalue()).size == (W, H)
