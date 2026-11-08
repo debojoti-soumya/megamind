@@ -40,8 +40,14 @@ namespace Megamind.EditorTools
         public static void Build()
         {
             var scene = EditorSceneManager.GetActiveScene();
-            if (string.IsNullOrEmpty(scene.path))
-                throw new InvalidOperationException("Save the scene first (run Megamind > 1. Create Capture Scene, which saves " + MegamindSceneBuilder.ScenePath + ").");
+            if (scene.path != MegamindSceneBuilder.ScenePath)
+            {
+                // Batch mode (or a fresh editor) starts with an untitled scene: use the capture scene if it exists.
+                if (!File.Exists(MegamindSceneBuilder.ScenePath))
+                    throw new InvalidOperationException("Run Megamind > 1. Create Capture Scene first (saves " + MegamindSceneBuilder.ScenePath + ").");
+                if (!string.IsNullOrEmpty(scene.path) && scene.isDirty) EditorSceneManager.SaveScene(scene);
+                scene = EditorSceneManager.OpenScene(MegamindSceneBuilder.ScenePath, OpenSceneMode.Single);
+            }
 
             EnsureFolder(Root); EnsureFolder(PrefabDir);
             var config = MegamindSceneBuilder.GetOrCreateConfig();
@@ -249,10 +255,18 @@ namespace Megamind.EditorTools
 
         static Type FindType(string name)
         {
+            // OVRInputModule lives in UnityEngine.EventSystems, OVRRaycaster in the global namespace: match by simple name.
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
                 var t = asm.GetType(name);
                 if (t != null) return t;
+            }
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type[] types;
+                try { types = asm.GetTypes(); } catch (System.Reflection.ReflectionTypeLoadException e) { types = e.Types; }
+                foreach (var t in types)
+                    if (t != null && t.Name == name && typeof(UnityEngine.Object).IsAssignableFrom(t)) return t;
             }
             return null;
         }

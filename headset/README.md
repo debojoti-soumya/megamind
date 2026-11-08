@@ -74,6 +74,18 @@ component (the current official path; the older `WebCamTextureManager` sample is
     Expected lines: `[Megamind] permissions: camera=True`, `[Megamind] config: server=…`,
     `[Megamind] camera playing 1280x960`, and on the server `POST /v1/frames … 200`.
 
+### Headless build (CI / a box without a display)
+Each `Megamind` menu item is a static method, so the whole flow runs from a shell (`U=~/Unity/Hub/Editor/6000.0.66f2/Editor/Unity`):
+```sh
+sh headset/tools/patch-metaxr-linux.sh   # Linux only
+for m in MegamindSceneBuilder.CreateScene MegamindChatPanelBuilder.Build \
+         MegamindSceneBuilder.ApplyAndroidSettings MegamindSceneBuilder.CheckProject MegamindSceneBuilder.BuildApk; do
+  $U -batchmode -nographics -quit -buildTarget Android -projectPath headset/Megamind \
+     -executeMethod Megamind.EditorTools.$m -logFile /tmp/$m.log || { grep -h "error\|\[Megamind\]" /tmp/$m.log; break; }
+done
+```
+`Builds/megamind.apk` is the output. The first run also downloads/imports the Meta packages (several minutes).
+
 ### Pointing the app at a different server without rebuilding
 The URL is resolved in this order: PlayerPrefs (`megamind.serverBaseUrl`, written by the
 settings panel) → `megamind.json` pushed over adb → `MegamindConfig.asset`. From the editor use
@@ -198,6 +210,7 @@ Nothing in this project has run on a headset yet. Hour-0, in this order:
 | Most frames `too_soon` / `duplicate` | Expected when the scene is static — the server filter keeps ~10–30 % at 1 fps. Walk around. |
 | Many `blurry` / `dark` | Raise room light; the camera auto-exposes slowly after passthrough starts. |
 | `INSTALL_FAILED_UPDATE_INCOMPATIBLE` on `adb install` | A build with a different signing key is installed: `adb uninstall com.megamind.quest` then reinstall. |
+| Linux editor: `MetaXRSimulator/Installer.cs(88): error CS0103 'downloadedInstallerPath'` | Meta XR Core 85 bug (variable only declared for Windows/macOS). Run `sh headset/tools/patch-metaxr-linux.sh` (patches `Library/PackageCache`; re-run after a package re-resolve). |
 | `adb devices` shows `unauthorized` / nothing | Put the headset on and accept the USB debugging dialog; enable developer mode in the Meta Horizon phone app; try another cable/port. |
 | Build fails with Gradle/JDK error | Use the Hub-installed OpenJDK/SDK/NDK (Edit → Preferences → External Tools: all "Installed with Unity" ticked). |
 | App restarts when the headset is taken off | Normal: Horizon OS suspends background apps. Keep the headset on or set proximity sensor off in developer settings while testing. |
