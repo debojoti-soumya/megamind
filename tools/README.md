@@ -8,6 +8,8 @@
 | `eval_example_day.py` | Asks a running server the example day's questions and scores answers and citations |
 | `retrieval_bench.py` | Retrieval benchmark on ~900 real photos plus sign/speech facts: R@1/R@5/MRR per signal, through `HybridRetriever` |
 | `egolife_eval.py` | Long real-glasses eval: EgoLife (6.9 h of Meta Aria video per day) and EgoLifeQA, scored with time windows |
+| `demo_check.py` | Pre-take check for the demo: PASS / WARN / FAIL for each thing that has to work before you record ([below](#demo-tools)) |
+| `rehearse.py` | Dry-runs the demo route: feeds a phone video as a fresh device, asks the question card, scores each answer ([below](#demo-tools)) |
 
 Install the server first: `cd server && pip install -e ".[dev,tools]"`. Run every command from the repo root.
 
@@ -171,3 +173,41 @@ python tools/feeder.py --source walk.mp4 --start 1767600000 --srt walk.srt
   starts.
 
 The example day's `feed.sh` detects both flags automatically.
+
+## Demo tools
+
+```bash
+export MEGAMIND_API_TOKEN=<token> U=https://<workspace>--megamind-web.modal.run
+
+# the day before: will these questions work on this route?
+python tools/rehearse.py walk.mp4 questions.txt --server $U
+#   PASS   2.1 s  where did I park?
+#           -> On level 2, next to the blue pillar in row D.
+#   FAIL   1.8 s  what bus went past me?
+#           -> I can see a bus, but the number isn't readable.
+#   5/6 passed, median 2.0 s, slowest 3.4 s
+
+# before each take: is everything live?
+python tools/demo_check.py --server $U        # exit 1 = something to fix
+```
+
+`questions.txt` has one question per line, in the form `question :: accepted | other accepted`. A question passes if
+any accepted string is in the answer. `:: NONE` means the right answer is "I don't remember that", and a question
+without `::` is printed but not scored. Lines starting with `#` are comments.
+
+**`rehearse.py`:**
+- **Device id.** Every run feeds a new device id (`rehearse-<time>`), because the keyframe filter drops frames older
+  than a device's newest one. Answers come from that device only.
+- **Timing.** The clip is stamped so the walk ends just before the questions are asked.
+- **Cleanup.** The rehearsal memories are deleted at the end. `--keep` keeps them, and `--skip-feed --device-id <id>`
+  asks again without re-feeding.
+
+**`demo_check.py`:**
+- **What it checks:**
+  - `/v1/health` and its warmup state
+  - the models that are really serving: none of Claude, STT, TTS, text or image embeddings mocked
+  - `GET /v1/turns`, which the captions need
+  - `adb devices` and the headset battery (`ADB_SERIAL` picks one of several devices)
+  - the headset's last frame is at most `--fresh` seconds old
+  - one timed question (`--warn-s 3`, `--fail-s 8`)
+- **Flags.** `--no-adb` skips the headset checks, and `--no-ask` skips the paid question.

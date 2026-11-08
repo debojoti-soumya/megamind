@@ -85,10 +85,11 @@ image = (
         "pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu",
         "pip install --no-cache-dir /app/server open-clip-torch>=2.24 transformers sentencepiece protobuf",
         "ffmpeg -hide_banner -version | head -1",
-        # bake the SigLIP weights in: no download on a cold start
-        "python -c \"import open_clip; open_clip.create_model_and_transforms('ViT-B-16-SigLIP', pretrained='webli')\"",
+        # bake the SigLIP weights and its tokenizer in: a cold start downloads nothing from Hugging Face
+        "python -c \"import open_clip; open_clip.create_model_and_transforms('ViT-B-16-SigLIP', pretrained='webli');"
+        " open_clip.get_tokenizer('ViT-B-16-SigLIP')\"",
     )
-    .env(COMMON_ENV | PROFILE_ENV[PROFILE])
+    .env(COMMON_ENV | PROFILE_ENV[PROFILE] | {"HF_HUB_OFFLINE": "1"})
 )
 
 # a separate Volume per profile: mock embeddings are 256-d, OpenAI 1024-d, and a LanceDB table's dim is frozen

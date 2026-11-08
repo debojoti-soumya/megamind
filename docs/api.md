@@ -314,6 +314,20 @@ Every device that has stored memory tokens, most recently active first (by `last
 stored (enriched) tokens count: frames still in the enrichment queue or only in the replay buffer do not.
 `{ "devices": [] }` on an empty store.
 
+## `GET /turns?since=...&until=...&device_id=...&limit=200`
+Every chat turn (`POST /chat` and `POST /chat/stream`, typed or voice) with its wall-clock times, oldest first, for
+captioning a recording of the headset view (`server/tools/make_captions.py`, `headset/tools/record-headset.sh`).
+```json
+{ "turns": [ { "started_at": 1731000102.0, "ended_at": 1731000103.9, "question": "where did I leave my keys?",
+               "answer": "In the ceramic bowl on the hallway table, about ten minutes ago.", "voice": true,
+               "session_id": "s1", "device_id": "quest3-1" } ] }
+```
+`started_at` is when the request arrived (a voice question was spoken just before it), `ended_at` when the answer
+(text and audio) was ready. `since` keeps turns that ended at or after it, `until` those that started at or before
+it (epoch s). The newest 1000 are kept in memory and every turn is appended to `TURN_LOG_PATH` (default
+`<AUDIO_DIR>/../turns.jsonl`, on the Modal Volume), so they survive restarts. `TURN_LOG=false` keeps nothing and
+returns `{ "turns": [] }`. A voice command handled by `POST /stt` never reaches Claude and is not listed.
+
 ## `GET /replay.mp4?device_id=...&from=...&to=...`
 Moment replay: an H.264 mp4 of **every** frame received from the device in `[from, to]` (not just the
 keyframes the filter kept), each frame held until the next, so mp4 offset 0 = the first frame's `ts`.
@@ -487,12 +501,16 @@ Storage and ingest counters.
 { "tokens": 1500, "frames": 1400, "tiers": { "hot": 400, "cold": 900, "text": 100 },
   "filter": { "seen": 15000, "kept": 1400, "keep_rate": 0.093, "by_reason": { "novel": 900, "duplicate": 8000 } },
   "worker_queue": 0,
+  "enrich_lag_s": { "n": 100, "p50": 4.1, "max": 9.8, "oldest_pending": 1.2 },
   "disk_bytes": { "hot_jpeg": 26000000, "cold_chunks": 6300000, "index": 9000000 },
   "bytes_per_frame": { "hot": 65000, "cold": 7000, "index": 6000 },
   "projected_100d_gb_at_budget": 8.4,
   "media": { "encoder": "libsvtav1", "hot_retention_h": 72, "cold_retention_days": 100, "cold_decodes": 12 },
   "video": { "clips": 860, "seconds": 4300.0, "bytes": 1650000000, "devices": 1 } }
 ```
+`enrich_lag_s`: seconds from an accepted upload to its memory being stored (captioned, embedded, searchable) over the
+last 100 stored frames, and the age of the oldest frame still queued or in flight; `null` until there is one.
+Raise `ENRICH_CONCURRENCY` if it grows.
 `video` (stored `POST /video` clips) is absent when `VIDEO_ENABLED=false`.
 `tiers` counts `kind="frame"` tokens. `bytes_per_frame` values are `null` until a tier has frames. The projection
 assumes the frame budget (`FILTER_MAX_PER_MIN`) for 16 h/day, `HOT_RETENTION_H` as JPEG and the rest as AV1

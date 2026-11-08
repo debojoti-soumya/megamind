@@ -218,6 +218,7 @@ async def stats(request: Request):
         "tiers": tiers,
         "filter": {"seen": seen, "kept": kept, "keep_rate": kept / seen if seen else None, "by_reason": counts},
         "worker_queue": worker.queue.qsize(),
+        "enrich_lag_s": worker.lag_stats(),  # upload -> searchable (caption + embeddings stored)
         "disk_bytes": disk,
         "bytes_per_frame": {
             "hot": round(hot_pf) if hot_pf is not None else None,

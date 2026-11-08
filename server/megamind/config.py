@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     enrich_base_url: str = ""  # "" -> reader_base_url (and the reader's extra body / completion window)
     enrich_model: str = ""  # "" -> reader_model
     enrich_api_key: str = ""  # "" -> reader_api_key, but only when enrich_base_url is "" (same endpoint)
+    enrich_concurrency: int = 2  # frames enriched in parallel; raise if /v1/stats enrich_lag_s grows
     enrich_timeout_s: float = 20.0  # per attempt; one retry on 429/5xx/timeout, then the local/empty fallback
     enrich_max_tokens: int = 400
 
@@ -135,6 +136,10 @@ class Settings(BaseSettings):
     search_calibrate_image: bool = True  # scale image hits by SigLIP sigmoid(scale*cos+bias) in RRF (no-op for CLIP)
     thumb_dir: Path = Path("./data/thumbs")
     audio_dir: Path = Path("./data/audio")
+    # every chat turn's question/answer + wall-clock times (GET /v1/turns, demo-video captions); default
+    # <audio_dir>/../turns.jsonl; TURN_LOG=false keeps nothing
+    turn_log: bool = True
+    turn_log_path: Path | None = None
     # tiered media (store/media.py): hot JPEG -> cold AV1 chunk per episode -> text only
     chunk_dir: Path | None = None  # AV1 chunks; default <thumb_dir>/../chunks
     hot_retention_h: float = 72.0  # frames older than this are re-encoded into AV1 chunks

@@ -24,14 +24,30 @@ Contents: [Demo-day quick card](#demo-day-quick-card) · [1. Quest 3 basics](#1-
 1. Charge the headset to 100% (about 2.5 h on the included 18 W charger [M-charge]) and charge the controllers.
 2. Update the headset: Meta button → *Quick controls* → *Settings* → *General* → *Software update*. It must be **v74 or newer** [M-update][D-pca].
 3. Install the latest `megamind.apk`: `adb install -r Builds/megamind.apk`. Open it once and **Allow** the camera prompt.
+4. Rehearse the route: film it on a phone, write the question card, and run
+   `python tools/rehearse.py walk.mp4 questions.txt --server $U` (token from `MEGAMIND_API_TOKEN`). It plays the clip
+   through the real server as a throwaway device, asks every question, and prints answer / PASS / seconds. Film only
+   the questions that pass, then delete the rehearsal memories (the tool does this unless you pass `--keep`). See
+   [tools/README.md](../tools/README.md#demo-tools).
 
 **Morning of (in this order)**
 1. **Reboot the headset.** On v74 the camera colours can be wrong after a camera app's first install, and a reboot fixes it [D-pca].
-2. Laptop: `cd server && uvicorn megamind.main:app --host 0.0.0.0 --port 8000`.
-3. Laptop: `curl http://<server-ip>:8000/v1/health` should return `{"status":"ok",...}`.
+2. Server. Modal (option F): `python deploy/keep_warm.py on --hours 3` keeps one container warm for the shoot. Local:
+   `cd server && uvicorn megamind.main:app --host 0.0.0.0 --port 8000`.
+3. Laptop: `python tools/demo_check.py --server $U` (with the app running, after step 8). It prints one PASS / WARN / FAIL
+   line each for:
+   - health and warmup
+   - the live models: Claude, STT, TTS, text embeddings, SigLIP image vectors
+   - the turn log the captions come from
+   - adb and the headset battery
+   - frames from the headset in the last 20 s
+   - a timed test question
+
+   Exit code 1 means fix before recording. Run it again before each take, but not during one: its test question is a
+   real turn.
 4. Headset: confirm it is on the **same network** as the server (Wi-Fi or Tailscale, see [2.3](#23-quest--server-the-network-path)). Open `http://<server-ip>:8000/v1/health` in the Quest Browser (verify on device).
 5. Laptop: `adb devices` should list the headset as `device`. Then start `adb logcat -s Unity | grep -i megamind` in a spare terminal.
-6. Wipe old memories if you want a clean demo: `curl -X DELETE http://<server-ip>:8000/v1/memories`.
+6. Wipe old memories if you want a clean demo: `curl -X DELETE -H "Authorization: Bearer $MEGAMIND_API_TOKEN" $U/v1/memories`.
 7. Launch: Meta button → *Library* → *Unknown Sources* → **Megamind** [D-deploy].
 8. The chat panel header should show a blinking red REC dot and `REC 1 fps · N sent · mic M · url:<source>` with `sent` rising roughly once a second (corner tab → *Debug stats* shows the full stats: resolution, accepted, last reason, latency). "HUD" below means this header strip / Debug view.
 9. Start casting for the audience: Navigator → *Quick controls* → *Cast* → phone/computer [M-cast]. **Cast or record, not both**, because Meta lists doing both at once as a known issue [M-cast-ts].
@@ -66,6 +82,26 @@ Capture pauses on its own only when the app is really backgrounded (HUD `capture
 | Screenshot or record from a laptop | Meta VR Developer Hub (MVDH, formerly MQDH) can capture screenshots and video, and can cast the headset view to the computer [D-mvdh]. |
 
 Megamind draws its own **REC** dot and status strip in the chat panel header (`CaptureHud.cs` is the data source). Your casts and recordings will show it, which is intended.
+
+### Recording the demo video (headset view + captions)
+
+The server logs every chat turn's question, answer and wall-clock times (`GET /v1/turns`, `TURN_LOG=true` by
+default), so a recording of the headset view can be captioned with what was really asked and answered.
+`headset/tools/record-headset.sh` wraps the steps:
+
+1. Record in the headset (*Camera* → *Record video*, or hold the Meta button + right trigger). The clip includes the
+   passthrough view, the chat panel and the spoken answers. **Record or cast, not both** [M-cast-ts].
+   Or record from the laptop over adb: `headset/tools/record-headset.sh mirror take1.mp4` (needs `scrcpy`; the
+   Quest image is both eyes side by side, so set `CROP=W:H:X:Y` to one eye; verify on device).
+2. Copy the newest in-headset recording to the laptop: `headset/tools/record-headset.sh pull takes/`
+   (reads `/sdcard/Oculus/VideoShots`; set `SHOTS=` if your headset saves elsewhere; verify on device).
+3. Caption it: `MEGAMIND_SERVER=https://... MEGAMIND_TOKEN=... headset/tools/record-headset.sh captions takes/<clip>.mp4`
+   writes `<clip>.srt` (for CapCut / DaVinci / Premiere) and `<clip>-captioned.mp4` with the captions burned in:
+   `Q: where did I leave my keys?` while the server works, then `A: In the bowl by the door… (1.9 s)`.
+
+The start time comes from the clip's `creation_time` tag, else its `YYYYMMDD-HHMMSS` file-name stamp (headset clock,
+`--tz`), else `--start`. If captions run early or late, re-run with `--offset 1.5` (seconds, positive = later).
+`--no-latency` drops the `(1.9 s)`. All options: `python server/tools/make_captions.py --help`.
 
 ---
 

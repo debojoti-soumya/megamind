@@ -20,6 +20,8 @@ from megamind.agent.router import router as agent_router
 from megamind.agent.stt import build_stt
 from megamind.agent.tools import RecallMemory
 from megamind.agent.tts import build_tts
+from megamind.agent.turn_log import TurnLog
+from megamind.agent.turn_log import router as turns_router
 from megamind.agent.voice import router as voice_router
 from megamind.auth import TokenAuth
 from megamind.config import Settings, get_settings
@@ -72,6 +74,14 @@ def active_provider(settings: Settings, configured: str, impl: object, active: s
     else:
         why = "not implemented"
     return f"mock ({configured} configured, {why})"
+
+
+def _image_label(settings: Settings, image_embedder: object | None) -> str:
+    """Health label for image vectors: "openclip:ViT-B-16-SigLIP", "mock", or "none (...)" when they are off."""
+    configured = settings.image_embed_provider.lower()
+    if image_embedder is None:
+        return "none" if configured in ("", "none") else f"none ({configured} configured, not installed)"
+    return active_provider(settings, configured, image_embedder, f"{configured}:{settings.image_embed_model}")
 
 
 def image_calibration(settings: Settings, image_embedder: object | None) -> tuple[float, float] | None:
@@ -129,6 +139,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             build_enricher(settings, st.image_embedder),
             st.text_embedder,
             st.image_embedder,
+            concurrency=max(1, settings.enrich_concurrency),
             face_blur=st.face_blur,
         )
         st.media = MediaStore(settings, st.store, lock=st.worker.add_lock)  # hot JPEG -> cold AV1 -> text
@@ -143,6 +154,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.agent = ClaudeAgent(settings, st.recall, collage=collage_tool(st))
         st.stt = build_stt(settings)
         st.tts = build_tts(settings)
+        st.turn_log = (
+            TurnLog(settings.turn_log_path or settings.audio_dir.parent / "turns.jsonl") if settings.turn_log else None
+        )
         st.locator = build_locator(st, settings)  # "where is X": X's box in a cited frame (ChatResponse.markers)
         st.audio_stt = build_audio_stt(settings, st.stt)
         st.consolidator = Consolidator(
@@ -194,6 +208,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(agent_router, prefix="/v1")
     app.include_router(voice_router, prefix="/v1")  # POST /v1/stt
     app.include_router(devices_router, prefix="/v1")  # GET /v1/devices
+    app.include_router(turns_router, prefix="/v1")  # GET /v1/turns
     app.include_router(ui_router)
     # the browser panel may be served from a different origin (e.g. file:// or another laptop)
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -238,6 +253,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "enrich": _enrich_label(settings, st.worker.enricher),
                 "stt": active_provider(settings, settings.stt_provider, st.stt, settings.stt_provider),
                 "tts": active_provider(settings, settings.tts_provider, st.tts, settings.tts_provider),
+                "image": _image_label(settings, st.image_embedder),
             },
         )
 
