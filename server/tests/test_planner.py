@@ -229,3 +229,19 @@ def test_before_after_a_clock_time_is_a_one_sided_window():
     assert q.search_text == "" and q.time_focus == "end"
     assert datetime.fromtimestamp(q.time_to, tz=NOW.tzinfo).hour == 9 and q.time_from < q.time_to
     assert plan_query("what did I eat at 3 pm", now=NOW).time_focus == "center"
+
+
+def test_between_two_clock_times_is_the_window():
+    evening = NOW.replace(hour=19)
+    p = plan_query("what was I doing between 4 and 5pm", now=evening)
+    lo, hi = (datetime.fromtimestamp(t, tz=NOW.tzinfo) for t in (p.time_from, p.time_to))
+    assert (lo.hour, hi.hour, p.search_text, p.mode) == (16, 17, "", "temporal")
+    q = plan_query("what did I read from 9:30 to 11 this morning", now=evening)
+    lo, hi = (datetime.fromtimestamp(t, tz=NOW.tzinfo) for t in (q.time_from, q.time_to))
+    assert ((lo.hour, lo.minute), hi.hour, q.search_text) == ((9, 30), 11, "")
+
+
+def test_day_part_plus_clock_is_all_time():
+    p = plan_query("what was I doing this morning at 7:30", now=NOW)
+    assert p.search_text == "" and p.mode == "temporal"
+    assert datetime.fromtimestamp(p.time_from, tz=NOW.tzinfo).strftime("%H:%M") == "06:45"

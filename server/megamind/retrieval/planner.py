@@ -113,6 +113,11 @@ _RE_CLOCK = re.compile(
     r"(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ampm>am|pm|a\.m\.|p\.m\.|o'clock)?\b",
     re.I,
 )
+_RE_BETWEEN = re.compile(
+    r"\b(?:between|from)\s+(?P<h1>\d{1,2})(?::(?P<m1>\d{2}))?\s*(?P<ap1>am|pm)?\s+(?:and|to|-|until|till)\s+"
+    r"(?P<h2>\d{1,2})(?::(?P<m2>\d{2}))?\s*(?P<ap2>am|pm)?\b",
+    re.I,
+)
 _RE_WEEKDAY = re.compile(
     r"\b(?:last|on|this)?\s*(?P<day>monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I
 )
@@ -205,6 +210,14 @@ class TimeWindow:
     span: tuple[int, int]  # char span in the query that expressed the time
 
 
+def _clock_hour(h: int, ampm: str) -> int:
+    if ampm == "pm" and h < 12:
+        return h + 12
+    if ampm == "am" and h == 12:
+        return 0
+    return h
+
+
 def parse_time(query: str, now: datetime) -> TimeWindow | None:
     """Resolve a relative temporal expression in `query` to a [from, to] window.
 
@@ -259,6 +272,23 @@ def _parse_time(q: str, now: datetime) -> TimeWindow | None:  # noqa: C901 - a l
         hint_parts.append(mw.span())
 
     md = _RE_DAYPART.search(q)
+    mb = _RE_BETWEEN.search(q)
+    if mb:  # "between 4 and 5pm", "from 9:30 to 11": the second am/pm also settles the first
+        ap2 = (mb.group("ap2") or "").lower()
+        ap1 = (mb.group("ap1") or ap2).lower()
+        h1, h2 = _clock_hour(int(mb.group("h1")), ap1), _clock_hour(int(mb.group("h2")), ap2)
+        if not ap1 and not ap2 and h2 < h1 <= 12:
+            h2 += 12
+        elif not ap1 and h1 > h2:  # "between 11 and 1pm"
+            h1 = h1 - 12 if h1 > 12 else h1
+        h1 += int(mb.group("m1") or 0) / 60
+        h2 += int(mb.group("m2") or 0) / 60
+        day = _local_day(now, day_offset)
+        if _hours(day, h1) > now and day_offset == 0:
+            day = _local_day(now, -1)
+        spans = hint_parts + [mb.span()] + ([md.span()] if md else [])
+        lo, hi = min(s[0] for s in spans), max(s[1] for s in spans)
+        return TimeWindow(_hours(day, h1).timestamp(), min(now_ts, _hours(day, h2).timestamp()), q[lo:hi], (lo, hi))
     mc = _RE_CLOCK.search(q)
     if mc and not (mc.group("ampm") is None and mc.group("m") is None and int(mc.group("h")) > 12):
         h = int(mc.group("h"))
@@ -277,7 +307,7 @@ def _parse_time(q: str, now: datetime) -> TimeWindow | None:  # noqa: C901 - a l
                     day_offset -= 1
         center = _hours(_local_day(now, day_offset), h + mm / 60)
         half = timedelta(minutes=45)
-        spans = hint_parts + [mc.span()]
+        spans = hint_parts + [mc.span()] + ([md.span()] if md else [])  # "this morning at 7:30": both are time
         lo, hi = min(s[0] for s in spans), max(s[1] for s in spans)
         prep = mc.group("prep") + " "
         if _RE_REL_AFTER.search(prep):  # "after 3 pm": from then until now, like "after lunch"
