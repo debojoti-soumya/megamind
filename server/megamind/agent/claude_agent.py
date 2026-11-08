@@ -34,9 +34,10 @@ import json
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -410,16 +411,32 @@ EventCallback = Callable[[str, dict], Awaitable[None]]
 
 
 class _TrailerFilter:
-    """Streams answer text minus the `<cites>...</cites>` trailer: holds back a possible partial tag."""
+    """Streams answer text minus the `<cites>...</cites>` trailer: holds back a possible partial tag.
+
+    `hold` lists the openings of a tool call written as text (`recall_memory(`): a message starting that way is
+    never the answer (the agent runs it as a tool round, see `parse_textual_tool_call`), so the text is held back
+    while it may still become one and dropped once it has."""
 
     OPEN, CLOSE = "<cites>", "</cites>"
 
-    def __init__(self) -> None:
+    def __init__(self, hold: Sequence[str] = ()) -> None:
         self.buf = ""
         self.inside = False
+        self.hold = tuple(hold)
+        self.head = bool(self.hold)  # still at the start of the message, where a textual tool call would begin
+        self.suppress = False
 
     def feed(self, s: str) -> str:
+        if self.suppress:
+            return ""
         self.buf += s
+        if self.head:
+            if any(p.startswith(self.buf) for p in self.hold):
+                return ""  # may still turn into `name(`: wait for more text
+            if any(self.buf.startswith(p) for p in self.hold):
+                self.suppress, self.buf = True, ""
+                return ""
+            self.head = False
         out: list[str] = []
         while True:
             if self.inside:
@@ -448,7 +465,7 @@ class _TrailerFilter:
             return "".join(out)
 
     def flush(self) -> str:
-        rest, self.buf = ("" if self.inside else self.buf), ""
+        rest, self.buf = ("" if self.inside or self.suppress else self.buf), ""
         return rest
 
 
@@ -473,6 +490,24 @@ class _Emitter:
         seen: set[str] = set()
         cands = [c for c in [*r.cited, *r.all_retrieved] if not (c.id in seen or seen.add(c.id))]
         await self.cb("retrieval", {"confidence": r.confidence, "candidates": cands})
+
+
+_TEXT_CALL_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\((\{.*\})\)\s*$", re.DOTALL)
+
+
+def parse_textual_tool_call(text: str, names: Sequence[str]) -> tuple[str, dict] | None:
+    """`name({...})` written as plain text, for one of the tools `names` -> (name, args); anything else -> None.
+
+    With CLAUDE_TOOL_RESULTS_AS_TEXT the model sees its earlier tool calls in exactly this form, and now and then it
+    imitates the text instead of emitting a tool_use block (seen live: the whole "answer" was the call)."""
+    m = _TEXT_CALL_RE.match(text)
+    if m is None or m[1] not in names:
+        return None
+    try:
+        args = json.loads(m[2])
+    except json.JSONDecodeError:
+        return None
+    return (m[1], args) if isinstance(args, dict) else None
 
 
 def _split_cites(text: str) -> tuple[str, list[str] | None]:
@@ -701,8 +736,25 @@ class ClaudeAgent:
                 texts = [b.text for b in msg.content if b.type == "text"]
                 if texts:
                     answer_text = "\n".join(texts)
-                uses = [b for b in msg.content if b.type == "tool_use"]
-                if msg.stop_reason != "tool_use" or not uses or _round == MAX_TOOL_ROUNDS:
+                uses: list[Any] = [b for b in msg.content if b.type == "tool_use"]
+                stop = msg.stop_reason
+                if not uses and texts and (call := parse_textual_tool_call(answer_text, self.tool_names())):
+                    # the model wrote the call as text (imitating the text-flattened history): never the answer.
+                    # Run it as a real tool round, stored as a tool_use block so the history stays coherent
+                    name, args = call
+                    stats.extra["textual_tool_calls"] = stats.extra.get("textual_tool_calls", 0) + 1
+                    log.warning(
+                        "req=%s tool call written as text, running it: %s(%s)",
+                        stats.request_id,
+                        name,
+                        json.dumps(args, ensure_ascii=False),
+                    )
+                    answer_text = ""
+                    if _round < MAX_TOOL_ROUNDS:
+                        use = SimpleNamespace(id=f"toolu_text_{stats.request_id}_{_round}", name=name, input=args)
+                        turn[-1] = {"role": "assistant", "content": [{"type": "tool_use", **vars(use)}]}
+                        uses, stop = [use], "tool_use"
+                if stop != "tool_use" or not uses or _round == MAX_TOOL_ROUNDS:
                     break
                 if emit is not None:
                     await emit.reset()  # text before a tool call is not the answer
@@ -758,7 +810,7 @@ class ClaudeAgent:
         assert self._client is not None
         if emit is None:
             return await self._client.messages.create(**req)
-        filt = _TrailerFilter()
+        filt = _TrailerFilter(hold=[f"{n}(" for n in self.tool_names()])
         n_text = 0
         t0 = time.perf_counter()
         first_ms: float | None = None
@@ -890,6 +942,9 @@ class ClaudeAgent:
 
     def tools(self) -> list[dict]:
         return [RECALL_MEMORY_TOOL, MAKE_COLLAGE_TOOL] if self.collage is not None else [RECALL_MEMORY_TOOL]
+
+    def tool_names(self) -> list[str]:
+        return [t["name"] for t in self.tools()]
 
     def static_system_prompt(self) -> str:
         prompt = render_static_system_prompt(self.settings.wearer_tz)
