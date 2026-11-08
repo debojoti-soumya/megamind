@@ -29,7 +29,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from megamind.agent import smart_montage as smart
@@ -136,6 +136,7 @@ class Tile:
     token: MemoryToken
     title: str
     jpeg: bytes
+    score: float = 0.0  # match confidence / rank score: the best one leads the collage
 
 
 def _font(cfg: CollageSettings, size: int):
@@ -211,15 +212,78 @@ def _shade(w: int, h: int) -> Image.Image:
     return over
 
 
-def render_collage(tiles: list[Tile], title: str, subtitle: str, cfg: CollageSettings, tz: str) -> bytes:
-    """Justified gallery: every photo keeps its shape (no 4:3 crop), rows fill the width, rounded corners and a
-    gradient caption (local time + what it shows) on each photo."""
+def _sharpness(jpeg: bytes) -> float:
+    try:
+        im = Image.open(io.BytesIO(jpeg)).convert("L")
+        im.thumbnail((256, 256))
+        return ImageStat.Stat(im.filter(ImageFilter.FIND_EDGES)).mean[0]
+    except (OSError, ValueError):
+        return 0.0
+
+
+def choose_hero(tiles: list[Tile]) -> int:
+    """Index of the lead photo: the best match, the sharpest photo among equally good ones."""
+    if not tiles:
+        return 0
+    return max(range(len(tiles)), key=lambda i: (round(tiles[i].score, 2), _sharpness(tiles[i].jpeg)))
+
+
+def layout_tiles(
+    aspects: list[float], hero: int, width: int, row_h: float, gap: int
+) -> list[tuple[int, int, int, int, int]]:
+    """(index, x, y, w, h) per photo. 3+ photos: the hero leads at ~2/3 width with the next 2 (or 3) stacked
+    beside it, the rest follow in justified rows; 1-2 photos: one justified row. Order stays chronological
+    apart from the hero."""
+    n = len(aspects)
+    out: list[tuple[int, int, int, int, int]] = []
+    rest, y = list(range(n)), 0.0
+    if n >= 3:
+        order = [hero] + [i for i in range(n) if i != hero]
+        side = order[1 : 1 + (3 if n == 4 else 2)]
+        rest = order[1 + len(side) :]
+        hw = round((width - gap) * (0.68 if len(side) == 3 else 0.62))
+        sw = width - gap - hw
+        hh = round(hw / min(max(aspects[hero], 1.2), 1.7))
+        out.append((hero, 0, 0, hw, hh))
+        sh, sy = (hh - gap * (len(side) - 1)) / len(side), 0.0
+        for i in side:
+            out.append((i, hw + gap, round(sy), sw, round(sy + sh) - round(sy)))
+            sy += sh + gap
+        y = hh + gap
+    rows = justify([aspects[i] for i in rest], width, row_h, gap)
+    for row in rows:
+        idx = [rest[k] for k in row]
+        total = sum(aspects[i] for i in idx)
+        h = (width - gap * (len(idx) - 1)) / total
+        h = min(h, row_h * (1.6 if len(idx) > 1 else 1.15))  # a short last row doesn't blow its photo up
+        x = (width - (h * total + gap * (len(idx) - 1))) / 2
+        for i in idx:
+            w = h * aspects[i]
+            out.append((i, round(x), round(y), round(x + w) - round(x), round(h)))
+            x += w + gap
+        y += h + gap
+    return out
+
+
+def _pill(draw: ImageDraw.ImageDraw, xy: tuple[float, float], text: str, font, fg, bg) -> None:
+    x, y = xy
+    w = draw.textlength(text, font=font)
+    draw.rounded_rectangle((x, y, x + w + 16, y + font.size + 10), radius=(font.size + 10) // 2, fill=bg)
+    draw.text((x + 8, y + 4), text, font=font, fill=fg)
+
+
+def render_collage(tiles: list[Tile], title: str, subtitle: str, cfg: CollageSettings, tz: str, hero: int = 0) -> bytes:
+    """Memories-style collage: the best photo leads large, the rest keep their own shape around and below it,
+    each with a time pill and a gradient caption; header with the title, the span and a "not visually
+    checked" chip when nothing verified the photos."""
     zone = _zone(tz)
-    cols, _ = grid(len(tiles))
+    n = len(tiles)
+    hero = min(max(hero, 0), max(n - 1, 0))
+    cols, _ = grid(n)
     tw = max(120, cfg.tile_px)
     gap, margin = max(8, tw // 36), max(16, tw // 16)
-    width = cols * tw + (cols - 1) * gap
-    row_h = tw * 3 / 4 if len(tiles) > 1 else tw * 1.2
+    width = max(cols, 2 if n >= 3 else cols) * tw + (cols - 1) * gap
+    row_h = tw * 3 / 4 if n > 1 else tw * 1.2
     imgs = []
     for t in tiles:
         try:
@@ -227,62 +291,58 @@ def render_collage(tiles: list[Tile], title: str, subtitle: str, cfg: CollageSet
         except (OSError, ValueError):
             imgs.append(Image.new("RGB", (4, 3), (40, 44, 50)))
     aspects = [_aspect(im) for im in imgs]
-    rows = justify(aspects, width, row_h, gap)
-    if len(tiles) == 1:
+    if n == 1:
         width = round(min(row_h * aspects[0], tw * 2.2))
-    layout, y = [], 0
-    for row in rows:
-        total = sum(aspects[i] for i in row)
-        h = (width - gap * (len(row) - 1)) / total
-        h = min(h, row_h * (1.6 if len(row) > 1 else 1.15))  # a short last row doesn't blow its photo up
-        x = (width - (h * total + gap * (len(row) - 1))) / 2
-        for i in row:
-            w = h * aspects[i]
-            layout.append((i, round(x), round(y), round(x + w) - round(x), round(h)))
-            x += w + gap
-        y += h + gap
-    grid_h = round(y - gap)
+    layout = layout_tiles(aspects, hero, width, row_h, gap)
+    grid_h = max(y + h for _, _, y, _, h in layout) if layout else 0
+    one_day = len({datetime.fromtimestamp(t.token.ts, zone).date() for t in tiles}) <= 1
 
-    f_title = _font(cfg, max(22, tw // 11))
-    f_sub, f_when, f_cap = _font(cfg, max(13, tw // 24)), _font(cfg, max(12, tw // 26)), _font(cfg, max(12, tw // 24))
-    header = f_title.size + f_sub.size + 22
+    f_title = _font(cfg, max(24, tw // 10))
+    f_sub, f_when = _font(cfg, max(13, tw // 24)), _font(cfg, max(12, tw // 28))
+    f_cap, f_hero = _font(cfg, max(12, tw // 24)), _font(cfg, max(15, tw // 17))
+    header = f_title.size + f_sub.size + 26
     w_canvas, h_canvas = width + 2 * margin, margin * 2 + header + grid_h
     canvas = Image.new("RGB", (w_canvas, h_canvas), (14, 17, 22))
     draw = ImageDraw.Draw(canvas, "RGBA")
-    draw.text((margin, margin - 4), _fit_text(draw, title, f_title, width), font=f_title, fill=(240, 243, 247))
+    bar = max(4, tw // 90)
+    draw.rounded_rectangle(
+        (margin, margin, margin + bar, margin + f_title.size + 2), radius=bar // 2, fill=(255, 196, 64)
+    )
+    tx = margin + bar + 12
+    draw.text((tx, margin - 4), _fit_text(draw, title, f_title, width - bar - 12), font=f_title, fill=(240, 243, 247))
     unverified = subtitle.endswith(" · unverified")
     sub = subtitle.removesuffix(" · unverified")
-    sy = margin + f_title.size + 8
-    draw.text((margin, sy), _fit_text(draw, sub, f_sub, width - 120), font=f_sub, fill=(148, 158, 172))
+    sy = margin + f_title.size + 12
+    draw.text((tx, sy), _fit_text(draw, sub, f_sub, width - 200), font=f_sub, fill=(148, 158, 172))
     if unverified:
-        cx = margin + draw.textlength(sub, font=f_sub) + 12
-        label = "not visually checked"
-        cw = draw.textlength(label, font=f_when) + 16
-        draw.rounded_rectangle((cx, sy - 2, cx + cw, sy + f_sub.size + 4), radius=8, fill=(255, 196, 0, 40))
-        draw.text((cx + 8, sy + 1), label, font=f_when, fill=(255, 205, 90))
+        cx = tx + draw.textlength(sub, font=f_sub) + 12
+        _pill(draw, (cx, sy - 4), "not visually checked", f_when, (255, 205, 90), (255, 196, 0, 40))
 
     radius = max(8, tw // 28)
     top = margin + header
     for i, x, y, w, h in layout:
-        t, img = tiles[i], imgs[i]
-        photo = ImageOps.fit(img, (max(w, 1), max(h, 1)), Image.Resampling.LANCZOS)
-        band = min(h, f_when.size + f_cap.size + 28)
-        photo = photo.convert("RGBA")
-        photo.alpha_composite(_shade(w, band), (0, h - band))
-        pd = ImageDraw.Draw(photo)
-        when = datetime.fromtimestamp(t.token.ts, zone).strftime("%a %b %-d · %H:%M")
-        pd.text((10, h - band + 8), when, font=f_when, fill=(255, 210, 110))
-        pd.text(
-            (10, h - band + 12 + f_when.size), _fit_text(pd, t.title, f_cap, w - 20), font=f_cap, fill=(245, 245, 245)
-        )
-        canvas.paste(_rounded(photo, radius), (margin + x, top + y), _rounded(photo, radius))
+        t, img, big = tiles[i], imgs[i], (i == hero and n >= 3)
+        photo = ImageOps.fit(img, (max(w, 1), max(h, 1)), Image.Resampling.LANCZOS).convert("RGBA")
+        f_c = f_hero if big else f_cap
+        pd = ImageDraw.Draw(photo, "RGBA")
+        if h >= 70 and w >= 110:
+            band = min(h, f_c.size + 36)
+            photo.alpha_composite(_shade(w, band), (0, h - band))
+            pd = ImageDraw.Draw(photo, "RGBA")
+            pd.text((12, h - f_c.size - 14), _fit_text(pd, t.title, f_c, w - 24), font=f_c, fill=(245, 245, 245))
+        dt = datetime.fromtimestamp(t.token.ts, zone)
+        when = dt.strftime("%H:%M") if one_day else dt.strftime("%a %-d · %H:%M")
+        if w >= 70:
+            _pill(pd, (10, 10), when, f_when, (255, 214, 120), (0, 0, 0, 150))
+        mask = _rounded(photo, radius)
+        canvas.paste(mask, (margin + x, top + y), mask)
     buf = io.BytesIO()
     canvas.save(buf, format="JPEG", quality=max(30, min(cfg.quality, 95)), optimize=True)
     return buf.getvalue()
 
 
-def collage_key(title: str, tiles: list[Tile], cfg: CollageSettings) -> str:
-    raw = repr(("v2", title, [(t.token.id, t.title) for t in tiles], cfg.tile_px, cfg.quality))
+def collage_key(title: str, tiles: list[Tile], cfg: CollageSettings, hero: int = 0) -> str:
+    raw = repr(("v3", title, [(t.token.id, t.title) for t in tiles], hero, cfg.tile_px, cfg.quality))
     return hashlib.sha1(raw.encode()).hexdigest()[:20]
 
 
@@ -403,7 +463,7 @@ async def make_collage(
     for p in chosen:
         data = await _load_image(st, p.token)
         if data:
-            tiles.append(Tile(p.token, _tile_title(p.token, p.title, zone), data))
+            tiles.append(Tile(p.token, _tile_title(p.token, p.title, zone), data, p.score))
     if not tiles:
         raise CollageError(404, "the matching moments have no stored photos left")
     verified = any(p.verified for p in picks)
@@ -418,10 +478,11 @@ async def make_collage(
         span += " – " + last.strftime("%H:%M" if last.date() == first.date() else "%a %b %-d %H:%M")
     subtitle = f"{len(tiles)} moment{'s' if len(tiles) != 1 else ''} · {span}" + ("" if verified else " · unverified")
 
-    key = collage_key(title, tiles, cfg)
+    hero = await asyncio.to_thread(choose_hero, tiles)
+    key = collage_key(title, tiles, cfg, hero)
     p = cache.path(key)
     if not p.is_file():
-        data = await asyncio.to_thread(render_collage, tiles, title, subtitle, cfg, tz)
+        data = await asyncio.to_thread(render_collage, tiles, title, subtitle, cfg, tz, hero)
         if cache.generation != gen:
             raise CollageError(409, "memories were deleted while the collage was being made; try again")
         p = await asyncio.to_thread(cache.put, key, data)
@@ -439,6 +500,7 @@ async def make_collage(
         matches=n_moments,
         width=width,
         height=height,
+        hero=hero,
         images=[
             CollageImage(token_id=t.token.id, ts=t.token.ts, title=t.title, thumb_url=t.token.thumb_url) for t in tiles
         ],

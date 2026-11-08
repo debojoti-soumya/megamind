@@ -305,8 +305,10 @@ Response:
 { "id": "3f2a9c0d1e5b7a8c6d4e", "url": "/v1/montages/3f2a9c0d1e5b7a8c6d4e.mp4", "title": "Your highlights",
   "narration": "Here's your highlight reel: 2 moments from that period.", "planner": "offline",
   "clips": [ { "token_id": "...", "ts": 1731005000.2, "title": "Team lunch at the long table",
-               "duration_s": 4.0, "source": "timelapse", "thumb_url": "/v1/thumbs/....jpg" } ] }
+               "duration_s": 4.0, "source": "timelapse", "thumb_url": "/v1/thumbs/....jpg" } ],
+  "hero": 0 }
 ```
+`hero` indexes `images` (chronological): the lead photo, so clients can lay out the same pick.
 404 when nothing matches or no chosen moment has video/frames/thumbnails; 503 without ffmpeg (same lookup as
 replay, `REPLAY_FFMPEG`); 404 when `MONTAGE_ENABLED=false`; 409 when `DELETE /memories` ran while it was
 being made (nothing is kept; POST again). The same plan always yields the same `id`.
@@ -367,9 +369,10 @@ local time and a short caption). Cheap enough to run inside a chat turn (`make_c
   when their caption names the subject (plural-insensitive: "dogs" ~ "a dog"), so an absent subject is a 404, not
   the nearest unrelated photos. Only tokens with pixels count.
 - One photo per moment (`COLLAGE_MOMENT_GAP_S`, 60 s), chronological, at most `COLLAGE_MAX_IMAGES` (9, or
-  `max_images` if smaller), evenly spread in time. Layout: justified rows (each photo keeps its aspect ratio,
-  clamped to 0.6..2.2; rows ~`COLLAGE_TILE_PX` (360) x 3/4 tall, 2 / 3 / 4 photo widths wide for up to 4 / 9 / more
-  photos), rounded corners, local date-time + caption on each photo, a "not visually checked" chip when unverified.
+  `max_images` if smaller), evenly spread in time. Layout: a lead ("hero") photo, the best match (sharpest among
+  equal scores), at ~2/3 width with the next 2-3 photos stacked beside it, the rest in justified rows (each photo keeps
+  its aspect ratio, clamped to 0.6..2.2; rows ~`COLLAGE_TILE_PX` (360) x 3/4 tall); 1-2 photos: one justified row.
+  Rounded corners, local date-time + caption on each photo, a "not visually checked" chip when unverified.
 Response:
 ```json
 { "id": "5d0c...", "url": "/v1/collages/5d0c....jpg", "title": "The red car",
