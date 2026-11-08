@@ -334,3 +334,27 @@ async def test_ivf_index_builds_on_float16_nullable_columns(tmp_path):
 def test_unknown_vector_dtype_is_rejected(tmp_path):
     with pytest.raises(ValueError):
         LanceDBStore(tmp_path / "ldb", vector_dtype="int8")
+
+
+async def test_lancedb_decodes_tokens_exactly(lance):
+    toks = [_token(i, entities=("mug", f"e{i}"), image=i % 3 != 1) for i in range(7)]
+    toks[4] = toks[4].model_copy(update={"kind": "episode", "episode_id": "ep-x", "ocr_text": "EXIT"})
+    await lance.add_many(toks)
+    got = await lance.range(None, None, limit=100)
+    assert [t.model_dump() for t in got] == [t.model_dump() for t in toks]
+    assert [t.model_dump() for t in await lance.get_many([toks[5].id, toks[0].id])] == [
+        toks[5].model_dump(),
+        toks[0].model_dump(),
+    ]
+    assert (await lance.get(toks[4].id)).image_vec is None
+    hits = await lance.vector_search(_vec(2), 3)
+    assert hits[0][0].model_dump() == toks[2].model_dump()
+
+
+async def test_range_orders_ties_by_id_and_truncates(store):
+    toks = [_token(i).model_copy(update={"ts": 1000.0 + (i // 2)}) for i in range(6)]
+    await store.add_many(list(reversed(toks)))
+    got = await store.range(None, None, limit=4)
+    assert [t.id for t in got] == [t.id for t in toks[:4]]
+    assert await store.range(None, None, limit=0) == []
+    assert [t.id for t in await store.neighbors(toks[2].id, before=1, after=1)] == [t.id for t in toks[1:4]]

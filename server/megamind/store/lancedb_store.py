@@ -26,7 +26,9 @@ from pathlib import Path
 from typing import Any
 
 import lancedb
+import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 from lancedb.index import FTS
 
 from megamind.models import MemoryHit, MemoryToken, Pose, SearchMode
@@ -65,6 +67,7 @@ _MIGRATIONS = (
     ("chunk_offset", "CAST(NULL AS BIGINT)"),
 )
 _INDEXED_COLUMNS = [*_SCALAR_COLUMNS, "text_vec", "image_vec"]
+_TS_ORDER = [("ts", "ascending"), ("id", "ascending")]
 
 
 def _sql_str(value: str) -> str:
@@ -199,26 +202,51 @@ class LanceDBStore(MemoryStore):
         }
 
     @staticmethod
-    def _token(row: dict[str, Any]) -> MemoryToken:
-        data = {
-            "id": row["id"],
-            "device_id": row["device_id"],
-            "ts": row["ts"],
-            "caption": row.get("caption", ""),
-            "ocr_text": row.get("ocr_text", ""),
-            "entities": list(row.get("entities") or []),
-            "pose": Pose(**row["pose"]) if row.get("pose") else None,
-            "text_vec": list(row["text_vec"]) if row.get("text_vec") is not None else None,
-            "image_vec": list(row["image_vec"]) if row.get("image_vec") is not None else None,
-            "thumb_path": row["thumb_path"],
-            "frame_hash": row["frame_hash"],
-            "episode_id": row.get("episode_id"),
-            "tier": row.get("tier") or "hot",
-            "chunk_id": row.get("chunk_id"),
-            "chunk_offset": row.get("chunk_offset"),
-        }
-        data["kind"] = row.get("kind") or "frame"
-        return MemoryToken(**data)
+    def _vectors(col: pa.ChunkedArray) -> list[list[float] | None]:
+        """Fixed-size-list column -> per-row lists via one NumPy pass (`to_pylist` boxes every float)."""
+        arr = col.combine_chunks()
+        n = len(arr)
+        if arr.null_count == n:
+            return [None] * n
+        dense = np.asarray(arr.flatten()).reshape(-1, arr.type.list_size).tolist()
+        if not arr.null_count:
+            return dense
+        it = iter(dense)
+        return [next(it) if ok else None for ok in arr.is_valid().to_pylist()]
+
+    @classmethod
+    def _tokens(cls, tbl: pa.Table) -> list[MemoryToken]:
+        """Arrow rows -> MemoryTokens. Rows were validated on write against this table's schema, so
+        `model_construct` skips re-validating ~1.8k floats per row."""
+        n = tbl.num_rows
+        if not n:
+            return []
+        cols = {c: tbl.column(c).to_pylist() for c in _SCALAR_COLUMNS}
+        names = set(tbl.column_names)
+        none = [None] * n
+        text_vecs = cls._vectors(tbl.column("text_vec")) if "text_vec" in names else none
+        image_vecs = cls._vectors(tbl.column("image_vec")) if "image_vec" in names else none
+        return [
+            MemoryToken.model_construct(
+                id=cols["id"][i],
+                device_id=cols["device_id"][i],
+                ts=cols["ts"][i],
+                caption=cols["caption"][i] or "",
+                ocr_text=cols["ocr_text"][i] or "",
+                entities=list(cols["entities"][i] or []),
+                pose=Pose(**cols["pose"][i]) if cols["pose"][i] else None,
+                text_vec=text_vecs[i],
+                image_vec=image_vecs[i],
+                thumb_path=cols["thumb_path"][i],
+                frame_hash=cols["frame_hash"][i],
+                episode_id=cols["episode_id"][i],
+                kind=cols["kind"][i] or "frame",
+                tier=cols["tier"][i] or "hot",
+                chunk_id=cols["chunk_id"][i],
+                chunk_offset=cols["chunk_offset"][i],
+            )
+            for i in range(n)
+        ]
 
     # ------------------------------------------------------------------ writes
 
@@ -313,17 +341,48 @@ class LanceDBStore(MemoryStore):
             q = q.where(where)
         return q.to_list()
 
+    def _scan_arrow(self, where: str | None, columns: Sequence[str], limit: int | None = None) -> pa.Table | None:
+        if self._table is None:
+            return None
+        q = self._table.search().select(list(columns)).limit(limit)
+        if where:
+            q = q.where(where)
+        return q.to_arrow()
+
+    def _scan_tokens(self, where: str | None, limit: int | None = None) -> list[MemoryToken]:
+        tbl = self._scan_arrow(where, _INDEXED_COLUMNS, limit)
+        return [] if tbl is None else self._tokens(tbl)
+
+    def _range_sync(
+        self, where: str | None, limit: int | None, columns: Sequence[str] = _INDEXED_COLUMNS
+    ) -> list[MemoryToken]:
+        tbl = self._scan_arrow(where, columns)
+        if tbl is None or (limit is not None and limit <= 0):
+            return []
+        order = pc.sort_indices(tbl, sort_keys=_TS_ORDER)
+        return self._tokens(tbl.take(order if limit is None else order[:limit]))
+
+    def _window_ids_sync(self, where: str | None, token_id: str, before: int, after: int) -> list[str] | None:
+        tbl = self._scan_arrow(where, ["id", "ts"])
+        if tbl is None:
+            return None
+        ids = tbl.take(pc.sort_indices(tbl, sort_keys=_TS_ORDER)).column("id").to_pylist()
+        try:
+            idx = ids.index(token_id)
+        except ValueError:
+            return None
+        return ids[max(0, idx - before) : idx + after + 1]
+
     async def get(self, token_id: str) -> MemoryToken | None:
-        rows = await asyncio.to_thread(self._scan, f"id = {_sql_str(token_id)}", _INDEXED_COLUMNS, 1)
-        return self._token(rows[0]) if rows else None
+        toks = await asyncio.to_thread(self._scan_tokens, f"id = {_sql_str(token_id)}", 1)
+        return toks[0] if toks else None
 
     async def get_many(self, ids: Sequence[str]) -> list[MemoryToken]:
         ids = list(dict.fromkeys(ids))
         if not ids:
             return []
         where = f"id IN ({', '.join(_sql_str(i) for i in ids)})"
-        rows = await asyncio.to_thread(self._scan, where, _INDEXED_COLUMNS, None)
-        by_id = {r["id"]: self._token(r) for r in rows}
+        by_id = {t.id: t for t in await asyncio.to_thread(self._scan_tokens, where)}
         return [by_id[i] for i in ids if i in by_id]
 
     async def count(self, device_id: str | None = None) -> int:
@@ -347,9 +406,7 @@ class LanceDBStore(MemoryStore):
         kinds: Sequence[str] | None = None,
     ) -> list[MemoryToken]:
         where = self._where(time_from=time_from, time_to=time_to, device_id=device_id, kinds=kinds)
-        rows = await asyncio.to_thread(self._scan, where, ["id", "ts"], None)
-        rows.sort(key=lambda r: (r["ts"], r["id"]))
-        return await self.get_many([r["id"] for r in rows[:limit]])
+        return await asyncio.to_thread(self._range_sync, where, limit)
 
     async def list_tokens(
         self,
@@ -369,10 +426,7 @@ class LanceDBStore(MemoryStore):
             extra.append(f"chunk_id = {_sql_str(chunk_id)}")
         where = self._where(time_from=time_from, time_to=time_to, device_id=device_id, kinds=kinds, extra=extra)
         cols = _INDEXED_COLUMNS if vectors else _SCALAR_COLUMNS
-        rows = await asyncio.to_thread(self._scan, where, cols, None)
-        toks = [self._token(r) for r in rows]
-        toks.sort(key=lambda t: (t.ts, t.id))
-        return toks
+        return await asyncio.to_thread(self._range_sync, where, None, cols)
 
     async def tier_counts(self, kinds: Sequence[str] | None = ("frame",)) -> dict[str, int]:
         if self._table is None:
@@ -389,13 +443,10 @@ class LanceDBStore(MemoryStore):
             return []
         kinds = (anchor.kind,)
         where = self._where(device_id=anchor.device_id, kinds=kinds)
-        rows = await asyncio.to_thread(self._scan, where, ["id", "ts"], None)
-        rows.sort(key=lambda r: (r["ts"], r["id"]))
-        idx = next((i for i, r in enumerate(rows) if r["id"] == token_id), None)
-        if idx is None:
+        window = await asyncio.to_thread(self._window_ids_sync, where, token_id, before, after)
+        if window is None:
             return [anchor]
-        window = rows[max(0, idx - before) : idx + after + 1]
-        return await self.get_many([r["id"] for r in window])
+        return await self.get_many(window)
 
     def _vector_search_sync(self, vec: list[float], k: int, field: str, where: str | None) -> list[Scored]:
         if self._table is None or k <= 0:
@@ -408,7 +459,8 @@ class LanceDBStore(MemoryStore):
         )
         if where:
             q = q.where(where, prefilter=True)
-        out = [(self._token(r), 1.0 - float(r["_distance"])) for r in q.to_list()]
+        tbl = q.to_arrow()
+        out = [(t, 1.0 - float(d)) for t, d in zip(self._tokens(tbl), tbl.column("_distance").to_pylist())]
         return [(t, s) for t, s in out if s > MIN_SCORE]
 
     async def vector_search(
@@ -444,7 +496,8 @@ class LanceDBStore(MemoryStore):
         )
         if where:
             q = q.where(where, prefilter=True)
-        return [(self._token(r), float(r["_score"])) for r in q.to_list()]
+        tbl = q.to_arrow()
+        return [(t, float(sc)) for t, sc in zip(self._tokens(tbl), tbl.column("_score").to_pylist())]
 
     async def keyword_search(
         self,
