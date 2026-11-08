@@ -35,8 +35,9 @@ from megamind.agent.claude_agent import NOT_FOUND_ANSWER, ClaudeAgent, TurnStats
 from megamind.agent.reader import Reader, ReaderOutput, build_reader  # noqa: E402
 from megamind.agent.tools import RecallMemory  # noqa: E402
 from megamind.config import Settings  # noqa: E402
-from megamind.ingest.enrich import MockTextEmbedder, build_image_embedder, build_text_embedder  # noqa: E402
+from megamind.ingest.enrich import MockTextEmbedder, build_text_embedder  # noqa: E402
 from megamind.models import MemoryToken  # noqa: E402
+from megamind.store.embeddings import build_image_embedder  # noqa: E402
 from megamind.store.memory_store import InMemoryStore  # noqa: E402
 
 DEFAULT_DATASET = Path(__file__).resolve().parent / "data" / "agent_day.json"
@@ -70,6 +71,9 @@ def _local(d: date, hhmm: str, tz: ZoneInfo) -> datetime:
     return datetime.combine(d, time(int(h), int(m)), tzinfo=tz)
 
 
+PHOTOS: dict[str, str] = {}  # token id -> real photo path (tools/make_coco_day.py)
+
+
 def load_day(path: Path | str = DEFAULT_DATASET, thumb_dir: Path | None = None) -> Day:
     raw = json.loads(Path(path).read_text())
     tz = ZoneInfo(raw.get("tz", "America/Los_Angeles"))
@@ -92,6 +96,9 @@ def load_day(path: Path | str = DEFAULT_DATASET, thumb_dir: Path | None = None) 
                 episode_id=e.get("episode"),
             )
         )
+    for t, e in zip(tokens, raw["stream"], strict=True):
+        if "image" in e:
+            PHOTOS[t.id] = e["image"]
     cases = [Case(q=q["q"], gold=list(q.get("gold", [])), expect=list(q.get("expect", []))) for q in raw["questions"]]
     now = _local(d + timedelta(days=raw.get("now_day", 0)), raw["now"], tz).timestamp()
     return Day(tokens=tokens, cases=cases, now=now, tz=tz, device_id=device_id)
@@ -106,6 +113,11 @@ def render_thumbs(day: Day, out_dir: Path, width: int = 512) -> None:
     scale = width / 512
     font = ImageFont.load_default(size=round(11 * scale)) if scale != 1 else None
     for t in day.tokens:
+        if t.id in PHOTOS:
+            ph = Image.open(PHOTOS[t.id]).convert("RGB")
+            ph.thumbnail((width, width))
+            ph.save(t.thumb_path, "JPEG", quality=85)
+            continue
         img = Image.new("RGB", (width, round(384 * scale)), (235, 235, 225))
         dr = ImageDraw.Draw(img)
         y = 16 * scale
@@ -116,7 +128,7 @@ def render_thumbs(day: Day, out_dir: Path, width: int = 512) -> None:
         img.save(t.thumb_path, "JPEG", quality=80)
 
 
-async def seed_store(tokens: list[MemoryToken], text_embedder=None) -> InMemoryStore:
+async def seed_store(tokens: list[MemoryToken], text_embedder=None, image_embedder=None) -> InMemoryStore:
     emb = text_embedder or MockTextEmbedder()
     store = InMemoryStore()
     texts = [f"{t.caption} {t.ocr_text}" for t in tokens]
@@ -125,7 +137,10 @@ async def seed_store(tokens: list[MemoryToken], text_embedder=None) -> InMemoryS
     else:
         vecs = [await emb.embed(x) for x in texts]
     for t, v in zip(tokens, vecs, strict=True):
-        await store.add(t.model_copy(update={"text_vec": v}))
+        upd: dict = {"text_vec": v}
+        if image_embedder is not None and Path(t.thumb_path).is_file():
+            upd["image_vec"] = await image_embedder.embed_image(Path(t.thumb_path).read_bytes())
+        await store.add(t.model_copy(update=upd))
     return store
 
 
@@ -349,9 +364,9 @@ async def run(
     agent: ClaudeAgent | None = None,
 ) -> list[Turn]:
     text_emb = build_text_embedder(settings)
-    store = await seed_store(day.tokens, text_emb)
-    reader = RecordingReader(build_reader(settings))
     image_emb = build_image_embedder(settings)
+    store = await seed_store(day.tokens, text_emb, image_emb)
+    reader = RecordingReader(build_reader(settings))
     retriever = await eval_retriever(settings, store, text_emb, image_emb, day)
     if agent is None:
         agent = ClaudeAgent(settings, RecallMemory(store, text_emb, image_emb, reader, retriever=retriever))

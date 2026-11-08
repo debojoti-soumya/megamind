@@ -22,8 +22,15 @@ Response bodies are unchanged: `thumb_url`/`replay_url`/`audio_url` stay token-f
 { "status": "ok", "store_count": 1234,
   "models": { "claude": "claude-sonnet-5-5", "reader": "google/gemma-4-31B-it",
               "embed": "mock (openai configured, no key)", "enrich": "vlm:google/gemma-4-31B-it",
-              "stt": "mock", "tts": "mock", "store": "lancedb" } }
+              "stt": "mock", "tts": "mock", "store": "lancedb" },
+  "warmup": "done" }
 ```
+`warmup` (additive; older servers omit it): the startup warmup's state, `"off"` (`WARMUP=false`), `"running"`, `"done"`
+or `"done (failed: <steps>)"`. At startup the server runs one background pass over the question path (free Claude
+`count_tokens`, one tiny embedding, a LanceDB retrieval, SigLIP, reader image encoding, the STT/TTS clients), so the
+first question after a cold start doesn't pay first-use costs. It never delays startup or any request and a failed
+step is only logged; `"running"` means the first question may still be a little slower. `/health` itself is cheap
+(a row count, no provider calls), so clients can poll it every few seconds to keep a container warm.
 `models` names what is actually serving each role. When the configured provider has no key, or isn't wired up yet,
 the value is `mock (<provider> configured, no key | not installed | not implemented)`. Claude without a key reports
 `fallback (<model> configured, no key)`, meaning the no-LLM caption path. `enrich` is the keyframe captioner
@@ -205,6 +212,16 @@ data: {"transcript": "where did I leave my keys?", "answer": "On the kitchen cou
 Clients can swap it in for `POST /chat` and fall back to `POST /chat` on 404/405 (older servers). The model
 requests are identical to `POST /chat` apart from streaming, so answers are the same. With `RECALL_FIRST` a
 standalone question's `retrieval` arrives before Claude is called at all.
+
+Headset client (Unity `ChatClient`, `headset/`): asks every question (typed JSON and voice multipart) on
+`POST /chat/stream` and falls back to `POST /chat` with the same body on 404/405, or when the stream fails before its
+first event. It reads two more events when the server sends them, and ignores unknown events:
+`transcript` `{ "text": "..." }` (what STT heard, before retrieval; voice commands are matched on it and the turn is
+cancelled by closing the stream) and `audio` `{ "seq": 0, "url": "/v1/audio/....wav" | "b64": "...", "text": "...",
+"format": "wav" | "mp3" | "pcm16", "sample_rate": 24000 }` (one spoken sentence; clips play in `seq` order as they
+arrive, `b64` = inline WAV or raw little-endian mono PCM16 at `sample_rate`). A `reset` drops clips not yet played.
+`final.audio_url` is played only when the turn sent no `audio` event (or none of its clips could be played).
+Without a `transcript` event a voice turn shows its text only at `final` (commands still work, as on `POST /chat`).
 
 ## `GET /devices`
 Every device that has stored memory tokens, most recently active first (by `last_ts`). Use it to pick the
