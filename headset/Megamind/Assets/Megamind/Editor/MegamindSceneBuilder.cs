@@ -94,9 +94,13 @@ namespace Megamind.EditorTools
             // Passthrough Camera API
             var pcaGo = new GameObject("PassthroughCameraAccess");
             var pca = pcaGo.AddComponent<PassthroughCameraAccess>();
+            // MRUK's MaxFramerate setter refuses (LogError, value kept) while the component is enabled. In edit mode
+            // toggling `enabled` only flips the serialized flag (no [ExecuteAlways], so no OnEnable/OnDisable).
+            pca.enabled = false;
             pca.CameraPosition = PassthroughCameraAccess.CameraPositionType.Left;
             pca.RequestedResolution = capture.cameraResolution;
             pca.MaxFramerate = capture.cameraMaxFramerate;
+            pca.enabled = true;
 
             // Megamind components
             var mm = new GameObject("Megamind");
