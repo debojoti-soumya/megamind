@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from dataclasses import dataclass
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -12,6 +13,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
 from ulid import ULID
 
+from megamind.agent import turn_log
 from megamind.agent.speech import StreamingSpeaker
 from megamind.devices import ChatDevice, resolve_chat_device
 from megamind.models import (
@@ -87,10 +89,13 @@ async def _finish(app, resp: ChatResponse, dev: ChatDevice, speaker: StreamingSp
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: Request):
     app = request.app.state
+    started = time.time()
     inp = await _chat_input(request)
     dev = await resolve_chat_device(app, inp.device_id)
     resp = await app.agent.chat(inp.session_id, inp.text, dev.device_id)
-    return await _finish(app, resp, dev)
+    resp = await _finish(app, resp, dev)
+    turn_log.record(app, started, time.time(), inp, resp.answer)
+    return resp
 
 
 def _sse(event: str, data: dict | BaseModel) -> bytes:
@@ -107,6 +112,7 @@ async def chat_stream(request: Request):
     status codes as `POST /chat`."""
     app = request.app.state
     settings = app.settings
+    started = time.time()
     inp = await _chat_input(request)
     dev = await resolve_chat_device(app, inp.device_id)
     device_id = dev.device_id
@@ -154,7 +160,9 @@ async def chat_stream(request: Request):
     async def run() -> None:
         try:
             resp, _ = await app.agent.chat_with_stats(inp.session_id, inp.text, device_id, on_event=on_event)
-            await queue.put(("final", await _finish(app, resp, dev, speaker)))
+            final = await _finish(app, resp, dev, speaker)
+            turn_log.record(app, started, time.time(), inp, final.answer)
+            await queue.put(("final", final))
         except Exception as e:  # noqa: BLE001 - the stream is already 200: report the failure in-band
             log.exception("chat stream failed")
             if speaker is not None:

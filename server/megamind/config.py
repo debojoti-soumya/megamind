@@ -136,6 +136,10 @@ class Settings(BaseSettings):
     search_calibrate_image: bool = True  # scale image hits by SigLIP sigmoid(scale*cos+bias) in RRF (no-op for CLIP)
     thumb_dir: Path = Path("./data/thumbs")
     audio_dir: Path = Path("./data/audio")
+    # every chat turn's question/answer + wall-clock times (GET /v1/turns, demo-video captions); default
+    # <audio_dir>/../turns.jsonl; TURN_LOG=false keeps nothing
+    turn_log: bool = True
+    turn_log_path: Path | None = None
     # tiered media (store/media.py): hot JPEG -> cold AV1 chunk per episode -> text only
     chunk_dir: Path | None = None  # AV1 chunks; default <thumb_dir>/../chunks
     hot_retention_h: float = 72.0  # frames older than this are re-encoded into AV1 chunks

@@ -20,6 +20,8 @@ from megamind.agent.router import router as agent_router
 from megamind.agent.stt import build_stt
 from megamind.agent.tools import RecallMemory
 from megamind.agent.tts import build_tts
+from megamind.agent.turn_log import TurnLog
+from megamind.agent.turn_log import router as turns_router
 from megamind.agent.voice import router as voice_router
 from megamind.auth import TokenAuth
 from megamind.config import Settings, get_settings
@@ -144,6 +146,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.agent = ClaudeAgent(settings, st.recall, collage=collage_tool(st))
         st.stt = build_stt(settings)
         st.tts = build_tts(settings)
+        st.turn_log = (
+            TurnLog(settings.turn_log_path or settings.audio_dir.parent / "turns.jsonl") if settings.turn_log else None
+        )
         st.locator = build_locator(st, settings)  # "where is X": X's box in a cited frame (ChatResponse.markers)
         st.audio_stt = build_audio_stt(settings, st.stt)
         st.consolidator = Consolidator(
@@ -195,6 +200,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(agent_router, prefix="/v1")
     app.include_router(voice_router, prefix="/v1")  # POST /v1/stt
     app.include_router(devices_router, prefix="/v1")  # GET /v1/devices
+    app.include_router(turns_router, prefix="/v1")  # GET /v1/turns
     app.include_router(ui_router)
     # the browser panel may be served from a different origin (e.g. file:// or another laptop)
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
