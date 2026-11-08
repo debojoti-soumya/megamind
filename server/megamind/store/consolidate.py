@@ -20,6 +20,7 @@ import logging
 import shutil
 import time
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -199,8 +200,12 @@ class Consolidator:
         gap_s: float = 120.0,
         min_tokens: int = 3,
         lookback_s: float = LOOKBACK_S,
+        image_loader: Callable[[MemoryToken], Awaitable[bytes | None]] | None = None,
+        thumb_dir: Path | None = None,
     ) -> None:
+        self.thumb_dir = Path(thumb_dir) if thumb_dir else None  # where the summary's JPEG copy goes
         self.store = store
+        self.image_loader = image_loader  # MediaStore.read: the representative may already be a cold frame
         self.summarizer = summarizer
         self.text_embedder = text_embedder
         self.gap_s = gap_s
@@ -234,10 +239,15 @@ class Consolidator:
         entities = _top_entities(frames)
         rep = max(frames, key=lambda t: (len(t.ocr_text), len(t.caption)))
         tid = summary_id(episode_id)
-        thumb = Path(rep.thumb_path)
-        thumb_path = thumb.with_name(f"{tid}.jpg")
-        if thumb.is_file():
-            shutil.copyfile(thumb, thumb_path)
+        src = Path(rep.thumb_path) if rep.thumb_path else None
+        thumb_dir = self.thumb_dir or (src.parent if src is not None else None)
+        thumb_path = thumb_dir / f"{tid}.jpg" if thumb_dir is not None else None
+        if thumb_path is not None:
+            if src is not None and src.is_file():
+                shutil.copyfile(src, thumb_path)
+            elif self.image_loader is not None and (data := await self.image_loader(rep)):
+                thumb_path.parent.mkdir(parents=True, exist_ok=True)
+                thumb_path.write_bytes(data)
         text_vec = None
         if self.text_embedder is not None:
             text_vec = await self.text_embedder.embed(f"{caption}\n{ocr}\n{' '.join(entities)}")
@@ -251,7 +261,7 @@ class Consolidator:
             pose=rep.pose,
             text_vec=text_vec,
             image_vec=_mean_vec([t.image_vec for t in frames if t.image_vec]),
-            thumb_path=str(thumb_path),
+            thumb_path=str(thumb_path) if thumb_path is not None else "",
             frame_hash=rep.frame_hash,
             episode_id=episode_id,
             kind="episode",
@@ -291,12 +301,16 @@ async def _main() -> None:
     args = ap.parse_args()
     settings = get_settings()
     store = build_store(settings)
+    from megamind.store.media import MediaStore  # representatives may already be cold (AV1) frames
+
     job = Consolidator(
         store,
         build_summarizer(settings),
         build_text_embedder(settings),
         gap_s=settings.episode_gap_s,
         min_tokens=settings.consolidate_min_tokens,
+        image_loader=MediaStore(settings, store).read,
+        thumb_dir=settings.thumb_dir,
     )
     if args.loop:
         await job.run_forever(settings.consolidate_interval_s)

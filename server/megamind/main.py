@@ -34,6 +34,7 @@ from megamind.retrieval import build_retriever
 from megamind.store import build_store
 from megamind.store.consolidate import Consolidator, build_summarizer
 from megamind.store.embeddings import build_image_embedder, build_text_embedder
+from megamind.store.media import MediaStore, aging_loop
 from megamind.ui.router import router as ui_router
 from megamind.xr import install as install_xr
 
@@ -113,7 +114,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             st.image_embedder,
             face_blur=build_face_blur(settings),
         )
-        st.reader = build_reader(settings)
+        st.media = MediaStore(settings, st.store, lock=st.worker.add_lock)  # hot JPEG -> cold AV1 -> text
+        st.worker.media = st.media
+        st.reader = build_reader(settings, image_loader=st.media.read)
         st.retriever, st.ucc_indexer = build_retriever(settings, st.store, st.text_embedder, st.image_embedder)
         st.retriever = wrap_live_retriever(st, settings, st.retriever)  # NOW items for "right now" questions
         st.recall = RecallMemory(
@@ -129,6 +132,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             st.text_embedder,
             gap_s=settings.episode_gap_s,
             min_tokens=settings.consolidate_min_tokens,
+            image_loader=st.media.read,
+            thumb_dir=settings.thumb_dir,
         )
         await st.worker.start()
         if st.ucc_indexer is not None:
@@ -136,7 +141,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.consolidate_task = None
         if settings.consolidate_enabled:
             st.consolidate_task = asyncio.create_task(st.consolidator.run_forever(settings.consolidate_interval_s))
+        st.aging_task = None
+        if settings.media_age_interval_s > 0:
+            st.aging_task = asyncio.create_task(aging_loop(st, settings.media_age_interval_s))
         yield
+        if st.aging_task is not None:
+            st.aging_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await st.aging_task
         if st.ucc_indexer is not None:
             await st.ucc_indexer.stop()
         if st.consolidate_task is not None:

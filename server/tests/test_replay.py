@@ -228,7 +228,13 @@ async def test_chat_citations_get_replay_url(client):
     app.state.replay.purge()
     r = await c.post("/v1/chat", json={"session_id": "s2", "text": "mock caption"})
     cited = r.json()["cited"]
-    assert cited and cited[0]["replay_url"] is None
+    # ring buffer empty: the kept keyframe still backs a (keyframe-rate) replay
+    assert cited and cited[0]["replay_url"] == replay_url("dev1", 2995.0, 3005.0)
+    # once the frame's pixels aged out (tier "text") there is nothing left to replay
+    await c.post("/v1/admin/age", params={"hot_older_than_s": 0, "cold_older_than_s": 0})
+    r = await c.post("/v1/chat", json={"session_id": "s3", "text": "mock caption"})
+    cited = r.json()["cited"]
+    assert cited and cited[0]["replay_url"] is None and cited[0]["thumb_url"] == ""
 
 
 async def test_replay_disabled(client):
@@ -307,4 +313,26 @@ async def test_replay_endpoint_renders_caches_and_ranges(client):
     # purge clears frames and the clip cache
     await c.delete("/v1/memories")
     assert list(app.state.replay_cache.dir.glob("*.mp4")) == []
+    assert (await c.get("/v1/replay.mp4", params=params)).status_code == 404
+
+
+@needs_ffmpeg
+async def test_replay_falls_back_to_kept_frames_after_the_buffer_expires(client):
+    c, app = client
+    for i in range(3):
+        assert (await _post_frame(c, _jpeg(20 + i), 1000.0 + 5 * i)).json()["accepted"]
+    await app.state.worker.queue.join()
+    params = {"device_id": "dev1", "from": "995", "to": "1015"}
+    r = await c.get("/v1/replay.mp4", params=params)
+    assert r.status_code == 200 and r.headers["x-replay-source"] == "buffer"
+
+    app.state.replay.purge()  # older than REPLAY_WINDOW_S: the ring buffer no longer has these frames
+    for p in (params, {"from": "995", "to": "1015"}):  # explicit device, then resolved from kept frames
+        r = await c.get("/v1/replay.mp4", params=p)
+        assert r.status_code == 200, r.text
+        assert r.headers["x-replay-source"] == "keyframes" and r.headers["x-replay-device"] == "dev1"
+        assert r.headers["x-replay-frames"] == "3" and r.headers["x-replay-start"] == "1000.000"
+        assert r.content[4:8] == b"ftyp"
+
+    await c.post("/v1/admin/age", params={"cold_older_than_s": 0})  # pixels aged out: nothing to replay
     assert (await c.get("/v1/replay.mp4", params=params)).status_code == 404
