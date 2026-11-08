@@ -59,6 +59,12 @@ Query: `q` (str), `from`/`to` (ISO-8601, optional; unparseable → 400), `k` (in
 ```
 `kind` is the token kind (see *Memory token*); `thumb_url` is `""` for tokens without an image (`kind="transcript"`).
 
+## `GET /memories/recent`  (newest memories, no query)
+Query: `k` (int, 1–200, default 24), `device_id` (optional), `kind` (repeatable, default `frame`; e.g.
+`&kind=frame&kind=transcript`). Same body as `GET /memories` (`SearchResponse`), newest first, every `score` is `0.0`
+(not ranked). Unenriched tokens may appear with an empty `caption`. Used by the Memory Theater (`GET /xr`) for
+its cards. `GET /memories` stays a ranked search that drops hits unrelated to `q`, so it can't list "recent".
+
 ## `GET /thumbs/{id}.jpg`
 Keyframe thumbnail (JPEG).
 
@@ -135,3 +141,8 @@ are unchanged.
 recall_memory(query, time_from?, time_to?, k=12, mode="hybrid")
   -> { evidence, confidence: high|medium|low|not_found, cited[], all_retrieved[] }
 ```
+
+## Memory Theater: `GET /xr` (outside `/v1`; not part of the headset contract)
+A static WebXR page served by the server (`server/megamind/xr/static/`, plain ES modules, three.js from a pinned
+CDN). It only calls the public endpoints above (`/memories/recent`, `/chat`, `/thumbs/*`, `/replay.mp4`).
+Assets are under `/xr/static/`. `XR_ENABLED=false` removes both routes. Quest usage: [quest3-guide.md](quest3-guide.md#8-memory-theater-xr-in-the-quest-browser).

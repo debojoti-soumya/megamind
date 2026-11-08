@@ -20,6 +20,7 @@ from megamind.ingest.audio import router as audio_router
 from megamind.ingest.enrich import build_enricher
 from megamind.ingest.filter import KeyframeFilter
 from megamind.ingest.privacy import build_face_blur
+from megamind.ingest.recent import router as recent_router
 from megamind.ingest.router import router as ingest_router
 from megamind.ingest.transcribe import build_audio_stt
 from megamind.ingest.worker import EnrichmentWorker
@@ -32,6 +33,7 @@ from megamind.store import build_store
 from megamind.store.consolidate import Consolidator, build_summarizer
 from megamind.store.embeddings import build_image_embedder, build_text_embedder
 from megamind.ui.router import router as ui_router
+from megamind.xr import install as install_xr
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -123,6 +125,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await st.worker.stop()
 
     app = FastAPI(title="Megamind", version="0.1.0", lifespan=lifespan)
+    app.include_router(recent_router, prefix="/v1")  # GET /v1/memories/recent
     app.include_router(ingest_router, prefix="/v1")
     app.include_router(audio_router, prefix="/v1")
     app.include_router(agent_router, prefix="/v1")
@@ -131,6 +134,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     install_replay(app, settings)  # moment replay: frame tap + GET /v1/replay.mp4
     install_live(app, settings)  # live short-term memory: GET /v1/live/{id}.jpg (+ retriever wrap in lifespan)
+    install_xr(app)  # Memory Theater: static WebXR page at GET /xr
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health():

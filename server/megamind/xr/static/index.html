@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Memory Theater</title>
+    <link rel="stylesheet" href="/xr/static/xr.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
+        },
+        "integrity": {
+          "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js": "sha384-GY5FqjttLCFRt/McQbyaVdCk2O1IQtOeX8Py6NfD89BIAsIyJFRl4UgSXrk2vXAk"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div class="xr-overlay">
+      <div class="xr-bar">
+        <div class="xr-title">
+          Memory Theater <span class="xr-sub" id="xr-sub">loading&hellip;</span>
+        </div>
+        <form class="xr-ask" id="xr-ask" autocomplete="off">
+          <input id="xr-q" placeholder="Ask about your day&hellip;" aria-label="Ask about your day" />
+        </form>
+        <button type="button" class="xr-enter" id="xr-enter" hidden>Enter headset</button>
+        <span class="xr-hint" id="xr-hint" title="WebXR needs a secure context: localhost or HTTPS">
+          On Quest 3: <code>adb reverse tcp:8000 tcp:8000</code>, then open <code>localhost:8000/xr</code>
+        </span>
+        <span class="xr-status" id="xr-status"></span>
+      </div>
+      <div class="xr-error" id="xr-error" hidden></div>
+      <div class="xr-host" id="xr-host"></div>
+    </div>
+    <noscript>The Memory Theater needs JavaScript and WebGL.</noscript>
+    <script>
+      // Surface module-load failures (e.g. CDN unreachable) instead of a silent black page.
+      window.addEventListener("error", (e) => {
+        const el = document.getElementById("xr-error");
+        if (el) {
+          el.textContent = "Failed to start: " + (e.message || "script error") + " (is cdn.jsdelivr.net reachable?)";
+          el.hidden = false;
+        }
+      });
+    </script>
+    <script type="module" src="/xr/static/app.js"></script>
+  </body>
+</html>
