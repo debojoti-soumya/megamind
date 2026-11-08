@@ -198,6 +198,8 @@ async def test_claude_calls_make_collage(recall):
     assert "make_collage" in first["system"]
     assert resp.collage is not None and resp.collage.id == "a" * 20
     assert [c.id for c in resp.cited] == ["t_mug"]
+    payload = json.loads(script.requests[1]["messages"][-1]["content"][0]["content"])
+    assert payload["confidence"] == "high" and "Photo montage shown" in payload["evidence"]
 
 
 async def test_cached_system_prompt_keeps_the_collage_instructions(recall):
@@ -207,8 +209,6 @@ async def test_cached_system_prompt_keeps_the_collage_instructions(recall):
     await agent.chat_with_stats("s", "show me pictures of my coffee mug", "dev1")
     system = script.requests[0]["system"]
     assert isinstance(system, list) and "make_collage" in system[0]["text"]
-    payload = json.loads(script.requests[1]["messages"][-1]["content"][0]["content"])
-    assert payload["confidence"] == "high" and "Photo montage shown" in payload["evidence"]
 
 
 async def test_claude_collage_not_found_has_no_collage(recall):
