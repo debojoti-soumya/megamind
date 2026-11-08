@@ -31,6 +31,25 @@ def _iso_to_ts(s: str | None, param: str = "from/to") -> float | None:
         raise HTTPException(400, f"{param}: expected ISO-8601, got {s!r}") from None
 
 
+async def _recent_kept(app, device_id: str, since_ts: float) -> list[tuple[float, str]]:
+    """(ts, dhash) of frames kept for `device_id` since `since_ts`, for the dedupe filter.
+
+    `app.pending_hashes` already records every frame this process accepted (pruned to the filter's
+    history window), so the store is read only once per device to pick up frames kept before a
+    restart; after that the lookup is in-memory instead of a store scan per uploaded frame.
+    """
+    seeded: set[str] | None = getattr(app, "hashes_seeded", None)
+    if seeded is None:
+        seeded = app.hashes_seeded = set()
+    if device_id not in seeded:
+        stored = await app.store.recent_hashes(device_id, since_ts)
+        pending = app.pending_hashes.setdefault(device_id, [])
+        known = set(pending)
+        pending[:0] = sorted(p for p in stored if p not in known)
+        seeded.add(device_id)
+    return [p for p in app.pending_hashes.get(device_id, ()) if p[0] >= since_ts]
+
+
 @router.post("/frames", response_model=FrameAccepted, status_code=202)
 async def post_frame(request: Request, image: UploadFile = File(...), meta: str = Form(...)):
     app = request.app.state
@@ -53,8 +72,7 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
 
     frame_id = str(ULID())
     kf = app.keyframe_filter
-    recent = await app.store.recent_hashes(fm.device_id, fm.ts - kf.history_window_s)
-    recent += app.pending_hashes.get(fm.device_id, [])
+    recent = await _recent_kept(app, fm.device_id, fm.ts - kf.history_window_s)
     decision = kf.decide(img, fm, recent)
     if sum(kf.counts.values()) % 60 == 0:
         log.info("filter counts %s", dict(kf.counts))
