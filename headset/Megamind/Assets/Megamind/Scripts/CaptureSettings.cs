@@ -1,8 +1,7 @@
 // Stream 1: capture tuning that lives next to (not inside) the shared MegamindConfig, which stream 3 owns.
-// Server URL / device id still come from MegamindConfig (+ its PlayerPrefs overrides written by SettingsPanel);
-// this asset adds an adb-pushable file override so a tester can repoint the headset without rebuilding:
-//   adb shell 'echo "{\"serverBaseUrl\":\"http://100.101.102.103:8000\"}" > /sdcard/Android/data/com.megamind.quest/files/megamind.json'
-// Priority for the URL: PlayerPrefs (Settings panel) > megamind.json > MegamindConfig asset.
+// Server URL / device id / API token / ambient audio can be overridden at runtime without rebuilding; see
+// RuntimeConfig.cs for the sources and precedence: launch-intent extras (adb shell am start --es ...) > saved PlayerPrefs
+// (earlier intent launch or settings panel) > megamind.json in persistentDataPath (if readable) > the assets.
 using System;
 using System.IO;
 using UnityEngine;
@@ -13,8 +12,6 @@ namespace Megamind
     public class CaptureSettings : ScriptableObject
     {
         public const string OverrideFileName = "megamind.json";
-        private const string UrlPrefKey = "megamind.serverBaseUrl"; // same key SettingsPanel/MegamindConfig use
-        private const string DevicePrefKey = "megamind.deviceId";
 
         [Tooltip("Keyframe sampling rate. The server filters further; 1 fps is the design target.")]
         public float captureFps = 1f;
@@ -54,8 +51,10 @@ namespace Megamind
         [Tooltip("POST /v1/audio transcribes synchronously, so allow longer than a frame upload.")]
         public int audioUploadTimeoutSeconds = 60;
 
-        /// <summary>Where the active server URL came from after Resolve(): "asset", "megamind.json" or "PlayerPrefs".</summary>
-        [NonSerialized] public string overrideSource = "asset";
+        /// <summary>Where the active server URL came from: "intent", "saved", "panel", "megamind.json" or "asset" (RuntimeConfig).</summary>
+        public string overrideSource => UrlSource();
+        /// <summary>Where ambientAudio came from after Resolve() (same labels as overrideSource).</summary>
+        [NonSerialized] public string ambientAudioSource = RuntimeConfig.SourceAsset;
         [NonSerialized] public string fileServerBaseUrl;
         [NonSerialized] public string fileDeviceId;
         [NonSerialized] public string fileApiToken;
@@ -69,7 +68,12 @@ namespace Megamind
                 if (!File.Exists(path)) return null;
                 return JsonUtility.FromJson<FileOverrides>(File.ReadAllText(path));
             }
-            catch (Exception) { return null; }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[Megamind] could not read {OverrideFileName}: {e.Message.TrimEnd('.')}. On Android 11+ the app cannot read " +
+                                 "a file adb wrote there; pass the values as launch-intent extras instead (headset/README.md).");
+                return null;
+            }
         }
 
         [Serializable]
@@ -101,47 +105,60 @@ namespace Megamind
             fileServerBaseUrl = null;
             fileDeviceId = null;
             fileApiToken = null;
-            overrideSource = PlayerPrefs.HasKey(UrlPrefKey) ? "PlayerPrefs" : "asset";
-            try
+            var o = ReadOverrideFile();
+            if (o != null)
             {
-                var path = OverrideFilePath;
-                if (!File.Exists(path)) return;
-                var o = JsonUtility.FromJson<FileOverrides>(File.ReadAllText(path));
-                if (o == null) return;
                 if (!string.IsNullOrEmpty(o.serverBaseUrl)) fileServerBaseUrl = o.serverBaseUrl.Trim();
                 if (!string.IsNullOrEmpty(o.deviceId)) fileDeviceId = o.deviceId.Trim();
                 if (!string.IsNullOrEmpty(o.apiToken)) fileApiToken = o.apiToken.Trim();
                 if (o.captureFps > 0f) captureFps = o.captureFps;
-                var aa = (o.ambientAudio ?? "").Trim().ToLowerInvariant();
-                if (aa == "on" || aa == "true") ambientAudio = true;
-                else if (aa == "off" || aa == "false") ambientAudio = false;
-                if (fileServerBaseUrl != null && !PlayerPrefs.HasKey(UrlPrefKey)) overrideSource = OverrideFileName;
             }
-            catch (Exception e)
+            bool? ambient = null;
+            if (RuntimeConfig.TryGetSaved(RuntimeConfig.AmbientAudioKey, out var saved, out var source)) ambient = RuntimeConfig.ParseOnOff(saved);
+            if (ambient == null && o != null && (ambient = RuntimeConfig.ParseOnOff(o.ambientAudio)) != null) source = OverrideFileName;
+            if (ambient != null)
             {
-                Debug.LogWarning($"[Megamind] could not read {OverrideFileName}: {e.Message}");
+                ambientAudio = ambient.Value;
+                ambientAudioSource = source;
             }
         }
 
-        /// <summary>Server base URL honouring PlayerPrefs > megamind.json > MegamindConfig asset.</summary>
-        public string ServerBaseUrl(MegamindConfig config)
+        /// <summary>Server base URL: intent extra > saved PlayerPrefs > megamind.json > MegamindConfig asset.</summary>
+        public string ServerBaseUrl(MegamindConfig config) =>
+            RuntimeConfig.Choose(RuntimeConfig.ServerBaseUrlKey, fileServerBaseUrl, config != null ? (config.serverBaseUrl ?? "").Trim() : "", out _);
+
+        public string UrlSource()
         {
-            if (PlayerPrefs.HasKey(UrlPrefKey)) return PlayerPrefs.GetString(UrlPrefKey).Trim();
-            if (!string.IsNullOrEmpty(fileServerBaseUrl)) return fileServerBaseUrl;
-            return config != null ? (config.serverBaseUrl ?? "").Trim() : "";
+            RuntimeConfig.Choose(RuntimeConfig.ServerBaseUrlKey, fileServerBaseUrl, "", out var source);
+            return source;
         }
 
-        public string DeviceId(MegamindConfig config)
+        public string DeviceId(MegamindConfig config) => DeviceId(config, out _);
+
+        public string DeviceId(MegamindConfig config, out string source)
         {
-            if (PlayerPrefs.HasKey(DevicePrefKey)) return PlayerPrefs.GetString(DevicePrefKey).Trim();
-            if (!string.IsNullOrEmpty(fileDeviceId)) return fileDeviceId;
-            if (config != null && !string.IsNullOrEmpty(config.deviceId)) return config.deviceId.Trim();
-            return "quest3-" + SystemInfo.deviceUniqueIdentifier.Substring(0, 6);
+            var asset = config != null && !string.IsNullOrEmpty(config.deviceId)
+                ? config.deviceId.Trim()
+                : "quest3-" + SystemInfo.deviceUniqueIdentifier.Substring(0, 6);
+            return RuntimeConfig.Choose(RuntimeConfig.DeviceIdKey, fileDeviceId, asset, out source);
         }
 
-        /// <summary>API token: megamind.json > MegamindConfig asset; empty = none.</summary>
-        public string ApiToken(MegamindConfig config) =>
-            !string.IsNullOrEmpty(fileApiToken) ? fileApiToken : (config != null ? config.apiToken ?? "" : "");
+        /// <summary>API token: intent extra > saved PlayerPrefs > megamind.json > MegamindConfig asset; empty = none.</summary>
+        public string ApiToken(MegamindConfig config) => ApiToken(config, out _);
+
+        public string ApiToken(MegamindConfig config, out string source) =>
+            RuntimeConfig.Choose(RuntimeConfig.ApiTokenKey, fileApiToken, config != null ? (config.apiToken ?? "").Trim() : "", out source);
+
+        /// <summary>One log line naming every active value and its source (token masked).</summary>
+        public string DescribeConfig(MegamindConfig config)
+        {
+            var url = RuntimeConfig.Choose(RuntimeConfig.ServerBaseUrlKey, fileServerBaseUrl, config != null ? (config.serverBaseUrl ?? "").Trim() : "", out var urlSrc);
+            var dev = DeviceId(config, out var devSrc);
+            var tok = ApiToken(config, out var tokSrc);
+            return $"serverBaseUrl={url} ({urlSrc}) deviceId={dev} ({devSrc}) " +
+                   $"apiToken={RuntimeConfig.Display(RuntimeConfig.ApiTokenKey, tok)} ({tokSrc}) " +
+                   $"ambientAudio={(ambientAudio ? "on" : "off")} ({ambientAudioSource})";
+        }
 
         public string Url(MegamindConfig config, string path) => ServerBaseUrl(config).TrimEnd('/') + path;
     }

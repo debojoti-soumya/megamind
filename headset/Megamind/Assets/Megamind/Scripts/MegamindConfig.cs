@@ -6,13 +6,10 @@ namespace Megamind
     [CreateAssetMenu(fileName = "MegamindConfig", menuName = "Megamind/Config")]
     public class MegamindConfig : ScriptableObject
     {
-        private const string UrlPrefKey = "megamind.serverBaseUrl";
-        private const string DevicePrefKey = "megamind.deviceId";
-
-        [Tooltip("e.g. http://100.101.102.103:8000 (Tailscale IP of the laptop running the server). Overridden at runtime by SettingsPanel via PlayerPrefs.")]
+        [Tooltip("e.g. http://100.101.102.103:8000 (Tailscale IP of the laptop running the server). Overridden at runtime by launch-intent extras, SettingsPanel (PlayerPrefs) or megamind.json (RuntimeConfig.cs).")]
         public string serverBaseUrl = "http://100.64.0.1:8000";
         public string deviceId = "quest3-1";
-        [Tooltip("API_TOKEN of a public server (e.g. the Modal deploy, docs/api.md#auth). Empty = no auth. megamind.json \"apiToken\" overrides it.")]
+        [Tooltip("API_TOKEN of a public server (e.g. the Modal deploy, docs/api.md#auth). Empty = no auth. Overridden by the apiToken intent extra / megamind.json (RuntimeConfig.cs).")]
         public string apiToken = "";
 
         [Header("Capture")]
@@ -44,35 +41,27 @@ namespace Megamind
             if (!string.IsNullOrWhiteSpace(token)) req.SetRequestHeader("Authorization", "Bearer " + token.Trim());
         }
 
-        /// <summary>Apply runtime overrides: PlayerPrefs (SettingsPanel) > megamind.json (adb push) > asset.
-        /// Same precedence as CaptureSettings, so chat and capture always talk to the same server. Call once at startup.</summary>
+        /// <summary>Apply runtime overrides: launch-intent extras > saved PlayerPrefs (earlier intent / SettingsPanel) >
+        /// megamind.json > asset (RuntimeConfig.cs). Same precedence as CaptureSettings, so chat and capture always talk to
+        /// the same server. Call once at startup.</summary>
         public void LoadOverrides()
         {
             var file = CaptureSettings.ReadOverrideFile();
-            if (file != null)
-            {
-                if (!string.IsNullOrEmpty(file.serverBaseUrl)) serverBaseUrl = file.serverBaseUrl.Trim();
-                if (!string.IsNullOrEmpty(file.deviceId)) deviceId = file.deviceId.Trim();
-                if (!string.IsNullOrEmpty(file.apiToken)) apiToken = file.apiToken.Trim();
-            }
-            if (PlayerPrefs.HasKey(UrlPrefKey)) serverBaseUrl = PlayerPrefs.GetString(UrlPrefKey);
-            if (PlayerPrefs.HasKey(DevicePrefKey)) deviceId = PlayerPrefs.GetString(DevicePrefKey);
+            serverBaseUrl = RuntimeConfig.Choose(RuntimeConfig.ServerBaseUrlKey, file?.serverBaseUrl?.Trim(), serverBaseUrl, out _);
+            deviceId = RuntimeConfig.Choose(RuntimeConfig.DeviceIdKey, file?.deviceId?.Trim(), deviceId, out _);
+            apiToken = RuntimeConfig.Choose(RuntimeConfig.ApiTokenKey, file?.apiToken?.Trim(), apiToken, out _);
         }
 
         public void SaveOverrides(string url, string device)
         {
             serverBaseUrl = url.Trim();
             deviceId = device.Trim();
-            PlayerPrefs.SetString(UrlPrefKey, serverBaseUrl);
-            PlayerPrefs.SetString(DevicePrefKey, deviceId);
+            RuntimeConfig.SaveFromPanel(RuntimeConfig.ServerBaseUrlKey, serverBaseUrl);
+            RuntimeConfig.SaveFromPanel(RuntimeConfig.DeviceIdKey, deviceId);
             PlayerPrefs.Save();
         }
 
-        public void ClearOverrides()
-        {
-            PlayerPrefs.DeleteKey(UrlPrefKey);
-            PlayerPrefs.DeleteKey(DevicePrefKey);
-            PlayerPrefs.Save();
-        }
+        /// <summary>Removes every saved override (settings panel and intent extras, including a saved API token).</summary>
+        public void ClearOverrides() => RuntimeConfig.ClearSaved();
     }
 }

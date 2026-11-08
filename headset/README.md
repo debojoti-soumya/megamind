@@ -8,7 +8,8 @@ project: open it in Unity Hub, let the packages resolve, run one menu item, buil
 > Status: **playtested on a Quest 3 (Horizon OS v74 / Android 14), 2026-11-07.** Built headless
 > (Unity 6000.0.66f2 + Meta SDK 85 / MRUK 85) into `Builds/megamind.apk`, sideloaded over USB and run
 > against a laptop server with mock providers via `adb reverse tcp:8000 tcp:8000` +
-> `megamind.json` (`{"serverBaseUrl":"http://127.0.0.1:8000"}`). Verified on device: camera + mic
+> `megamind.json` (`{"serverBaseUrl":"http://127.0.0.1:8000"}`; on a later Quest 3 / Android 14 test the app could no
+> longer read an adb-written `megamind.json`, so use the launch-intent extras below). Verified on device: camera + mic
 > permission prompts, passthrough capture at 1280x960 / 1 fps uploading to `/v1/frames`, the
 > world-locked panel in passthrough, B/Y re-anchor, right-trigger push-to-talk → `/v1/chat` →
 > transcript bubble + reply with 3 cited thumbnails. Not yet exercised on device: hand-pinch PTT,
@@ -59,7 +60,7 @@ Notes on the prebuilt Unity APK:
   `ProjectSettings/ProjectSettings.asset`: IL2CPP, ARM64, min/target SDK 32, ASTC), via the same entry point as
   *Megamind → 3. Build APK*. If you change the scene via the menu items, commit the result or CI will not see it.
 - Its baked-in server URL is whatever `MegamindConfig.asset` holds (`http://100.64.0.1:8000`); point it at your server
-  without rebuilding with `megamind.json` or the settings panel (see *Pointing the app at a different server* below).
+  without rebuilding with launch-intent extras (`adb shell am start ... --es serverBaseUrl ...`) or the settings panel (see *Pointing the app at a different server* below).
 - CI signs with a throwaway debug key, so installing it over a build from another machine/run fails with
   `INSTALL_FAILED_UPDATE_INCOMPATIBLE`: `adb uninstall com.megamind.quest` first (this clears the app's PlayerPrefs).
 - Nobody has installed a CI-built APK on a headset yet **(verify on device)**.
@@ -162,15 +163,44 @@ done
 CI does the same with only `BuildApk` (the scene and player settings are committed); see *Get the APK* above.
 
 ### Pointing the app at a different server without rebuilding
-The URL is resolved in this order: PlayerPrefs (`megamind.serverBaseUrl`, written by the
-settings panel) → `megamind.json` pushed over adb → `MegamindConfig.asset`. From the editor use
-**Megamind → Push config to headset (adb)**, or by hand:
+Each value (`serverBaseUrl`, `deviceId`, `apiToken`, `ambientAudio`) is resolved in this order (`RuntimeConfig.cs`):
+1. **Launch-intent extras** on `adb shell am start`. The app saves them to PlayerPrefs, so later launches from the
+   Library keep them until you pass new ones.
+2. **PlayerPrefs saved earlier**: by a previous intent launch, or by the settings panel (URL and device id only).
+3. **`megamind.json`** in `/sdcard/Android/data/com.megamind.quest/files/`, *if the app can read it* (see below).
+4. **`MegamindConfig.asset`** (URL, device id, `Api Token`) / `CaptureSettings.asset` (`ambientAudio`), baked into the APK.
+
 ```sh
-adb shell mkdir -p /sdcard/Android/data/com.megamind.quest/files
-adb shell 'echo "{\"serverBaseUrl\":\"http://100.101.102.103:8000\",\"deviceId\":\"quest3-1\"}" > /sdcard/Android/data/com.megamind.quest/files/megamind.json'
-adb shell am force-stop com.megamind.quest && adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerGameActivity
+adb shell am force-stop com.megamind.quest
+adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerGameActivity \
+  --es serverBaseUrl http://100.101.102.103:8000 --es deviceId quest3-1 \
+  --es apiToken <API_TOKEN>      # only for a server with API_TOKEN set (Modal); omit otherwise
 ```
-Optional keys: `captureFps` (default 1).
+Add `--es ambientAudio off` (or `on`) to toggle ambient audio. `--es apiToken "''"` (an empty value) removes a
+saved key; `--ez resetConfig true` removes every saved value first. The editor menu **Megamind → Push config to
+headset (adb)** runs the same two commands with the values from `MegamindConfig.asset`. **Force-stop first**: the
+activity is `singleTask`, so `am start` on a running app only brings it to the front and the extras are not read
+(verify on device). `adb uninstall` or `adb shell pm clear com.megamind.quest` also wipes the saved values.
+
+Check it worked: `adb logcat -s Unity | grep "\[Megamind\] config"` prints each value with its source, e.g.
+`serverBaseUrl=http://100.101.102.103:8000 (intent) deviceId=quest3-1 (intent) apiToken=(set, 32 chars) (intent)
+ambientAudio=on (asset)` (the token is never logged), and the HUD's last line ends `url:intent` (`saved` on later
+launches, `panel`, `megamind.json` or `asset` otherwise) (verify on device).
+
+**Why not `megamind.json`?** On a Quest 3 on Horizon OS / Android 14 (2026-11-08), a `megamind.json` written by
+`adb shell 'echo ... > .../files/megamind.json'` was not readable by the app: logcat showed
+`could not read megamind.json: Access ... is denied`, even after deleting the folder and letting the app recreate it.
+`adb push` writes the file as the same shell user, so expect the same result (not tested). No other adb route is documented for
+this build: `adb shell run-as com.megamind.quest` only works for debuggable apps, and `BuildApk` makes a
+non-debuggable release build (`BuildOptions.None`). Shared folders such as `/sdcard/Download` don't help either:
+under scoped storage (this APK targets API 32) an app can't open another app's non-media files there without the
+Storage Access Framework or all-files access. The app
+still reads `megamind.json` when it can (e.g. in the Editor, or a file the app wrote itself) and accepts
+`serverBaseUrl`, `deviceId`, `apiToken`, `ambientAudio` and `captureFps` keys.
+
+**Fallback (no adb at all):** set `Server Base Url`, `Device Id` and `Api Token` in `MegamindConfig.asset`
+(*Megamind → Select Config*) and rebuild. This is what worked on the Android 14 headset before intent extras were
+added. Don't commit a real token.
 
 ## Networking (Tailscale)
 1. Install Tailscale on the laptop running the server and on the Quest (Tailscale is
@@ -210,8 +240,8 @@ Optional keys: `captureFps` (default 1).
 So *"what did I hear?"* / *"who did I talk to?"* work from the Unity app (until now only the native
 `headset-android/` app uploaded audio). `AmbientAudioRecorder` (on the `Megamind` object) records the default
 microphone with Unity's `Microphone` API and uploads it to `POST /v1/audio` (`docs/api.md`) with the **same server
-URL and device id as frames** (`CaptureSettings.ServerBaseUrl/DeviceId`: settings panel → `megamind.json` →
-`MegamindConfig.asset`):
+URL and device id as frames** (`CaptureSettings.ServerBaseUrl/DeviceId`: intent extras → saved PlayerPrefs / settings
+panel → `megamind.json` → `MegamindConfig.asset`, see *Pointing the app at a different server* above):
 - **Format** = the native app's, so the server path is identical: 16 kHz mono PCM16 little-endian in a 44-byte
   RIFF/WAVE header, **15 s chunks** (`audioChunkSeconds`; docs/api.md recommends ~15–30 s — fewer STT calls, more context per transcript; the native app defaults to 5 s), `meta` = `{"device_id":…,"ts_start":…}` (+ head
   `pose` when available), file name `yyyyMMdd_HHmmss_SSS.wav` (`AudioChunkCodec.cs`). `ts_start` is the Unix wall
@@ -229,7 +259,7 @@ URL and device id as frames** (`CaptureSettings.ServerBaseUrl/DeviceId`: setting
   just before its `Microphone.Start` and `PushToTalkEnded()` after `Microphone.End`, so the two never fight over
   the device. Push-to-talk questions therefore are not also stored as ambient speech.
 - **Toggle:** `CaptureSettings.ambientAudio` (default **on**) in `Assets/Megamind/CaptureSettings.asset`, or without
-  rebuilding: add `"ambientAudio":"off"` (or `"on"`) to `megamind.json` and restart the app. Off = the mic is
+  rebuilding: relaunch with `--es ambientAudio off` (or `on`), see *Pointing the app at a different server* above. Off = the mic is
   only used for push-to-talk.
 - **HUD:** `mic: chunks sent N  accepted M  (state)` where state is `on -NN dB` (last chunk level), `paused`,
   `push-to-talk`, `waiting for mic permission`, `no microphone` or `off`; plus `silent N` / `queued N` / `ERR …`.
@@ -256,7 +286,8 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | File | Stream | Purpose |
 |---|---|---|
 | `MegamindConfig.cs` | 3 | ScriptableObject with server URL / device id (stream 3 owns it) |
-| `CaptureSettings.cs` | 1 | ScriptableObject: fps, camera resolution, JPEG width/quality, backpressure, `ambientAudio` toggle + chunk/gate/queue; `megamind.json` adb override for the server URL (and `ambientAudio`, `apiToken`: [api.md#auth](../docs/api.md#auth)) |
+| `CaptureSettings.cs` | 1 | ScriptableObject: fps, camera resolution, JPEG width/quality, backpressure, `ambientAudio` toggle + chunk/gate/queue; resolves the server URL / device id / `apiToken` ([api.md#auth](../docs/api.md#auth)) / `ambientAudio` overrides via `RuntimeConfig` |
+| `RuntimeConfig.cs` | 1 | runtime overrides without a rebuild: launch-intent extras (`am start --es ...`, saved to PlayerPrefs) > saved PlayerPrefs > `megamind.json` > assets; logs each value's source |
 | `Dto.cs` | shared | C# mirrors of `docs/api.md` payloads |
 | `MegamindPermissions.cs` | 1 | requests `HEADSET_CAMERA` + mic at start, exposes `CameraGranted` / `MicrophoneGranted` |
 | `FrameUploader.cs` | 1 | 1 fps sample of `PassthroughCameraAccess.GetTexture()` → JPEG → `POST /v1/frames` with pose meta |
