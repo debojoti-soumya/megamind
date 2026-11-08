@@ -457,7 +457,8 @@ Also the chat tool `make_3d_model` ("make a 3D model of my mug"; `ChatResponse.m
   binary glTF or a .ply (splat when it has `f_dc_0`, else points), e.g. SAM 3D Objects on a GPU. `full_3d` true.
 - Multi-view (default when VGGT is installed: `pip install git+https://github.com/facebookresearch/vggt`; local
   backend only, `MODEL3D_MULTIVIEW=false` to turn off): every stored photo within `MODEL3D_MV_WINDOW_S` (120 s) of
-  the best 4 matching moments (the walk around the exhibit), spread over time up to `MODEL3D_MV_CANDIDATES` (48).
+  the best 4 matching moments of one visit (those within `MODEL3D_MV_VISIT_S`, 1800 s, of the best one; the walk
+  around the exhibit) and inside `time_from`/`time_to`, spread over time up to `MODEL3D_MV_CANDIDATES` (48).
   With at least `MODEL3D_MV_MIN_FRAMES` (5) of them, the answer is immediate with `status` `building` and the work
   runs in the background: Grounding DINO keeps the photos that show the object (and its box), up to
   `MODEL3D_MV_MAX_FRAMES` (16) go through VGGT (`MODEL3D_VGGT_WEIGHTS`, `facebook/VGGT-1B` or a local `model.pt`;
