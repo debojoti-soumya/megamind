@@ -259,4 +259,6 @@ recall_memory(query, time_from?, time_to?, k=12, mode="hybrid")
 ## Memory Theater: `GET /xr` (outside `/v1`; not part of the headset contract)
 A static WebXR page served by the server (`server/megamind/xr/static/`, plain ES modules, three.js from a pinned
 CDN). It only calls the public endpoints above (`/memories/recent`, `/chat`, `/thumbs/*`, `/replay.mp4`).
+Voice questions (mic button / in-headset *Ask by voice*) use the existing multipart form of `POST /chat` (16 kHz mono
+WAV `audio`); the theater shows the response's `transcript` as the question, and an empty `transcript` as "didn't catch that".
 Assets are under `/xr/static/`. `XR_ENABLED=false` removes both routes. Quest usage: [quest3-guide.md](quest3-guide.md#8-memory-theater-xr-in-the-quest-browser).

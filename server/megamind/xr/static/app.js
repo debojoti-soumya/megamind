@@ -4,7 +4,8 @@
  *   GET  /v1/memories/recent   newest memories (cards) and their thumbnails (/v1/thumbs/<id>.jpg)
  *   POST /v1/chat/stream       ask (SSE): answer text as it is generated, then the POST /v1/chat body
  *   POST /v1/chat              ask -> answer + cited[] (thumb_url, replay_url) + optional TTS audio_url
- *                              (fallback when the server has no /v1/chat/stream)
+ *                              (fallback when the server has no /v1/chat/stream); voice questions post the
+ *                              16 kHz WAV as multipart `audio` (server STT, see voice.js)
  *   GET  /v1/replay.mp4        the cited moment (replay_url), or a +-5 s window around a picked card
  *
  * URL params: ?device=<device_id> scopes memories/chat/replay to one headset; ?session=<id> keeps a chat
@@ -13,6 +14,7 @@
  * Ported from Recall's frontend/src/xr/XRMode.tsx (React) to plain DOM code.
  */
 import { MemoryTheater } from "./theater.js";
+import { VoiceRecorder, mountVoiceButton } from "./voice.js";
 
 const params = new URLSearchParams(window.location.search);
 const DEVICE = params.get("device") || null;
@@ -31,6 +33,8 @@ const els = {
   hint: $("xr-hint"),
   error: $("xr-error"),
   status: $("xr-status"),
+  voiceBtn: $("xr-voice-btn"),
+  voiceTip: $("xr-voice-tip"),
 };
 
 let recent = [];
@@ -144,30 +148,60 @@ function replayFor(m) {
   return u.pathname + u.search;
 }
 
-async function ask(question) {
-  const q = question.trim();
-  if (!q) return;
+/**
+ * The one ask flow, for typed and spoken questions alike: POST /v1/chat, then show the answer, cite cards and
+ * play the first cited moment. `body` is a JSON ChatRequest or a FormData with `audio` (the server's STT
+ * transcribes it in the same request). `question` is shown while thinking; for voice (`question` null) the
+ * server's `transcript` takes its place. Resolves to the question that was answered ("" when nothing was heard).
+ */
+async function submit(question, body) {
   const token = ++askToken;
   showError("");
-  theater.setThinking(q);
+  const json = !(body instanceof FormData);
+  if (json) theater.setThinking(question);
+  else theater.setAnswer(null, "Transcribing your question, then searching your day…");
   try {
-    const body = { session_id: SESSION, text: q };
-    if (DEVICE) body.device_id = DEVICE;
-    const init = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+    // Typed questions are JSON; spoken ones are multipart with `audio`. Both stream when the server supports it.
+    const init = json
+      ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+      : { method: "POST", body };
     const resp = await chat(init, (text) => {
-      if (token === askToken) theater.setAnswer(q, text || "Searching your day…");
+      if (token === askToken) theater.setAnswer(json ? question : null, text || "Searching your day…");
     });
-    if (token !== askToken) return; // a newer question superseded this one
+    const q = json ? question : (resp.transcript || "").trim();
+    if (token !== askToken) return q; // a newer question superseded this one
+    if (!q) {
+      theater.setAnswer(null, "Didn't catch that. Try again, a little closer to the mic.", false);
+      return "";
+    }
     cited = resp.cited || [];
     theater.setAnswer(q, resp.answer || "(no answer)", cited.length > 0);
     renderCards();
     const first = cited.find((c) => c.replay_url) || cited.find((c) => c.thumb_url);
     if (first) theater.play(first);
     if (resp.audio_url) new Audio(resp.audio_url).play().catch(() => {});
+    return q;
   } catch (e) {
-    if (token !== askToken) return;
-    theater.setAnswer(q, `Something went wrong: ${e.message}`, false);
+    if (token === askToken) theater.setAnswer(json ? question : null, `Something went wrong: ${e.message}`, false);
+    throw e;
   }
+}
+
+function ask(question) {
+  const q = question.trim();
+  if (!q) return;
+  const body = { session_id: SESSION, text: q };
+  if (DEVICE) body.device_id = DEVICE;
+  submit(q, body).catch(() => {}); // shown on the answer panel
+}
+
+/** A spoken question (16 kHz WAV from voice.js) through the same flow; resolves to the transcript. */
+function askByVoice(wav) {
+  const fd = new FormData();
+  fd.append("session_id", SESSION);
+  if (DEVICE) fd.append("device_id", DEVICE);
+  fd.append("audio", wav, "question.wav");
+  return submit(null, fd);
 }
 
 const theater = new MemoryTheater(els.host, {
@@ -177,8 +211,22 @@ const theater = new MemoryTheater(els.host, {
     els.enter.disabled = false;
     els.enter.textContent = els.enter.dataset.label;
   },
+  onVoice: () => voice.toggle(), // the in-headset "Ask by voice" button: tap to start, tap again to send
 });
 window.memoryTheater = theater; // handy for debugging from the console
+
+// Voice questions: the page's mic button (hold or tap) and the in-headset button share one recorder.
+let renderVoiceButton = () => {};
+const voice = new VoiceRecorder({
+  onAudio: askByVoice,
+  onChange: (r) => {
+    renderVoiceButton(r);
+    theater.setVoiceState(r.phase, r.phase === "listening" ? r.elapsed : 0);
+    // In the headset the page's tip is out of sight; mic errors go to the answer panel instead.
+    if (r.phase === "error" && theater.mode !== "preview") theater.setAnswer(null, r.error, false);
+  },
+});
+if (els.voiceBtn) renderVoiceButton = mountVoiceButton(els.voiceBtn, els.voiceTip, voice);
 
 els.form.addEventListener("submit", (e) => {
   e.preventDefault();
