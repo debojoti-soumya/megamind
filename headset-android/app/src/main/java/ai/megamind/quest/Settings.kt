@@ -14,6 +14,8 @@ data class Settings(
      * next camera start.
      */
     val recordVideo: Boolean = true,
+    /** Server `API_TOKEN` (always set on the Modal deploy, docs/api.md#auth), sent as `Authorization: Bearer`. Empty = none. */
+    val apiToken: String = "",
 ) {
   val frameIntervalMs: Long
     get() = (frameIntervalSec * 1000).toLong().coerceAtLeast(100L)
@@ -43,6 +45,7 @@ object SettingsStore {
             chunkSec = p.getInt("chunk_sec", 5),
             deviceId = p.getString("device_id", Settings.DEFAULT_DEVICE_ID)?.takeIf { it.isNotBlank() } ?: Settings.DEFAULT_DEVICE_ID,
             recordVideo = p.getBoolean("record_video", true),
+            apiToken = p.getString("api_token", "")?.trim().orEmpty(),
         )
     cached = s
     return s
@@ -72,6 +75,7 @@ object SettingsStore {
         .putInt("chunk_sec", s.chunkSec)
         .putString("device_id", s.deviceId)
         .putBoolean("record_video", s.recordVideo)
+        .putString("api_token", s.apiToken)
         .apply()
     cached = s
   }

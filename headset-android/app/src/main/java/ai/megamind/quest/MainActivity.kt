@@ -36,6 +36,7 @@ import java.util.Locale
  *   --ez autostart true          start capture as soon as permissions are granted
  *   --es backend_url http://...  override and save the backend URL
  *   --es device_id quest3-abc    override and save the device_id sent to Megamind
+ *   --es api_token <token>       save the server API_TOKEN (sent as Authorization: Bearer; "" clears it)
  *   --ez video false             turn real-video recording (/v1/video) off (true = on, the default)
  *   --es action start|pause|stop control capture
  */
@@ -63,6 +64,7 @@ class MainActivity : Activity() {
   private lateinit var intervalEdit: EditText
   private lateinit var chunkEdit: EditText
   private lateinit var deviceEdit: EditText
+  private lateinit var tokenEdit: EditText
   private lateinit var videoCheck: CheckBox
   private lateinit var settingsMsg: TextView
   private lateinit var pulse: ObjectAnimator
@@ -101,6 +103,7 @@ class MainActivity : Activity() {
     intent.removeExtra("action")
     intent.removeExtra("backend_url")
     intent.removeExtra("device_id")
+    intent.removeExtra("api_token")
     intent.removeExtra("video")
     setIntent(intent)
   }
@@ -121,6 +124,11 @@ class MainActivity : Activity() {
     intent.getStringExtra("device_id")?.takeIf { it.isNotBlank() }?.let { id ->
       SettingsStore.save(this, SettingsStore.get(this).copy(deviceId = id.trim()))
       deviceEdit.setText(id.trim())
+    }
+    intent.getStringExtra("api_token")?.let { t ->
+      SettingsStore.save(this, SettingsStore.get(this).copy(apiToken = t.trim()))
+      tokenEdit.setText(t.trim())
+      Uploader.retryNow()
     }
     if (intent.hasExtra("video")) {
       val on = intent.getBooleanExtra("video", true)
@@ -261,6 +269,8 @@ class MainActivity : Activity() {
     intervalEdit = field("Frame interval (seconds)", fmt(s.frameIntervalSec), InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
     chunkEdit = field("Chunk length (seconds; also the length of each /v1/audio clip)", s.chunkSec.toString(), InputType.TYPE_CLASS_NUMBER)
     deviceEdit = field("Device ID (device_id sent with every frame and audio clip)", s.deviceId, InputType.TYPE_CLASS_TEXT)
+    tokenEdit = field("API token (the server's API_TOKEN, required by the Modal deploy; empty = none)", s.apiToken,
+        InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
     videoCheck = CheckBox(this).apply {
       text = "Record real video (30 fps H.264 to /v1/video; JPEG-only fallback if the encoder fails; applies from the next Start)"
       setTextColor(Color.WHITE)
@@ -272,8 +282,9 @@ class MainActivity : Activity() {
     row.addView(button("Save", Color.rgb(50, 110, 200)) { saveSettings() }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { rightMargin = dp(10) })
     row.addView(button("Test connection", Color.rgb(60, 60, 75)) {
       val url = urlEdit.text.toString()
+      val token = tokenEdit.text.toString().trim()
       settingsMsg.text = "Testing..."
-      Thread { val r = Uploader.testConnection(url); main.post { settingsMsg.text = r } }.start()
+      Thread { val r = Uploader.testConnection(url, token); main.post { settingsMsg.text = r } }.start()
     }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { rightMargin = dp(10) })
     row.addView(button("Retry uploads", Color.rgb(60, 60, 75)) { Uploader.requeueFailed(); Uploader.retryNow() })
     root.addView(row)
@@ -294,7 +305,7 @@ class MainActivity : Activity() {
       settingsMsg.text = "Invalid settings (interval >= 0.1 s, chunk 1-600 s, device ID, valid URL)"
       return
     }
-    SettingsStore.save(this, Settings(url, interval, chunk, device, videoCheck.isChecked))
+    SettingsStore.save(this, Settings(url, interval, chunk, device, videoCheck.isChecked, tokenEdit.text.toString().trim()))
     settingsMsg.text = "Saved"
     Uploader.retryNow()
   }
@@ -322,7 +333,8 @@ class MainActivity : Activity() {
         "camera frames received: ${Status.framesReceived}",
         "last frame luma: ${Status.lastFrameLuma}$lumaNote",
         "upload: ${Status.uploadInfo}",
-        "backend: ${SettingsStore.get(this).backendUrl}  device_id: ${SettingsStore.get(this).deviceId}",
+        "backend: ${SettingsStore.get(this).backendUrl}  device_id: ${SettingsStore.get(this).deviceId}  api token: " +
+            (if (SettingsStore.get(this).apiToken.isEmpty()) "none" else "set"),
     ).joinToString("\n")
     errorText.text = Status.lastError?.let { "Last error: $it" } ?: ""
     val jpeg = Status.lastJpeg

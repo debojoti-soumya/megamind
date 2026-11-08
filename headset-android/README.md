@@ -106,6 +106,7 @@ adb shell am start -n ai.megamind.quest/.MainActivity --ez autostart true   # st
 adb shell am start -n ai.megamind.quest/.MainActivity --es action pause
 adb shell am start -n ai.megamind.quest/.MainActivity --es action stop
 adb shell am start -n ai.megamind.quest/.MainActivity --es device_id quest3-asher
+adb shell am start -n ai.megamind.quest/.MainActivity --es api_token <token>   # server API_TOKEN ("" clears it)
 adb logcat -v time | grep MegamindQuest      # camera open, "Uploaded <id>: frames accepted=..", "Mic silenced by system"
 ```
 
@@ -124,6 +125,23 @@ notification prompts, then press **Start**. Intent extras are one-shot (not repl
 4. Unplug. Chunks queue on the headset while the server is unreachable and upload in order once it is back.
    Plain HTTP is allowed (`network_security_config.xml`), so only do this on a trusted network.
 
+## Token-protected servers (Modal deploy)
+
+A server with `API_TOKEN` set (always the case for the Modal deploy, [`deploy/README.md`](../deploy/README.md),
+[`docs/api.md#auth`](../docs/api.md#auth)) needs the token on every request. Set it in Settings → **API token**
+(then **Save**) or over adb; it is saved in the app's preferences and sent as `Authorization: Bearer <token>` on
+`/v1/frames`, `/v1/audio`, `/v1/video` and the **Test connection** `GET /v1/health`:
+
+```bash
+adb shell am start -n ai.megamind.quest/.MainActivity \
+  --es backend_url https://<workspace>--megamind-web.modal.run --es api_token <token> --ez autostart true
+```
+
+A 401/403 is not retried: uploads **pause** with "PAUSED: server rejected the API token" on the status line and
+`HTTP 401: API token missing or wrong` as the last error (logcat `MegamindQuest:Upload`). Chunks stay queued (up
+to the on-device cap) and upload once a new token is saved, an `api_token` intent arrives, or **Retry uploads** is
+pressed. HTTPS needs no extra config (verify on device).
+
 ## Verifying the request format without a headset
 
 The request bodies are built by `MegamindApi.kt` (pure JVM, no Android classes), and the uploader sends exactly
@@ -138,7 +156,10 @@ those bytes. Two checks:
   # POST /v1/audio  -> 200 {"audio_id":"...","duration_s":5.0,"transcript":"[mock transcript]","token_ids":[...]}
   # POST /v1/video  -> 200 {"video_id":"...","accepted":true,"reason":null,"ts_start":...,"duration_s":1.0,...}
   ```
-  Without `-Pmegamind.url` (or `MEGAMIND_URL`) the three live tests are skipped. The video test posts
+  Against a server with `API_TOKEN` set, add `-Pmegamind.token=<token>` (or `MEGAMIND_API_TOKEN`): the live tests
+  send it, and `liveRejectsMissingToken` checks the 401 without it. The always-on `postSendsBearerTokenOnEveryPath`
+  / `missingOrWrongTokenIs401AuthFailure` tests check the header and the 401 against an in-process HTTP server.
+  Without `-Pmegamind.url` (or `MEGAMIND_URL`) the live tests are skipped. The video test posts
   `app/src/test/resources/clip.mp4` (1 s, 160x120, 30 fps H.264, made with ffmpeg).
 - **Server pytest** (`server/tests/test_quest_native_payloads.py`, runs in CI): replays the same bytes through the
   FastAPI app with mocks, so a server-side contract change that would break this app fails CI.
