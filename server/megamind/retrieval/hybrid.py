@@ -219,10 +219,15 @@ class HybridRetriever(Retriever):
         )
         primary = ranked[: max(1, k - budget)]
         chosen: dict[str, RetrievedToken] = {r.token.id: r for r in primary}
-        for r in primary[: self.cfg.expand_top]:
+        anchors = primary[: self.cfg.expand_top] if len(chosen) < k else []
+        # one store scan per anchor: fetch them concurrently, then merge in rank order as before
+        windows = await asyncio.gather(
+            *(self.adapter.neighbors(r.token.id, self.cfg.expand_before, self.cfg.expand_after) for r in anchors)
+        )
+        for r, nbs in zip(anchors, windows, strict=True):
             if len(chosen) >= k:
                 break
-            for nb in await self.adapter.neighbors(r.token.id, self.cfg.expand_before, self.cfg.expand_after):
+            for nb in nbs:
                 if len(chosen) >= k:
                     break
                 if nb.id in chosen or not nb.caption:
