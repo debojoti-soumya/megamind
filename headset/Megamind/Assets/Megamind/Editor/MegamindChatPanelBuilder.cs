@@ -449,7 +449,7 @@ namespace Megamind.EditorTools
             controls.minimizeLabel = minimizeButton.GetComponentInChildren<Text>();
             controls.inputField = inputField; controls.sendButton = sendButton; controls.phaseLabel = phaseLabel; controls.phaseDot = phaseDot;
             controls.micMeter = meterFill;
-            controls.hiddenWhenMinimized = new[] { background.gameObject, scrollGo, emptyHint.gameObject, footer.gameObject, jump.gameObject };
+            controls.hiddenWhenMinimized = new GameObject[0];
             var holdToTalk = talkButton.gameObject.AddComponent<HoldToTalkButton>();
             holdToTalk.client = client; holdToTalk.background = talkButton.GetComponent<Image>();
             holdToTalk.idleColor = GhostButton.normalColor; holdToTalk.activeColor = Rec;
@@ -492,6 +492,34 @@ namespace Megamind.EditorTools
             backdrop.gameObject.SetActive(false);
             listening.gameObject.SetActive(false);
             thinking.gameObject.SetActive(false);
+
+            // Whole window drops down from a small arrow tab above the panel's top-right corner (REC dot rides on the tab,
+            // so it stays visible while collapsed). Window = everything built above; WindowClip hides it once slid up.
+            var windowClip = new GameObject("WindowClip", typeof(RectTransform), typeof(RectMask2D));
+            windowClip.transform.SetParent(go.transform, false);
+            windowClip.GetComponent<RectTransform>().Stretch();
+            var window = new GameObject("Window", typeof(RectTransform), typeof(CanvasGroup));
+            window.transform.SetParent(windowClip.transform, false);
+            var wrt = window.GetComponent<RectTransform>();
+            wrt.Stretch();
+            var built = new System.Collections.Generic.List<Transform>();
+            foreach (Transform child in go.transform) if (child != windowClip.transform) built.Add(child);
+            foreach (var child in built) child.SetParent(window.transform, false);
+            var windowTab = MakeButton(go.transform, "WindowTab", "", FontCaption, sprite: RoundedM);
+            var wtrt = windowTab.GetComponent<RectTransform>();
+            wtrt.anchorMin = wtrt.anchorMax = new Vector2(1f, 1f); wtrt.pivot = new Vector2(1f, 0f);
+            wtrt.anchoredPosition = new Vector2(0f, Space1); wtrt.sizeDelta = new Vector2(TabW, TabH);
+            recDot.transform.SetParent(windowTab.transform, false);
+            recDot.AnchorLeftCentre(14f, 12f, 12f);
+            var windowChevron = Chevron(windowTab.transform, TextMain);
+            windowChevron.anchorMin = windowChevron.anchorMax = new Vector2(1f, 0.5f); windowChevron.pivot = new Vector2(0.5f, 0.5f);
+            windowChevron.anchoredPosition = new Vector2(-22f, 0f); windowChevron.sizeDelta = new Vector2(16f, 16f);
+            var windowDrawer = go.AddComponent<PanelDrawer>();
+            windowDrawer.drawer = wrt; windowDrawer.group = window.GetComponent<CanvasGroup>(); windowDrawer.chevron = windowChevron;
+            windowDrawer.hiddenOffset = PanelH; windowDrawer.deactivateWhenClosed = false; windowDrawer.prefsKey = "megamind.windowOpen";
+            windowDrawer.duration = 0.2f;
+            controls.window = windowDrawer;
+            UnityEventTools.AddPersistentListener(windowTab.onClick, new UnityAction(controls.ToggleMinimized));
             return go;
         }
 
@@ -926,7 +954,7 @@ namespace Megamind.EditorTools
             "  Ask Megamind…  field opens the keyboard; Send asks\n" +
             "  Thumbnail  tap to open it large; ‹ › prev/next, sticks pan/zoom, B/Y back\n" +
             "  Copy / Retry  under each answer\n" +
-            "  Hide / Show  collapse to the header (REC dot stays)\n" +
+            "  Hide / arrow  fold the window up behind the top-right arrow (REC dot stays)\n" +
             "  Tab (top-right)  drawer: New chat, chats, Settings, Debug, Pin, Text size, Controls, Purge\n\n" +
             "Voice (hold trigger, say):\n  " + VoiceCommands.Hint;
 

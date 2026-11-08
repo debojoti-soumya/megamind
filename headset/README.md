@@ -342,7 +342,7 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | `PanelMenu.cs` | 3 | the right-side drawer's actions (New chat, Settings, Debug, Pin/Unpin, Text size, Controls, Purge) + voice-command execution |
 | `PanelDrawer.cs` | 3 | slides the drawer down the right edge of the panel (150 ms ease-out, `CanvasGroup` fade, chevron rotates) |
 | `VoiceCommands.cs` | 3 | normalized-string matcher for short spoken commands (no wake word, no dependencies) |
-| `PanelControls.cs` | 3 | input bar: Record/Pause pill + state text, phase line (Listening/Transcribing/Thinking/Answering/Speaking), mic meter, question field + Send (`ChatClient.SendText`), Hide/Show (collapse to header) |
+| `PanelControls.cs` | 3 | input bar: Record/Pause pill + state text, phase line (Listening/Transcribing/Thinking/Answering/Speaking), mic meter, question field + Send (`ChatClient.SendText`), Hide / arrow tab (fold the whole window) |
 | `HoldToTalkButton.cs` | 3 | footer Hold-to-talk: pointer down/up → `ChatClient.BeginRecording` / `EndRecordingAndSendNow` |
 | `PanelHover.cs` | 3 | pointer enter/exit on the panel root; `ChatClient` ignores trigger/pinch push-to-talk while the ray is over the panel |
 | `Editor/MegamindSceneBuilder.cs` | 1 | the `Megamind` menu: create scene, apply player settings, build, build & run, push config, check project |
@@ -358,8 +358,10 @@ field on `ChatPanel`/`ChatClient`/`PanelAnchor`/`SettingsPanel`, finds `CenterEy
 `FrameUploader`, and adds an `EventSystem` with Meta's `OVRInputModule` + `OVRRaycaster` (right-controller
 ray) when the SDK provides them:
 ```
-MegamindPanel (Canvas + CanvasScaler)  + PanelAnchor + ChatPanel + ChatClient + SettingsPanel + PanelMenu + PanelControls + PanelHover + AudioSource
-  Background, Header (RecDot, ServerDot, StatusLine, Hide/Show button, MenuTab = bars + chevron in the corner)
+MegamindPanel (Canvas + CanvasScaler)  + PanelAnchor + ChatPanel + ChatClient + SettingsPanel + PanelMenu + PanelControls + PanelHover + AudioSource + 2x PanelDrawer
+ WindowTab (above the top-right corner, always visible: RecDot + chevron; click = drop the window down / fold it up)
+ WindowClip (RectMask2D) -> Window (CanvasGroup, slid by the 2nd PanelDrawer, open/closed kept in PlayerPrefs megamind.windowOpen):
+  Background, Header (ServerDot, StatusLine, Hide button, MenuTab = bars + chevron in the corner)
   Scroll -> Viewport -> Content (VerticalLayoutGroup)        = ChatPanel.content
   EmptyHint (push-to-talk + voice phrases)
   JumpToLatest pill, Footer: RecordButton + Knob, StateLabel, Indicators (PhaseDot, PhaseLabel), Buttons (HoldToTalkButton + Meter, Question field, SendButton)
@@ -396,8 +398,9 @@ Push-to-talk: hold the controller trigger (or index pinch); hold B/Y 0.5 s to dr
   run like spoken ones. The Quest keyboard renders as a system overlay in front of the app — how it looks next to a
   World-Space canvas, and whether `TouchScreenKeyboard.Status` reports `Done` on the Quest IME, has **not** been
   checked here (no device).
-- **Hide / Show** (header, left of the corner tab): collapses the panel to the header strip — REC dot, status line, Hide
-  and the corner tab stay — and closes any open overlay. Show restores it. Not persisted.
+- **Arrow tab / Hide**: the small arrow tab above the panel's top-right corner (with the blinking REC dot) folds the
+  whole window up behind it (same slide as the drawer) and drops it down again; header *Hide* folds it too. Only the
+  tab stays visible while folded. Remembered across relaunch (`PlayerPrefs` `megamind.windowOpen`).
 - **Tab → Controls**: a cheat-sheet of every mapping (trigger = talk, trigger on a button = click, A/X = record toggle,
   B/Y hold = move panel, index pinch = talk, middle pinch = record toggle, the footer buttons, the voice phrases).
   Voice: "show controls" / "controls" / "help".
