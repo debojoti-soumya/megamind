@@ -169,7 +169,9 @@ async def test_post_video_rejects_unsafe_input_without_500(app_client, clips):
     assert r.status_code == 415 and str(app.state.video.root) not in r.json()["detail"]  # no server paths leak
     r = await _post_video(c, clips["1s"], T0, device="d" * 300)
     assert r.status_code == 400 and "device_id" in r.json()["detail"]
-    r = await _post_video(c, clips["1s"], 1e300, device="../../x")  # odd but finite: stored, not a 500
+    r = await _post_video(c, clips["1s"], 1e300)  # finite but far in the future: bad meta, not a 500
+    assert r.status_code == 400 and "in the future" in r.json()["detail"]
+    r = await _post_video(c, clips["1s"], T0, device="../../x")  # odd id: stored inside the video dir, not a 500
     assert r.status_code == 200, r.text
     [clip] = app.state.video.clips("../../x")
     assert clip.path.parent.parent == app.state.video.root and clip.path.name == f"{clip.id}.mp4"
