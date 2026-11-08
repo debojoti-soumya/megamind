@@ -32,6 +32,7 @@ from megamind.store.embeddings import build_image_embedder, build_text_embedder
 from megamind.ui.router import router as ui_router
 
 logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 
 _LOCAL_DEPS = {"local": ("torch", "sentence_transformers"), "openclip": ("torch", "open_clip")}  # .[local-embeddings]
@@ -55,6 +56,16 @@ def active_provider(settings: Settings, configured: str, impl: object, active: s
     return f"mock ({configured} configured, {why})"
 
 
+def image_calibration(settings: Settings, image_embedder: object | None) -> tuple[float, float] | None:
+    """SigLIP (scale, bias) for calibrated image fusion, or None (toggle off, no embedder, or a CLIP model)."""
+    if image_embedder is None or not settings.search_calibrate_image:
+        return None
+    cal = getattr(image_embedder, "calibration", None)
+    if cal is not None:
+        log.info("image fusion calibrated: p = sigmoid(%.2f * cos %+.2f)", *cal)
+    return cal
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
@@ -69,6 +80,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.pending_hashes = {}
         st.text_embedder = build_text_embedder(settings)
         st.image_embedder = build_image_embedder(settings)
+        st.store.image_calibration = image_calibration(settings, st.image_embedder)
         st.worker = EnrichmentWorker(
             st.store,
             build_enricher(settings),

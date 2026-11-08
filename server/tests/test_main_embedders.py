@@ -94,3 +94,9 @@ async def test_bad_openai_key_degrades_instead_of_500(tmp_path, backend):
 
             embed = (await c.get("/v1/health")).json()["models"]["embed"]
             assert embed == "openai:text-embedding-3-small (degraded: last error 401)"
+
+
+async def test_store_image_calibration_is_none_without_siglip(tmp_path):
+    app = create_app(_settings(tmp_path, image_embed_provider="mock"))
+    async with app.router.lifespan_context(app):
+        assert app.state.store.image_calibration is None  # mock image tower: uncalibrated, today's ranking

@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     ucc_keep_alive_s: int | None = None  # corpus retention; None keeps it until deleted
     wearer_tz: str = "America/Los_Angeles"  # IANA zone used to resolve "this morning" in recall_memory
     lancedb_path: Path = Path("./data/lancedb")
+    lancedb_vector_dtype: str = "float16"  # float16 | float32; new tables only (an existing table keeps its dtype)
+    search_calibrate_image: bool = True  # scale image hits by SigLIP sigmoid(scale*cos+bias) in RRF (no-op for CLIP)
     thumb_dir: Path = Path("./data/thumbs")
     audio_dir: Path = Path("./data/audio")
     privacy_blur_faces: bool = False  # blur bystander faces in stored thumbnails (needs the privacy extra)
