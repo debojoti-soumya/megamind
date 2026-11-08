@@ -1,0 +1,167 @@
+{
+ "images": [
+  {
+   "id": 101,
+   "file_name": "000000000101.jpg",
+   "width": 640,
+   "height": 480
+  },
+  {
+   "id": 202,
+   "file_name": "000000000202.jpg",
+   "width": 640,
+   "height": 480
+  },
+  {
+   "id": 303,
+   "file_name": "000000000303.jpg",
+   "width": 640,
+   "height": 480
+  }
+ ],
+ "categories": [
+  {
+   "id": 1,
+   "name": "person"
+  },
+  {
+   "id": 47,
+   "name": "cup"
+  },
+  {
+   "id": 62,
+   "name": "chair"
+  },
+  {
+   "id": 67,
+   "name": "dining table"
+  },
+  {
+   "id": 73,
+   "name": "laptop"
+  },
+  {
+   "id": 84,
+   "name": "book"
+  }
+ ],
+ "annotations": [
+  {
+   "id": 1,
+   "image_id": 101,
+   "category_id": 67,
+   "bbox": [
+    100,
+    200,
+    400,
+    200
+   ],
+   "area": 80000,
+   "iscrowd": 0
+  },
+  {
+   "id": 2,
+   "image_id": 101,
+   "category_id": 47,
+   "bbox": [
+    150,
+    220,
+    40,
+    50
+   ],
+   "area": 2000,
+   "iscrowd": 0
+  },
+  {
+   "id": 3,
+   "image_id": 101,
+   "category_id": 47,
+   "bbox": [
+    250,
+    230,
+    40,
+    50
+   ],
+   "area": 2000,
+   "iscrowd": 0
+  },
+  {
+   "id": 4,
+   "image_id": 101,
+   "category_id": 47,
+   "bbox": [
+    350,
+    240,
+    40,
+    50
+   ],
+   "area": 2000,
+   "iscrowd": 0
+  },
+  {
+   "id": 5,
+   "image_id": 101,
+   "category_id": 62,
+   "bbox": [
+    500,
+    250,
+    100,
+    200
+   ],
+   "area": 20000,
+   "iscrowd": 0
+  },
+  {
+   "id": 6,
+   "image_id": 202,
+   "category_id": 73,
+   "bbox": [
+    200,
+    150,
+    200,
+    150
+   ],
+   "area": 30000,
+   "iscrowd": 0
+  },
+  {
+   "id": 7,
+   "image_id": 202,
+   "category_id": 84,
+   "bbox": [
+    420,
+    200,
+    60,
+    80
+   ],
+   "area": 4800,
+   "iscrowd": 0
+  },
+  {
+   "id": 8,
+   "image_id": 202,
+   "category_id": 62,
+   "bbox": [
+    50,
+    250,
+    120,
+    220
+   ],
+   "area": 26400,
+   "iscrowd": 0
+  },
+  {
+   "id": 9,
+   "image_id": 303,
+   "category_id": 1,
+   "bbox": [
+    100,
+    50,
+    200,
+    400
+   ],
+   "area": 80000,
+   "iscrowd": 0
+  }
+ ]
+}

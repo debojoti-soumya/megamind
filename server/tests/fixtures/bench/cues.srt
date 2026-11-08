@@ -1,0 +1,8 @@
+1
+00:00:01,500 --> 00:00:03,000
+Priya: the demo moved to Friday.
+
+2
+00:00:04,000 --> 00:00:06,250
+Marcus: let's get ramen
+after the meeting.

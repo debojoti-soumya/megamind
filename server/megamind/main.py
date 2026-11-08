@@ -152,7 +152,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     settings,
                     settings.embed_provider,
                     st.text_embedder,
-                    f"{settings.embed_provider}:{settings.embed_model}",
+                    f"{settings.embed_provider}:{getattr(st.text_embedder, 'model', settings.embed_model)}",
                 ),
                 "stt": active_provider(settings, settings.stt_provider, st.stt, settings.stt_provider),
                 "tts": active_provider(settings, settings.tts_provider, st.tts, settings.tts_provider),
