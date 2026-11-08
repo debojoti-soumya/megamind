@@ -338,11 +338,13 @@ class UCCRetriever(Retriever):
         if time.monotonic() < self._down_until:
             self.stats["fallback"] += 1
             return await self.fallback.retrieve(query, **args)
-        # race: the hybrid runs alongside UCC, so a UCC miss/error/timeout answers at once instead of starting it then
-        hybrid = asyncio.create_task(self.fallback.retrieve(query, **args))
+        # race: the hybrid runs alongside UCC, so a UCC miss/error/timeout answers at once instead of starting it then;
+        # in candidates mode the same run is also UCC's rerank pool (sized to cover both)
+        pool_k = max(k, self.cfg.candidates)
+        hybrid = asyncio.create_task(self.fallback.retrieve(query, **{**args, "k": pool_k}))
         hybrid.add_done_callback(lambda t: t.cancelled() or t.exception())  # never "exception was never retrieved"
         try:
-            res = await asyncio.wait_for(self._ucc(query, **args), self.cfg.timeout_s)
+            res = await asyncio.wait_for(self._ucc(query, hybrid=hybrid, **args), self.cfg.timeout_s)
             if res is not None:
                 self.stats["ucc"] += 1
                 hybrid.cancel()
@@ -352,7 +354,14 @@ class UCCRetriever(Retriever):
             self._down_until = time.monotonic() + self.cfg.cooldown_s
             log.warning("ucc retrieve failed (%s: %s); hybrid fallback", type(e).__name__, e)
         self.stats["fallback"] += 1
-        return await hybrid
+        res = await hybrid
+        if pool_k > k:  # the pool ran wider than asked: keep the k best, still chronological
+            keep = {r.token.id for r in res.ranked[:k]}
+            res = replace(res, tokens=[r for r in res.tokens if r.token.id in keep])
+        return res
+
+    def invalidate_caches(self, device_id: str | None = None) -> None:
+        self.fallback.invalidate_caches(device_id)
 
     async def _ucc(
         self,
@@ -364,6 +373,7 @@ class UCCRetriever(Retriever):
         time_to: float | None,
         device_id: str | None,
         now: datetime,
+        hybrid: asyncio.Future[RetrievalResult] | None = None,
     ) -> RetrievalResult | None:
         """None = defer to the hybrid (planner routed to hybrid, or nothing indexed in the window)."""
         k = max(1, k)
@@ -376,7 +386,7 @@ class UCCRetriever(Retriever):
             if anchor_ts is not None:
                 plan.time_from, plan.time_to = self.fallback._anchor_window(plan.query, anchor_ts, now.timestamp())
 
-        rows = await self._rank(plan, plan.time_from, plan.time_to, device_id, now)
+        rows = await self._rank(plan, plan.time_from, plan.time_to, device_id, now, pool=hybrid)
         if rows is None:
             return None
         widened = False
@@ -399,19 +409,29 @@ class UCCRetriever(Retriever):
         return RetrievalResult(plan=plan, tokens=picked, widened=widened, anchor_ts=anchor_ts)
 
     async def _rank(
-        self, plan: QueryPlan, lo: float | None, hi: float | None, device_id: str | None, now: datetime
+        self,
+        plan: QueryPlan,
+        lo: float | None,
+        hi: float | None,
+        device_id: str | None,
+        now: datetime,
+        pool: asyncio.Future[RetrievalResult] | None = None,
     ) -> list[tuple[str, float]] | None:
-        """(token_id, p) best first with p >= min_p; None if the corpus has no documents in the view."""
+        """(token_id, p) best first with p >= min_p; None if the corpus has no documents in the view.
+        `pool`: the hybrid run already racing over this view, reused as the candidates pool."""
         where = all_of(
             meta("ts", "ge", float(lo)) if lo is not None else None,
             meta("ts", "le", float(hi)) if hi is not None else None,
             meta("device_id", "eq", device_id) if device_id else None,
         )
         if self.cfg.candidates > 0:
-            pool = await self.fallback.retrieve(
-                plan.query, k=self.cfg.candidates, time_from=lo, time_to=hi, device_id=device_id, now=now
-            )
-            ids = [r.token.id for r in pool.ranked]
+            # shield: a UCC timeout cancels this coroutine, but the racing hybrid must survive as the fallback
+            res = await asyncio.shield(pool) if pool is not None else None
+            if res is None or res.widened:  # no race, or the hybrid's window differs from this view
+                res = await self.fallback.retrieve(
+                    plan.query, k=self.cfg.candidates, time_from=lo, time_to=hi, device_id=device_id, now=now
+                )
+            ids = [r.token.id for r in res.ranked[: self.cfg.candidates]]
             if not ids:
                 return []
             where = all_of(where, meta("token_id", "in", ids))

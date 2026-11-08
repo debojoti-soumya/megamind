@@ -152,4 +152,7 @@ async def purge_all(state: Any, device_id: str | None = None, *, since_ts: float
     kf = getattr(state, "keyframe_filter", None)
     if kf is not None:
         kf.reset(device_id)
+    invalidate = getattr(getattr(state, "retriever", None), "invalidate_caches", None)
+    if invalidate is not None:  # retrieval caches (OCR corpus, token cache) must not serve purged text
+        invalidate(device_id)
     return n

@@ -201,6 +201,17 @@ class StoreAdapter:
             self._seen[i] = idx.docs[i][0]
         return out
 
+    def invalidate(self, device_id: str | None = None) -> None:
+        """Forget cached tokens after a purge (`None` = every device). The OCR corpus is otherwise only re-read
+        every `ocr_rebuild_s` or on a count mismatch, which a purge followed by new frames can hide."""
+        if device_id is None:
+            self._ocr.clear()
+            self._seen.clear()
+            return
+        self._ocr.pop(device_id, None)
+        self._ocr.pop(None, None)
+        self._seen = {i: t for i, t in self._seen.items() if t.device_id != device_id}
+
     async def _ocr_index(self, device_id: str | None) -> _OcrIndex | None:
         if not (hasattr(self.store, "count") and hasattr(self.store, "range")):
             return None
