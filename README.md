@@ -60,14 +60,15 @@ headset/    Unity project for Quest 3 — setup README + C# scripts
 
 ## Quick start (no headset required)
 
-Needs Python >= 3.11. If `python --version` is older, create the venv with a newer interpreter
-instead: `python3.12 -m venv .venv` or `~/.pyenv/versions/3.12.x/bin/python -m venv .venv`.
+Needs Python >= 3.11; a 3.10 venv makes `pip install` hang or fail without a clear error. The block uses
+`python3.12`; if you don't have that on PATH, use any >= 3.11 interpreter, e.g.
+`~/.pyenv/versions/3.12.x/bin/python -m venv .venv` (check with `python --version` after activating).
 
 **Terminal 1: server** (from `server/`)
 
 ```bash
 git clone https://github.com/debojoti-soumya/megamind.git && cd megamind/server
-python -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev,tools]"
 cp .env.example .env        # optional: API keys; everything runs on mocks without any
@@ -96,8 +97,9 @@ Gotchas:
   all with the current time, so the keyframe filter (`FILTER_MIN_GAP_S=2`) drops ~90% as `too_soon` (shown in the feeder's `last=` field). The webcam
   (`--source 0`) is paced in real time and doesn't need it.
 - **Mock captions.** With no `READER_API_KEY` the enricher writes `mock caption for frame …`, so `q=keys` finds
-  nothing, and without `ANTHROPIC_API_KEY` "what did I just see?" answers "I don't have a memory of that". Search
-  or ask `frame` to see the loop work, or configure real keys (below) to get searchable captions.
+  nothing. Without `ANTHROPIC_API_KEY`, `ask.py` searches with your raw question. "what did I just see?" is all
+  stop words to the planner, so against mock captions it can come back empty ("I don't have a memory of that").
+  Search or ask `frame` for a reliable mock demo, or configure real keys (below) to get searchable captions.
 - **Persistence.** The default `STORE_BACKEND=memory` loses everything on restart. Set `STORE_BACKEND=lancedb` in
   `server/.env` to keep memories in `server/data/lancedb` (gitignored).
 - **Timestamps in URLs.** Use `Z`, not `+00:00`, e.g. `since=2026-11-07T18:00:00Z`. An unencoded `+` decodes to a

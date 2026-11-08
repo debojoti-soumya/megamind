@@ -11,7 +11,7 @@ and the C# DTOs in `headset/` must match it.
               "embed": "mock (openai configured, no key)", "stt": "mock", "tts": "mock" } }
 ```
 `models` names what is actually serving each role. When the configured provider has no key, or isn't wired up yet,
-the value is `mock (<provider> configured, no key | not implemented)`. Claude without a key reports
+the value is `mock (<provider> configured, no key | not installed | not implemented)`. Claude without a key reports
 `fallback (<model> configured, no key)`, meaning the no-LLM caption path.
 
 ## `POST /frames`  (headset / feeder -> server)

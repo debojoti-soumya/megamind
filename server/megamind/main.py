@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.util
 import logging
 from contextlib import asynccontextmanager
 
@@ -30,6 +31,9 @@ from megamind.store.consolidate import Consolidator, build_summarizer
 logging.basicConfig(level=logging.INFO)
 
 
+_LOCAL_DEPS = {"local": ("torch", "sentence_transformers"), "openclip": ("torch", "open_clip")}  # .[local-embeddings]
+
+
 def active_provider(settings: Settings, configured: str, impl: object, active: str) -> str:
     """Health label for what is really serving a role: `active` when a real backend was built, otherwise
     e.g. "mock (openai configured, no key)" so an empty key can't masquerade as a live provider."""
@@ -38,7 +42,12 @@ def active_provider(settings: Settings, configured: str, impl: object, active: s
         return active
     if configured in ("", "mock"):
         return "mock"
-    why = "no key" if settings.provider_key(configured) == "" else "not implemented"
+    if settings.provider_key(configured) == "":
+        why = "no key"
+    elif any(importlib.util.find_spec(m) is None for m in _LOCAL_DEPS.get(configured, ())):
+        why = "not installed"
+    else:
+        why = "not implemented"
     return f"mock ({configured} configured, {why})"
 
 
