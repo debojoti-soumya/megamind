@@ -153,6 +153,8 @@ namespace Megamind
                 return;
             }
             // STT happens inside /v1/chat, so voice commands can only be recognised from the returned transcript.
+            // The server has already run the agent (LLM + TTS) on the utterance; a matched command discards that answer.
+            // A future STT-only endpoint (e.g. /v1/stt) would let commands skip the agent turn.
             if (echoTranscript && menu != null && menu.TryVoiceCommand(resp.transcript)) return;
             if (echoTranscript && !string.IsNullOrEmpty(resp.transcript)) panel?.AddUserMessage(resp.transcript);
             panel?.AddAssistantMessage(resp.answer, resp.cited, false, resp.Confidence(), LastLatencySeconds);

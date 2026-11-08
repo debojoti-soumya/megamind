@@ -27,7 +27,7 @@ namespace Megamind
             ("show stats", VoiceCommand.OpenDebug), ("show statistics", VoiceCommand.OpenDebug), ("debug menu", VoiceCommand.OpenDebug),
             ("start recording", VoiceCommand.StartRecording), ("resume recording", VoiceCommand.StartRecording),
             ("start capture", VoiceCommand.StartRecording), ("resume capture", VoiceCommand.StartRecording),
-            ("start capturing", VoiceCommand.StartRecording), ("record", VoiceCommand.StartRecording),
+            ("start capturing", VoiceCommand.StartRecording), // no single-word "record": a misheard word must not resume capture
             ("stop recording", VoiceCommand.StopRecording), ("pause recording", VoiceCommand.StopRecording),
             ("stop capture", VoiceCommand.StopRecording), ("pause capture", VoiceCommand.StopRecording),
             ("stop capturing", VoiceCommand.StopRecording), ("pause", VoiceCommand.StopRecording),

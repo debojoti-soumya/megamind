@@ -359,8 +359,9 @@ Push-to-talk: hold the controller trigger (or index pinch); hold B/Y 0.5 s to dr
 
 ### Header status strip, Menu dropdown and voice commands (verify on device)
 
-The separate head-locked `CaptureHud` canvas is gone from the default scene (`CaptureHud.showOwnCanvas` = false; menu 1b
-sets it). `CaptureHud` stays on the `Megamind` object as the data source and still owns the A/X / middle-pinch capture
+The separate head-locked `CaptureHud` canvas is gone from the default scene (`CaptureHud.showOwnCanvas` now defaults to
+false, and menu 1b sets it explicitly). A scene that is **not** rebuilt with 1b after pulling has neither the old HUD nor
+the header REC dot — re-run 1b. `CaptureHud` stays on the `Megamind` object as the data source and still owns the A/X / middle-pinch capture
 toggle. The chat panel header shows:
 
 - **REC dot** (left): blinks red while frames are captured, solid grey when paused. It is the privacy indicator and is
@@ -377,10 +378,13 @@ toggle. The chat panel header shows:
 **Voice commands.** STT runs inside `POST /v1/chat` (there is no STT-only endpoint), so `ChatClient` hands the returned
 `transcript` to `PanelMenu.TryVoiceCommand` before showing the answer: a short utterance (≤ 6 words after dropping
 fillers like "please", "hey", "megamind") that equals one of the phrases in `VoiceCommands.cs` is executed, the answer
-and its audio are dropped, and a dim system chip (`"open menu" → menu opened`) is added to the transcript. Phrases:
+and its audio are dropped, and a dim system chip (`"open menu" → menu opened`) is added to the transcript. Cost: the
+server has already run the full turn (STT → agent/LLM → TTS) before the headset sees the transcript, so every command
+spends one LLM + TTS call and leaves the "pause recording" Q&A in the server-side session history; a future STT-only
+endpoint (e.g. `POST /v1/stt`) would avoid that (server change, not in this PR). Phrases:
 "open menu" / "show menu" / "menu", "close menu" / "close", "open settings" / "settings", "open debug" / "show debug" /
-"show stats", "start recording" / "resume recording" / "start capture", "stop recording" / "pause recording" /
-"pause capture", "bigger text" / "larger text" / "zoom in", "smaller text" / "zoom out", "pin panel" / "pin",
+"show stats", "start recording" / "resume recording" / "start capture" (two words on purpose — a misheard single
+word must not resume capture), "stop recording" / "pause recording" / "pause capture" / "pause", "bigger text" / "larger text" / "zoom in", "smaller text" / "zoom out", "pin panel" / "pin",
 "unpin panel" / "unpin" / "follow me". Anything else is a normal question. The panel's empty-state hint lists them.
 
 ### Panel placement and readability (verify on device)
