@@ -38,6 +38,66 @@ Android manifest were copied from Meta's official
 and renamed. The camera is read through MRUK's `Meta.XR.PassthroughCameraAccess`
 component (the current official path; the older `WebCamTextureManager` sample is deprecated).
 
+## Get the APK (no Unity needed)
+[`.github/workflows/headset-apk.yml`](../.github/workflows/headset-apk.yml) builds two APKs on every push to `main`
+that touches `headset/**` or `headset-android/**`, and on demand (Actions → **headset-apk** → *Run workflow*):
+
+| Artifact | App | Package / launch activity | Needs |
+|---|---|---|---|
+| `megamind.apk` | this Unity app (capture + AR chat panel) | `com.megamind.quest` / `com.unity3d.player.UnityPlayerGameActivity` | Unity licence secrets (below) |
+| `megamind-native.apk` | [`headset-android/`](../headset-android/README.md) capture-only app | `ai.megamind.quest` / `ai.megamind.quest.MainActivity` | nothing |
+
+**Download:** GitHub → *Actions* → *headset-apk* → newest green run on `main` → *Artifacts* (zipped; unzip to get the
+`.apk`), or with the CLI: `gh run download -R debojoti-soumya/megamind -n megamind.apk` (artifacts expire after 90 days).
+**Releases:** pushing a tag `headset-vX.Y` (e.g. `git tag headset-v0.1 && git push origin headset-v0.1`) also attaches
+both APKs to a [GitHub Release](https://github.com/debojoti-soumya/megamind/releases); if the Unity job fails for that
+tag the release gets only `megamind-native.apk` and says so in its notes.
+Install with `adb install -r megamind.apk` ([Quest 3 guide §4](../docs/quest3-guide.md#4-getting-megamind-on-the-headset)).
+
+Notes on the prebuilt Unity APK:
+- It is built from the **committed** scene/assets/player settings (`Assets/Megamind/Scenes/Megamind.unity`,
+  `ProjectSettings/ProjectSettings.asset`: IL2CPP, ARM64, min/target SDK 32, ASTC), via the same entry point as
+  *Megamind → 3. Build APK*. If you change the scene via the menu items, commit the result or CI will not see it.
+- Its baked-in server URL is whatever `MegamindConfig.asset` holds (`http://100.64.0.1:8000`); point it at your server
+  without rebuilding with `megamind.json` or the settings panel (see *Pointing the app at a different server* below).
+- CI signs with a throwaway debug key, so installing it over a build from another machine/run fails with
+  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`: `adb uninstall com.megamind.quest` first (this clears the app's PlayerPrefs).
+- Nobody has installed a CI-built APK on a headset yet **(verify on device)**.
+
+### One-time setup: Unity licence secrets (repo admin)
+The Unity job uses [game-ci/unity-builder](https://game.ci/docs/github/builder) (Docker image
+`unityci/editor:ubuntu-6000.0.66f2-android-3`), which must activate a Unity licence. Without these secrets the Unity
+job's first step reports `Repository secret … is not set`: on a push to `main` as a **warning** (the build is skipped
+and the job stays green, so `main` is not red), on *Run workflow* / `headset-v*` tags as an **error** (job fails).
+Until the secrets exist, **the native job (`megamind-native.apk`, also run on PRs touching `headset-android/`) is the
+only path guaranteed to go green and produce an APK**; a green Unity job on `main` does not mean `megamind.apk` was
+built, so check the run's *Artifacts* (or its warning). Add them under
+GitHub → repo → *Settings* → *Secrets and variables* → *Actions* → *New repository secret*
+([game-ci activation docs](https://game.ci/docs/github/activation)):
+
+| Licence | Secrets |
+|---|---|
+| **Personal (free)** | `UNITY_LICENSE` = full contents of the `.ulf` file, `UNITY_EMAIL`, `UNITY_PASSWORD` (the Unity account that owns the licence) |
+| **Plus / Pro** | `UNITY_SERIAL` (`XX-XXXX-XXXX-XXXX-XXXX-XXXX`, from [id.unity.com → Subscriptions](https://id.unity.com/en/subscriptions)), `UNITY_EMAIL`, `UNITY_PASSWORD` |
+
+Getting the Personal `.ulf` (needs **Unity Hub only**, not the Editor; any OS works, the licence is not tied to a
+platform or Unity version):
+1. Install [Unity Hub](https://unity.com/download) and sign in with the account you will put in `UNITY_EMAIL`.
+2. Hub → *Preferences* (Settings) → *Licenses* → **Add** → **Get a free personal license**. Click *Add* even if a
+   licence is already listed, otherwise the `.ulf` file may not be written.
+3. Copy the file into the `UNITY_LICENSE` secret:
+   - Windows `C:\ProgramData\Unity\Unity_lic.ulf`
+   - macOS `/Library/Application Support/Unity/Unity_lic.ulf`
+   - Linux `~/.local/share/unity3d/Unity/Unity_lic.ulf`
+   e.g. `gh secret set UNITY_LICENSE -R debojoti-soumya/megamind < "/Library/Application Support/Unity/Unity_lic.ulf"`.
+   If Hub offers no way to produce a `.ulf`, see the game-ci activation docs (they track Hub UI changes).
+
+Then re-run the workflow (Actions → headset-apk → *Run workflow*). The first run downloads the ~7 GB editor image and
+imports the Meta packages (rough estimate 30–60 min, not measured); the `Library/` cache makes later runs faster.
+How CI gets around the Linux editor's Meta XR Core 85 compile bug: it embeds the registry copy of
+`com.meta.xr.sdk.core` (version from `Packages/manifest.json`, checksum-verified) in `Packages/` and runs
+`headset/tools/patch-metaxr-linux.sh` on it before Unity starts; nothing is committed.
+
 ## Build + sideload, step by step
 1. **Install Unity 6000.0.66f2** via Unity Hub with the *Android Build Support* module
    **including OpenJDK, Android SDK & NDK Tools**. (Hub → Installs → Install Editor → 6000.0.66f2.)
@@ -99,6 +159,7 @@ for m in MegamindSceneBuilder.CreateScene MegamindChatPanelBuilder.Build \
 done
 ```
 `Builds/megamind.apk` is the output. The first run also downloads/imports the Meta packages (several minutes).
+CI does the same with only `BuildApk` (the scene and player settings are committed); see *Get the APK* above.
 
 ### Pointing the app at a different server without rebuilding
 The URL is resolved in this order: PlayerPrefs (`megamind.serverBaseUrl`, written by the
