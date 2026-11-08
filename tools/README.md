@@ -3,7 +3,7 @@
 | script | what it does |
 |---|---|
 | `feeder.py` | Acts as the headset: pushes webcam or video frames to `POST /v1/frames` |
-| `ask.py` | CLI chat client for `POST /v1/chat` |
+| `ask.py` | CLI chat client for `POST /v1/chat`; without `--device-id` it asks the most recently active device from `GET /v1/devices` and prints which one (`--device-id ""` = all devices) |
 | `make_example_day.py` | Builds a realistic head-cam day (CC photos + TTS dialogue) and its gold questions |
 | `eval_example_day.py` | Asks a running server the example day's questions and scores answers and citations |
 | `retrieval_bench.py` | Retrieval benchmark on ~900 real photos plus sign/speech facts: R@1/R@5/MRR per signal, through `HybridRetriever` |
