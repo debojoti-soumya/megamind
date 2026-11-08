@@ -35,7 +35,7 @@ PROFILE_ENV = {
     # mirrors server/.env.example; keys come from the megamind-providers secret
     "live": {
         "EMBED_PROVIDER": "openai",
-        "RETRIEVER_BACKEND": "combo",  # per question: hybrid / UCC / hier (falls back to hybrid without keys)
+        "RETRIEVER_BACKEND": "hybrid",  # combo/hier are opt-in: on a 9k-memory week UCC timed out and hier took 16 s p50
         "READER_PROVIDER": "auto",
         "READER_BASE_URL": "https://api.sailresearch.com/v1",
         "ENRICH_PROVIDER": "auto",
