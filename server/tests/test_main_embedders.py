@@ -100,3 +100,23 @@ async def test_store_image_calibration_is_none_without_siglip(tmp_path):
     app = create_app(_settings(tmp_path, image_embed_provider="mock"))
     async with app.router.lifespan_context(app):
         assert app.state.store.image_calibration is None  # mock image tower: uncalibrated, today's ranking
+
+
+async def test_store_and_retriever_get_the_embedders_calibration(tmp_path, monkeypatch):
+    class _SigLIPLike(MockImageEmbedder):
+        calibration = (117.3, -12.9)
+
+    monkeypatch.setattr("megamind.main.build_image_embedder", lambda settings: _SigLIPLike())
+    app = create_app(_settings(tmp_path, image_embed_provider="mock"))
+    async with app.router.lifespan_context(app):
+        assert app.state.store.image_calibration == (117.3, -12.9)
+        # the retriever's fusion reads it from the same store object
+        assert app.state.retriever.adapter.store is app.state.store
+    off = create_app(_settings(tmp_path, image_embed_provider="mock", search_calibrate_image=False))
+    async with off.router.lifespan_context(off):
+        assert off.state.store.image_calibration is None
+
+
+def test_bad_vector_dtype_fails_at_settings(tmp_path):
+    with pytest.raises(ValueError):
+        _settings(tmp_path, lancedb_vector_dtype="int8")
