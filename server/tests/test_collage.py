@@ -286,3 +286,32 @@ def test_choose_hero_prefers_best_match():
     tiles = [Tile(tok, "t", _jpeg(i), s) for i, s in enumerate([0.2, 0.9, 0.5])]
     assert choose_hero(tiles) == 1
     assert choose_hero([]) == 0
+
+
+def test_choose_hero_decodes_only_tied_best_matches(monkeypatch):
+    from megamind.agent import collage
+
+    tok = MemoryToken(id="h", device_id="dev1", ts=T0, caption="x", thumb_path="", frame_hash="0")
+    looked = []
+    monkeypatch.setattr(collage, "_sharpness", lambda jpeg: looked.append(jpeg) or len(jpeg))
+    tiles = [collage.Tile(tok, "t", _jpeg(i), s) for i, s in enumerate([0.9, 0.2, 0.9, 0.5])]
+    assert collage.choose_hero(tiles) in (0, 2) and len(looked) == 2  # the two 0.9s; not the 0.2 / 0.5
+    looked.clear()
+    assert collage.choose_hero(tiles[:2]) == 0 and looked == []  # a clear winner needs no decoding
+
+
+async def test_collage_turn_makes_no_locate_call(app_client):
+    """The where-question rule matches "show me photos of X", but a turn that made a collage isn't asking where X is."""
+    from test_claude_agent import ScriptedAnthropic
+    from test_locate import _cfg, _settings
+
+    from megamind.agent.locate import build_locator
+
+    c, app = app_client
+    app.state.montage_verifier = _StubVerifier()
+    fake = ScriptedAnthropic([])
+    app.state.locator = build_locator(app.state, _settings(), _cfg(), client=fake.client())
+    r = await c.post("/v1/chat", json={"session_id": "s", "text": "show me photos of the guy in the black coat"})
+    assert r.status_code == 200, r.text
+    assert r.json()["collage"] is not None and r.json()["cited"] and r.json()["markers"] == []
+    assert fake.requests == []

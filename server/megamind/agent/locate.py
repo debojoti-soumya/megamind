@@ -50,9 +50,9 @@ class LocateSettings(BaseSettings):
     timeout_s: float = 8.0
     min_confidence: float = 0.5
     reasoning_effort: str = "none"  # gpt-5*/o* only; chat-completions function tools need "none" on gpt-5.4+
-    refine: str = "auto"  # auto (OWLv2 if torch + transformers are installed) | owlv2 | none
+    refine: str = "auto"  # auto (OWLv2 when torch + transformers AND a GPU are there) | owlv2 (even on CPU) | none
     refine_model: str = "google/owlv2-base-patch16-ensemble"
-    refine_timeout_s: float = 8.0  # on top of timeout_s; ~0.1 s on a GPU, ~4-7 s on 8 CPU cores
+    refine_timeout_s: float = 8.0  # on top of timeout_s; ~0.1 s on a GPU, ~9 s on 8 CPU cores (so auto needs a GPU)
     refine_min_score: float = 0.08  # OWLv2 detections below this are ignored
     refine_verify: bool = True  # no detection overlapping the LLM's box -> no marker (the LLM was wrong)
 
@@ -186,11 +186,18 @@ class OwlRefiner:
 
 
 def build_refiner(cfg: LocateSettings):
-    """OwlRefiner per `LOCATE_REFINE`, or None (auto: only if torch + transformers are importable)."""
+    """OwlRefiner per `LOCATE_REFINE`, or None. `auto` also needs a GPU: OWLv2-base takes ~9 s per frame on 8 CPU
+    cores, past `refine_timeout_s`, so on a CPU box it would only add the timeout to every where-turn."""
     mode = cfg.refine.lower()
     if mode in ("none", "off", "false", "") or not cfg.enabled:
         return None
     try:
+        if mode == "auto":
+            import torch
+
+            if not torch.cuda.is_available():
+                log.info("LOCATE_REFINE=auto: no GPU, using the LLM's boxes (LOCATE_REFINE=owlv2 forces the detector)")
+                return None
         return OwlRefiner(cfg.refine_model)
     except ImportError as e:
         if mode != "auto":
