@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from megamind.models import MemoryToken
+from megamind.models import MemoryToken, Pose
 from megamind.store import EpisodeTracker
 from megamind.store.consolidate import Consolidator, MockSummarizer, summary_id
 from megamind.store.lancedb_store import LanceDBStore
@@ -90,6 +90,66 @@ def test_tracker_seed_rebuilds_window():
     tr.seed("dev1", frames)
     assert [e.id for e in tr.open_episodes("dev1")] == ["ep-a", "ep-b"]
     assert tr.assign(_frame(10, 1305)) == "ep-b"
+
+
+def _drift_then_jump() -> list[MemoryToken]:
+    """A slow 5-degree-per-frame turn from 0 to 60 degrees, then a jump back to -5 degrees."""
+    frames = [_frame(i, 1000 + 5 * i, angle=5 * i) for i in range(13)]
+    return frames + [_frame(20, 1000 + 5 * 13, angle=-5)]
+
+
+def test_split_compares_with_recent_window_not_whole_history():
+    # the jump is 0.82 cosine to the whole-episode mean (~30 deg) but 0.61 to the last 6 frames (~47 deg)
+    recent = EpisodeTracker(gap_s=60, split_sim=0.70, rejoin_sim=0.99, recent_n=6, max_s=0, move_m=0)
+    ids = [recent.assign(t) for t in _drift_then_jump()]
+    assert len(set(ids[:-1])) == 1  # the slow turn is one episode: each frame is close to the recent ones
+    assert ids[-1] != ids[0]
+
+    whole = EpisodeTracker(gap_s=60, split_sim=0.70, rejoin_sim=0.99, recent_n=10_000, max_s=0, move_m=0)
+    assert len({whole.assign(t) for t in _drift_then_jump()}) == 1  # the old whole-mean rule never splits here
+
+
+def test_max_length_caps_long_stays():
+    tr = EpisodeTracker(gap_s=120, max_s=600, move_m=0)
+    ids = [tr.assign(_frame(i, 1000 + 60 * i)) for i in range(25)]  # same view every minute for 24 min
+    runs = [ids[0]] + [b for a, b in zip(ids, ids[1:]) if a != b]
+    assert len(runs) == len(set(runs)) == 3  # 0-600, 660-1260, 1320-1440: split, never rejoined (would exceed cap)
+    for ep in tr.open_episodes("dev1"):
+        assert ep.end_ts - ep.start_ts <= 600
+
+    off = EpisodeTracker(gap_s=120, max_s=0)
+    assert len({off.assign(_frame(i, 1000 + 60 * i)) for i in range(25)}) == 1
+
+
+def test_pose_movement_splits():
+    tr = EpisodeTracker(gap_s=120, move_m=3.0)
+    first = [_frame(i, 1000 + 5 * i) for i in range(4)]
+    for i, t in enumerate(first):
+        t.pose = Pose(x=0.2 * i, y=1.6, z=0.0, yaw=0.0)
+    ids = [tr.assign(t) for t in first]
+    near = _frame(5, 1025)
+    near.pose = Pose(x=2.0, y=1.6, z=0.0, yaw=0.0)  # 1.7 m from the centroid (0.3, 1.6, 0)
+    far = _frame(6, 1030)
+    far.pose = Pose(x=6.0, y=1.6, z=0.0, yaw=0.0)  # same view, but another room
+    assert tr.assign(near) == ids[0]
+    assert tr.assign(far) != ids[0]
+    assert tr.assign(_frame(7, 1035)) == far.episode_id  # frames without a pose never split on movement
+
+
+def test_seed_restores_recent_window_and_start():
+    frames = _drift_then_jump()
+    seeded, jump = frames[:-1], frames[-1]
+    for t in seeded:
+        t.episode_id = "ep-turn"
+    tr = EpisodeTracker(gap_s=60, split_sim=0.70, rejoin_sim=0.99, recent_n=6, max_s=0, move_m=0)
+    tr.seed("dev1", seeded)
+    (ep,) = tr.open_episodes("dev1")
+    assert len(ep.recent) == 6 and ep.start_ts == 1000
+    assert tr.assign(jump) != "ep-turn"  # judged against the last 6 seeded frames, as before the restart
+
+    capped = EpisodeTracker(gap_s=60, max_s=60)
+    capped.seed("dev1", seeded)  # the seeded episode already spans 60 s
+    assert capped.assign(_frame(30, seeded[-1].ts + 5)) != "ep-turn"
 
 
 # ------------------------------------------------------------------ store integration

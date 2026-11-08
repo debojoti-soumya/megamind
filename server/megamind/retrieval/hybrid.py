@@ -43,6 +43,9 @@ class HybridConfig:
     recent_lookback_s: tuple[float, ...] = (1800, 6 * 3600, 48 * 3600)
     recent_fallback_s: float = 3600  # an empty parsed window ending this close to now falls back to "recent"
     weights_by_type: dict[str, Weights] | None = None  # override planner weights (used by the eval harness)
+    # cross-kind context: a top transcript hit brings the nearest frame within +-speech_link_s (the pixels of what
+    # was said), a top frame hit the nearest transcript token (the words around what was seen); 0 = off
+    speech_link_s: float = 15.0
 
 
 class HybridRetriever(Retriever):
@@ -247,13 +250,22 @@ class HybridRetriever(Retriever):
         primary = ranked[: max(1, k - budget)]
         chosen: dict[str, RetrievedToken] = {r.token.id: r for r in primary}
         anchors = primary[: self.cfg.expand_top] if len(chosen) < k else []
-        # one store scan per anchor: fetch them concurrently, then merge in rank order as before
-        windows = await asyncio.gather(
-            *(self.adapter.neighbors(r.token.id, self.cfg.expand_before, self.cfg.expand_after) for r in anchors)
+        # one store scan per anchor (window + linked modality): fetch them concurrently, then merge in rank order
+        windows, links = await asyncio.gather(
+            asyncio.gather(
+                *(self.adapter.neighbors(r.token.id, self.cfg.expand_before, self.cfg.expand_after) for r in anchors)
+            ),
+            asyncio.gather(*(self._linked(r.token, lo, hi) for r in anchors)),
         )
-        for r, nbs in zip(anchors, windows, strict=True):
+        for r, nbs, link in zip(anchors, windows, links, strict=True):
             if len(chosen) >= k:
                 break
+            if (
+                link is not None
+                and link.id not in chosen
+                and not any(self._same_frame(link, c.token) for c in chosen.values())
+            ):
+                chosen[link.id] = RetrievedToken(token=link, score=r.score * 0.5, reasons=["linked"], is_context=True)
             for nb in nbs:
                 if len(chosen) >= k:
                     break
@@ -269,6 +281,24 @@ class HybridRetriever(Retriever):
                 break
             chosen.setdefault(r.token.id, r)
         return list(chosen.values())
+
+    async def _linked(self, t: MemoryToken, lo: float | None, hi: float | None) -> MemoryToken | None:
+        """The other modality of the same moment: nearest enriched frame for a transcript token, nearest
+        transcript token for a frame, within +-speech_link_s on the same device (and inside [lo, hi])."""
+        span = self.cfg.speech_link_s
+        other = {"transcript": "frame", "frame": "transcript"}.get(t.kind)
+        if span <= 0 or other is None:
+            return None
+        a, b = t.ts - span, t.ts + span
+        if lo is not None:
+            a = max(a, lo)
+        if hi is not None:
+            b = min(b, hi)
+        if a > b:
+            return None
+        rows = await self.adapter.range(a, b, limit=200, device_id=t.device_id, kinds=(other,))
+        rows = [x for x in rows if x.caption and x.id != t.id]
+        return min(rows, key=lambda x: abs(x.ts - t.ts), default=None)
 
     async def _recent(self, k: int, device_id: str | None, now_ts: float) -> list[RetrievedToken]:
         """No content words and no time ("what did I just see?"): the device's latest k enriched frames, found by

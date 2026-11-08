@@ -220,6 +220,27 @@ async def test_fresh_transcript_is_a_now_item_once(client):
     assert next(t for t in out if t.id == tid).caption.startswith("LIVE NOW-")
 
 
+async def test_ongoing_merged_speech_is_still_a_now_item(client):
+    """Speech merge keeps a merged token's start ts; live memory must still see it while words keep arriving."""
+    from test_audio import _post_audio, _wav
+
+    c, app = client
+    now = 1_762_000_000.0
+    app.state.audio_stt = _STT("so the plan is that we meet")
+    first = (await _post_audio(c, _wav(4.0), ts_start=now - 50)).json()["token_ids"][0]
+    for i, words in enumerate(["at the north entrance", "on Tuesday at nine", "bring the badge"]):
+        app.state.audio_stt = _STT(words)
+        tid = (await _post_audio(c, _wav(4.0), ts_start=now - 42 + 9 * i)).json()["token_ids"][0]
+        assert tid == first  # merged into one token whose ts is 50 s ago
+    out = await app.state.live_memory.now_items([], "dev1", now)
+    assert first in [t.id for t in out]
+    assert "bring the badge" in next(t for t in out if t.id == first).caption
+
+    app.state.transcripts.reset()  # once the token is closed, the store-ts window applies again (main's rule)
+    out = await app.state.live_memory.now_items([], "dev1", now)
+    assert first not in [t.id for t in out]
+
+
 async def test_claude_path_uses_raw_question_behind_keyword_query(client):
     """Claude rewrites "what am I holding right now" to keywords; the raw question still triggers NOW items."""
     c, app = client
