@@ -22,6 +22,7 @@ from megamind.devices import router as devices_router
 from megamind.ingest.audio import TranscriptSink
 from megamind.ingest.audio import router as audio_router
 from megamind.ingest.enrich import build_enricher
+from megamind.ingest.episodes_route import router as episodes_router
 from megamind.ingest.filter import KeyframeFilter
 from megamind.ingest.privacy import build_face_blur
 from megamind.ingest.recent import router as recent_router
@@ -176,6 +177,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Megamind", version="0.1.0", lifespan=lifespan)
     app.include_router(recent_router, prefix="/v1")  # GET /v1/memories/recent
+    app.include_router(episodes_router, prefix="/v1")  # GET /v1/episodes
     app.include_router(ingest_router, prefix="/v1")
     app.include_router(audio_router, prefix="/v1")
     app.include_router(agent_router, prefix="/v1")
