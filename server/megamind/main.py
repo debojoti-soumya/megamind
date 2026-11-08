@@ -16,6 +16,7 @@ from megamind.agent.router import router as agent_router
 from megamind.agent.stt import build_stt
 from megamind.agent.tools import RecallMemory
 from megamind.agent.tts import build_tts
+from megamind.agent.voice import router as voice_router
 from megamind.auth import TokenAuth
 from megamind.config import Settings, get_settings
 from megamind.devices import router as devices_router
@@ -181,6 +182,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ingest_router, prefix="/v1")
     app.include_router(audio_router, prefix="/v1")
     app.include_router(agent_router, prefix="/v1")
+    app.include_router(voice_router, prefix="/v1")  # POST /v1/stt
     app.include_router(devices_router, prefix="/v1")  # GET /v1/devices
     app.include_router(ui_router)
     # the browser panel may be served from a different origin (e.g. file:// or another laptop)
