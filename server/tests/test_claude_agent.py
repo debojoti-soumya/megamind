@@ -481,10 +481,11 @@ async def test_recall_first_skips_the_tool_picking_call(recall):
     assert len(script.requests) == 1 and stats.extra["prefetch"] == "first" and stats.tool_calls == 1
     assert [c["query"] for c in spy.calls] == ["where did I leave my keys?"]
     msgs = script.requests[0]["messages"]
-    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
-    use, result = msgs[1]["content"][0], msgs[2]["content"][0]
-    assert use["type"] == "tool_use" and use["name"] == "recall_memory" and result["tool_use_id"] == use["id"]
-    assert "t_keys" in json.dumps(result["content"])
+    # the result rides on the question, not a synthetic tool_result: Sonnet streams its answer only then (#138)
+    assert [m["role"] for m in msgs] == ["user"] and "tool_result" not in json.dumps(msgs)
+    blocks = msgs[0]["content"]
+    assert blocks[0] == {"type": "text", "text": "where did I leave my keys?"} and "recall_memory" in blocks[1]["text"]
+    assert "t_keys" in json.dumps(blocks[2:])
     assert [c.id for c in resp.cited] == ["t_keys"] and resp.tool_calls[0].args == {
         "query": "where did I leave my keys?"
     }
@@ -493,7 +494,7 @@ async def test_recall_first_skips_the_tool_picking_call(recall):
     script.responses = [_message([text("Still the counter. <cites>t_keys</cites>")])]
     resp, stats = await agent.chat_with_stats("s", "and after that?", "dev1", now=NOW)
     assert stats.extra.get("prefetch") != "first" and [c.id for c in resp.cited] == ["t_keys"]
-    assert [m["role"] for m in script.requests[1]["messages"]] == ["user", "assistant", "user", "assistant", "user"]
+    assert [m["role"] for m in script.requests[1]["messages"]] == ["user", "assistant", "user"]
 
 
 async def test_recall_first_lets_claude_re_query(recall):
@@ -531,9 +532,9 @@ async def test_vision_reader_sends_images_to_claude_and_strips_them_from_history
     agent = ClaudeAgent(_settings(anthropic_api_key="k", recall_first=True), recall, client=script.client())
     resp = await agent.chat("s", "where did I leave my keys?", "dev1")
     assert [c.id for c in resp.cited] == ["t_keys"]
-    content = script.requests[0]["messages"][2]["content"][0]["content"]
+    content = script.requests[0]["messages"][0]["content"]
     kinds = [b["type"] for b in content]
-    assert kinds[0] == "text" and kinds.count("image") >= 1
+    assert kinds[:3] == ["text", "text", "text"] and kinds.count("image") >= 1
     img = next(b for b in content if b["type"] == "image")
     assert img["source"]["media_type"] == "image/jpeg" and img["source"]["data"]
     assert "look at them" in script.requests[0]["system"]

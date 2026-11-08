@@ -12,7 +12,8 @@ mostly come from what the prefetch searched (the question plus the planner's rew
 time bounds it adds match the planner's window (:func:`prefetch_reusable`), otherwise the
 prefetch is cancelled and the tool runs with Claude's arguments. With ``RECALL_FIRST`` a
 standalone recall question (:func:`recall_first`) skips that tool-picking call: the prefetch
-goes to Claude as its first tool result, and Claude can still re-query.
+goes to Claude attached to the question (not as a tool_result: those make Sonnet answer in one burst instead of
+streaming), and Claude can still re-query.
 
 Without ``ANTHROPIC_API_KEY`` (or when the API fails) the deterministic
 ``_no_llm_fallback`` path answers straight from the reader's evidence so the
@@ -175,26 +176,19 @@ def _with_images(payload: str, r: RecallResult) -> str | list[dict]:
 
 
 def _strip_images(turn: list[dict]) -> list[dict]:
-    """`turn` with every image block inside tool results replaced by a short text placeholder."""
-    out: list[dict] = []
-    for msg in turn:
-        content = msg.get("content")
-        if not isinstance(content, list) or not any(
-            isinstance(b, dict) and b.get("type") == "tool_result" and isinstance(b.get("content"), list)
-            for b in content
-        ):
-            out.append(msg)
-            continue
-        blocks = []
-        for b in content:
-            if isinstance(b, dict) and b.get("type") == "tool_result" and isinstance(b.get("content"), list):
-                inner = [
-                    x if x.get("type") != "image" else {"type": "text", "text": "(image omitted)"} for x in b["content"]
-                ]
-                b = {**b, "content": inner}
-            blocks.append(b)
-        out.append({**msg, "content": blocks})
-    return out
+    """`turn` with every image block (in a message or inside a tool result) replaced by a short text placeholder."""
+
+    def strip(blocks: list) -> list:
+        out = []
+        for b in blocks:
+            if isinstance(b, dict) and b.get("type") == "image":
+                b = {"type": "text", "text": "(image omitted)"}
+            elif isinstance(b, dict) and b.get("type") == "tool_result" and isinstance(b.get("content"), list):
+                b = {**b, "content": strip(b["content"])}
+            out.append(b)
+        return out
+
+    return [{**m, "content": strip(m["content"])} if isinstance(m.get("content"), list) else m for m in turn]
 
 
 def _stem(w: str) -> str:
@@ -552,16 +546,17 @@ class ClaudeAgent:
             return {"type": "tool_result", "tool_use_id": use_id, "content": _with_images(payload, r)}
 
         async def first_result(r: RecallResult, t_tool: float) -> None:
-            # a synthetic recall_memory call + its result, as if Claude had picked it; it can still re-query
+            # the search Claude would have picked, its result attached to the question; Claude can still re-query.
+            # Not a synthetic tool_use/tool_result pair: Sonnet answers a message ending in a tool_result in one
+            # burst at the end of the call instead of token by token, which held up sentence TTS (#138)
             args = {"query": text}
-            use_id = f"toolu_recall_{stats.request_id}"
-            turn.append(
-                {
-                    "role": "assistant",
-                    "content": [{"type": "tool_use", "id": use_id, "name": "recall_memory", "input": args}],
-                }
-            )
-            turn.append({"role": "user", "content": [record(use_id, "recall_memory", args, r, t_tool)]})
+            content = record(f"toolu_recall_{stats.request_id}", "recall_memory", args, r, t_tool)["content"]
+            blocks = content if isinstance(content, list) else [{"type": "text", "text": content}]
+            label = f"recall_memory({json.dumps(args, ensure_ascii=False)}) tool result, already searched for you:"
+            turn[0] = {
+                "role": "user",
+                "content": [{"type": "text", "text": text}, {"type": "text", "text": label}, *blocks],
+            }
             if emit is not None:
                 await emit.retrieval(r)
 
@@ -584,7 +579,9 @@ class ClaudeAgent:
             # block on every call of the turn, so call 1 writes tools + system + history + question and the tool
             # round(s) read it back (a cache read needs a breakpoint in the reading request too). The system prompt
             # carries the time, so turns can't share an entry. Request bodies are unchanged when the flag is off.
-            cache_question = self.settings.claude_prompt_cache and len(turn) == 1
+            cache_question = (
+                self.settings.claude_prompt_cache and len(turn) == 1 and isinstance(turn[0]["content"], str)
+            )
             for _round in range(MAX_TOOL_ROUNDS + 1):
                 t_llm = time.perf_counter()
                 messages = prior + turn
