@@ -7,7 +7,9 @@ namespace Megamind
 {
     [Serializable] public class Pose { public float x, y, z, yaw; }
 
-    [Serializable] public class FrameMeta { public string device_id; public double ts; public Pose pose; }
+    // transcript: optional text heard around this frame; the server stores it as a kind="transcript" token and it
+    // never affects the keep decision. Leave null/empty (JsonUtility sends ""), the server treats "" as none.
+    [Serializable] public class FrameMeta { public string device_id; public double ts; public Pose pose; public string transcript; }
 
     [Serializable] public class FrameAccepted { public string frame_id; public bool accepted; public string reason; }
 

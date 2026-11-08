@@ -39,7 +39,7 @@ Three streams of work:
 
 | # | Stream | Where | Status |
 |---|---|---|---|
-| 1 | **Capture → tokenize → store.** Passthrough Camera API → 1 fps JPEG → dHash dedupe → VLM (Gemma 4 31B) caption/OCR/entities → text + SigLIP embeddings → LanceDB | `headset/.../FrameUploader.cs`, `server/megamind/ingest`, `server/megamind/store` | filter + worker + in-memory store done; VLM enricher, embeddings, LanceDB are `TODO(stream-1)` |
+| 1 | **Capture → tokenize → store.** Passthrough Camera API → 1 fps JPEG → dHash dedupe → VLM (Gemma 4 31B) caption/OCR/entities → text + SigLIP embeddings → LanceDB | `headset/.../FrameUploader.cs`, `server/megamind/ingest`, `server/megamind/store` | filter, worker, VLM + keyless local enricher, embeddings, in-memory + LanceDB stores done |
 | 2 | **Retrieval tool + reader.** `recall_memory(query, time_from, time_to, k, mode)` → hybrid search (vector + BM25 + time filter, RRF) → Gemma 4 31B reads captions + thumbnails → evidence with citations → Claude | `server/megamind/agent/{tools,reader,claude_agent}.py` | done: Claude tool-use loop, Gemma 4 reader (6 s deadline, then caption-only), `server/tools/eval_agent.py` |
 | 3 | **AR chat.** World-locked panel, push-to-talk → STT, spoken reply via TTS, cited thumbnails | `headset/.../{ChatClient,ChatPanel,PanelAnchor,SettingsPanel}.cs`, `server/megamind/agent/{stt,tts}.py`, `server/megamind/ui` (browser prototype at `/ui`) | browser prototype works end-to-end; OpenAI/Deepgram STT + OpenAI/ElevenLabs TTS implemented; Quest 3 APK playtested (capture + PTT chat + cited thumbnails) with mock providers — see `headset/README.md` |
 
@@ -97,8 +97,11 @@ Gotchas:
 - **`--realtime` for video files.** Without it, the feeder sends frames as fast as it can decode them and stamps them
   all with the current time, so the keyframe filter (`FILTER_MIN_GAP_S=2`) drops ~90% as `too_soon` (shown in the feeder's `last=` field). The webcam
   (`--source 0`) is paced in real time and doesn't need it.
-- **Mock captions.** With no `READER_API_KEY` the enricher writes `mock caption for frame …`, so `q=keys` finds
-  nothing. Without `ANTHROPIC_API_KEY`, `ask.py` searches with your raw question. "what did I just see?" is all
+- **Mock captions.** The enricher (`ENRICH_PROVIDER=auto`) captions frames with the VLM when `READER_API_KEY` (or
+  `ENRICH_API_KEY` + `ENRICH_BASE_URL`) is set. Without a key it uses the keyless local enricher if an image embedder
+  is configured (`IMAGE_EMBED_PROVIDER=openclip`: SigLIP zero-shot scene label, plus Tesseract OCR with
+  `pip install -e ".[local-enrich]"` and `brew install tesseract`), and otherwise writes `mock caption for frame …`,
+  so `q=keys` finds nothing. Without `ANTHROPIC_API_KEY`, `ask.py` searches with your raw question. "what did I just see?" is all
   stop words to the planner, so against mock captions it can come back empty ("I don't have a memory of that").
   Search or ask `frame` for a reliable mock demo, or configure real keys (below) to get searchable captions.
 - **Persistence.** The default `STORE_BACKEND=memory` loses everything on restart. Set `STORE_BACKEND=lancedb` in

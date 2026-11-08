@@ -165,11 +165,15 @@ class StoreAdapter:
         *,
         limit: int = 100,
         device_id: str | None = None,
+        kinds: tuple[str, ...] | None = None,
     ) -> list[MemoryToken]:
         if hasattr(self.store, "range"):
-            return await self.store.range(time_from, time_to, limit, device_id=device_id)
+            if kinds is None:
+                return await self.store.range(time_from, time_to, limit, device_id=device_id)
+            rows = await self.store.range(time_from, time_to, limit, device_id=device_id, kinds=kinds)
+            return [t for t in rows if t.kind in kinds]
         pool = await self._pool(time_from, time_to, device_id)
-        return sorted(pool, key=lambda t: t.ts)[:limit]
+        return sorted((t for t in pool if kinds is None or t.kind in kinds), key=lambda t: t.ts)[:limit]
 
     async def neighbors(self, token_id: str, before: int = 1, after: int = 1) -> list[MemoryToken]:
         """Chronological neighbours of `token_id` on the same device, *excluding* the anchor."""

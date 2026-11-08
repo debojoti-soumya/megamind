@@ -22,6 +22,9 @@ def build_episode_tracker(settings: Settings) -> EpisodeTracker:
         split_sim=settings.episode_split_sim,
         rejoin_sim=settings.episode_rejoin_sim,
         rejoin_last=settings.episode_rejoin_last,
+        recent_n=settings.episode_recent_n,
+        max_s=settings.episode_max_s,
+        move_m=settings.episode_move_m,
     )
 
 

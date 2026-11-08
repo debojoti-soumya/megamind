@@ -22,6 +22,9 @@ class FrameMeta(BaseModel):
     device_id: str
     ts: float
     pose: Pose | None = None
+    # text heard around this frame (e.g. subtitles / external ASR); stored as a kind="transcript" token, never
+    # attached to the frame and never changes the keep decision. "" / null = none.
+    transcript: str | None = None
 
 
 class FrameAccepted(BaseModel):

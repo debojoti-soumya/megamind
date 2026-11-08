@@ -17,6 +17,7 @@ from megamind.agent.stt import build_stt
 from megamind.agent.tools import RecallMemory
 from megamind.agent.tts import build_tts
 from megamind.config import Settings, get_settings
+from megamind.ingest.audio import TranscriptSink
 from megamind.ingest.audio import router as audio_router
 from megamind.ingest.enrich import build_enricher
 from megamind.ingest.filter import KeyframeFilter
@@ -71,6 +72,19 @@ def image_calibration(settings: Settings, image_embedder: object | None) -> tupl
     return cal
 
 
+def _enrich_label(settings: Settings, enricher: object) -> str:
+    """Health label for the enricher: "vlm:<model>" / "local" (+ degraded reason), or mock and why."""
+    configured = settings.enrich_provider.lower()
+    if type(enricher).__name__ == "LocalEnricher":
+        active = "local"
+    else:
+        active = f"vlm:{settings.enrich_model_name}"
+    if configured == "auto" and type(enricher).__name__.startswith("Mock"):
+        return "mock (auto: no enrich/reader key, no image embedder)"
+    # vlm without a key reports "mock (enrich configured, no key)" via provider_key("enrich")
+    return active_provider(settings, "enrich" if configured in ("auto", "vlm") else configured, enricher, active)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
@@ -86,9 +100,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.text_embedder = build_text_embedder(settings)
         st.image_embedder = build_image_embedder(settings)
         st.store.image_calibration = image_calibration(settings, st.image_embedder)
+        st.transcripts = TranscriptSink(
+            st.store,
+            st.text_embedder,
+            merge_s=settings.speech_merge_s,
+            max_token_s=settings.speech_max_token_s,
+        )
         st.worker = EnrichmentWorker(
             st.store,
-            build_enricher(settings),
+            build_enricher(settings, st.image_embedder),
             st.text_embedder,
             st.image_embedder,
             face_blur=build_face_blur(settings),
@@ -160,6 +180,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     st.text_embedder,
                     f"{settings.embed_provider}:{getattr(st.text_embedder, 'model', settings.embed_model)}",
                 ),
+                "enrich": _enrich_label(settings, st.worker.enricher),
                 "stt": active_provider(settings, settings.stt_provider, st.stt, settings.stt_provider),
                 "tts": active_provider(settings, settings.tts_provider, st.tts, settings.tts_provider),
             },

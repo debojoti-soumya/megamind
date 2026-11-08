@@ -494,3 +494,71 @@ async def test_no_calibration_keeps_todays_hybrid_scores(q):
     ones = await r(await _stream_with_images((0.0, 100.0))).retrieve(q, k=6, mode="hybrid", now=NOW)
     assert base.ranked and [(x.token.id, x.score) for x in base.ranked] == [(x.token.id, x.score) for x in ones.ranked]
     assert any("image" in x.reasons for x in base.ranked)
+
+
+# ------------------------------------------------------------------ cross-kind speech <-> frame linking
+
+
+async def _speech_store() -> InMemoryStore:
+    st = InMemoryStore()
+    emb = MockTextEmbedder()
+    base = NOW.timestamp() - 1800
+    rows = [
+        ("f1", base, "frame", "Robot arm bolted to a lab bench, cables everywhere."),
+        ("f2", base + 40, "frame", "Close-up of a soldering iron on a workbench."),
+        ("s1", base + 6, "transcript", 'Speech heard nearby: "hi I am Priya from the robotics team"'),
+        ("f3", base + 600, "frame", "A whiteboard covered in a sprint plan."),
+        ("s2", base + 590, "transcript", 'Speech heard nearby: "standup moves to nine thirty"'),
+    ]
+    for id_, ts, kind, cap in rows:
+        await st.add(
+            MemoryToken(
+                id=id_,
+                device_id="dev",
+                ts=ts,
+                caption=cap,
+                kind=kind,
+                thumb_path="" if kind == "transcript" else f"/tmp/{id_}.jpg",
+                frame_hash="" if kind == "transcript" else f"{abs(hash(id_)) % (1 << 64):016x}",
+                text_vec=await emb.embed(cap),
+            )
+        )
+    return st
+
+
+async def test_transcript_hit_brings_nearest_frame_as_context():
+    r = HybridRetriever(await _speech_store(), MockTextEmbedder(), tz="UTC")
+    res = await r.retrieve("who is Priya", k=6, now=NOW)
+    assert res.ranked[0].token.id == "s1"
+    linked = [x for x in res.tokens if x.reasons == ["linked"]]
+    assert [x.token.id for x in linked] == ["f1"] and linked[0].is_context  # 6 s away; f2 (34 s) is out of range
+
+
+async def test_frame_hit_brings_overlapping_transcript():
+    r = HybridRetriever(await _speech_store(), MockTextEmbedder(), tz="UTC")
+    res = await r.retrieve("whiteboard sprint plan", k=6, now=NOW)
+    assert res.ranked[0].token.id == "f3"
+    assert "s2" in {x.token.id for x in res.tokens if x.reasons == ["linked"]}
+
+
+async def test_speech_link_disabled():
+    r = HybridRetriever(await _speech_store(), MockTextEmbedder(), tz="UTC", config=HybridConfig(speech_link_s=0))
+    res = await r.retrieve("who is Priya", k=6, now=NOW)
+    assert res.ranked[0].token.id == "s1"
+    assert not [x for x in res.tokens if x.reasons == ["linked"]]
+
+
+async def test_speech_link_stays_inside_explicit_window():
+    st = await _speech_store()
+    base = NOW.timestamp() - 1800
+    r = HybridRetriever(st, MockTextEmbedder(), tz="UTC")
+    res = await r.retrieve("who is Priya", k=6, now=NOW, time_from=base + 3, time_to=base + 100)
+    assert "f1" not in {x.token.id for x in res.tokens}  # 3 s before the window opens
+
+
+def test_build_retriever_reads_speech_link_setting():
+    from megamind.config import Settings
+    from megamind.retrieval import build_retriever
+
+    r, _ = build_retriever(Settings(speech_link_s=0, _env_file=None), InMemoryStore(), MockTextEmbedder())
+    assert r.cfg.speech_link_s == 0
