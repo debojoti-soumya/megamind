@@ -109,7 +109,13 @@ _RE_AGO = re.compile(rf"\b{_APPROX}{_NUM}\s+{_UNIT}\s+(?:ago|back|earlier)\b", r
 _RE_LAST_N = re.compile(rf"\b(?:in|within|over|during)?\s*the\s+(?:last|past)\s+{_NUM}?\s*{_UNIT}\b", re.I)
 _RE_LAST_UNIT = re.compile(rf"\b(?:in|within|over|during)?\s*the\s+(?:last|past)\s+{_UNIT}\b", re.I)
 _RE_CLOCK = re.compile(
-    r"\b(?:at|around|about|near|by)\s+(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ampm>am|pm|a\.m\.|p\.m\.|o'clock)?\b",
+    r"\b(?P<prep>at|around|about|near|by|(?:right |just )?(?:before|after|since|until|till))\s+"
+    r"(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ampm>am|pm|a\.m\.|p\.m\.|o'clock)?\b",
+    re.I,
+)
+_RE_BETWEEN = re.compile(
+    r"\b(?:between|from)\s+(?P<h1>\d{1,2})(?::(?P<m1>\d{2}))?\s*(?P<ap1>am|pm)?\s+(?:and|to|-|until|till)\s+"
+    r"(?P<h2>\d{1,2})(?::(?P<m2>\d{2}))?\s*(?P<ap2>am|pm)?\b",
     re.I,
 )
 _RE_WEEKDAY = re.compile(
@@ -118,6 +124,13 @@ _RE_WEEKDAY = re.compile(
 _RE_ANCHOR = re.compile(
     r"\b(?P<rel>before|after|when|while|since|until|right before|right after|just before|just after)\s+"
     r"(?P<event>i\s+(?:\w+\s*){1,6}?)(?=[?.,!]|$|\s+(?:and|but|or)\b)",
+    re.I,
+)
+# "after the dentist", "before standup": a named event rather than a clause about the wearer. Phrases that are
+# really times ("after 3", "before lunch") start with a digit or sit inside the parsed time hint and are dropped.
+_RE_ANCHOR_NOUN = re.compile(
+    r"\b(?P<rel>before|after|since|until)\s+(?:the\s+)?"
+    r"(?P<event>[a-z][\w'-]*(?:\s+[\w'-]+){0,4}?)(?=[?.,!]|$|\s+(?:and|but|or|this|that|today|yesterday)\b)",
     re.I,
 )
 
@@ -197,6 +210,14 @@ class TimeWindow:
     span: tuple[int, int]  # char span in the query that expressed the time
 
 
+def _clock_hour(h: int, ampm: str) -> int:
+    if ampm == "pm" and h < 12:
+        return h + 12
+    if ampm == "am" and h == 12:
+        return 0
+    return h
+
+
 def parse_time(query: str, now: datetime) -> TimeWindow | None:
     """Resolve a relative temporal expression in `query` to a [from, to] window.
 
@@ -251,6 +272,23 @@ def _parse_time(q: str, now: datetime) -> TimeWindow | None:  # noqa: C901 - a l
         hint_parts.append(mw.span())
 
     md = _RE_DAYPART.search(q)
+    mb = _RE_BETWEEN.search(q)
+    if mb:  # "between 4 and 5pm", "from 9:30 to 11": the second am/pm also settles the first
+        ap2 = (mb.group("ap2") or "").lower()
+        ap1 = (mb.group("ap1") or ap2).lower()
+        h1, h2 = _clock_hour(int(mb.group("h1")), ap1), _clock_hour(int(mb.group("h2")), ap2)
+        if not ap1 and not ap2 and h2 < h1 <= 12:
+            h2 += 12
+        elif not ap1 and h1 > h2:  # "between 11 and 1pm"
+            h1 = h1 - 12 if h1 > 12 else h1
+        h1 += int(mb.group("m1") or 0) / 60
+        h2 += int(mb.group("m2") or 0) / 60
+        day = _local_day(now, day_offset)
+        if _hours(day, h1) > now and day_offset == 0:
+            day = _local_day(now, -1)
+        spans = hint_parts + [mb.span()] + ([md.span()] if md else [])
+        lo, hi = min(s[0] for s in spans), max(s[1] for s in spans)
+        return TimeWindow(_hours(day, h1).timestamp(), min(now_ts, _hours(day, h2).timestamp()), q[lo:hi], (lo, hi))
     mc = _RE_CLOCK.search(q)
     if mc and not (mc.group("ampm") is None and mc.group("m") is None and int(mc.group("h")) > 12):
         h = int(mc.group("h"))
@@ -269,9 +307,16 @@ def _parse_time(q: str, now: datetime) -> TimeWindow | None:  # noqa: C901 - a l
                     day_offset -= 1
         center = _hours(_local_day(now, day_offset), h + mm / 60)
         half = timedelta(minutes=45)
-        spans = hint_parts + [mc.span()]
+        spans = hint_parts + [mc.span()] + ([md.span()] if md else [])  # "this morning at 7:30": both are time
         lo, hi = min(s[0] for s in spans), max(s[1] for s in spans)
-        return TimeWindow((center - half).timestamp(), min(now_ts, (center + half).timestamp()), q[lo:hi], (lo, hi))
+        prep = mc.group("prep") + " "
+        if _RE_REL_AFTER.search(prep):  # "after 3 pm": from then until now, like "after lunch"
+            lo_dt, hi_dt = center, now
+        elif _RE_REL_BEFORE.search(prep):  # "before 9 am": the day up to then
+            lo_dt, hi_dt = _local_day(now, day_offset), center
+        else:
+            lo_dt, hi_dt = center - half, center + half
+        return TimeWindow(lo_dt.timestamp(), min(now_ts, hi_dt.timestamp()), q[lo:hi], (lo, hi))
 
     if md:
         start_h, end_h = _DAY_PARTS[md.group(1).lower()]
@@ -316,7 +361,7 @@ def _parse_time(q: str, now: datetime) -> TimeWindow | None:  # noqa: C901 - a l
 def parse_anchor(query: str) -> str | None:
     """'before I left the office' -> 'left the office'. Unresolved here: the retriever may
     run a second search for the anchor event and use its timestamp as a bound."""
-    m = _RE_ANCHOR.search(query)
+    m = _RE_ANCHOR.search(query) or _RE_ANCHOR_NOUN.search(query)
     if not m:
         return None
     event = re.sub(r"^i\s+", "", m.group("event").strip(), flags=re.I)
@@ -413,7 +458,10 @@ def rewrite(query: str, time_span: tuple[int, int] | None = None, anchor: str | 
         q = _RE_TIME_FILLER.sub("", q)
     if anchor:
         q = re.sub(
-            r"\b(?:right |just )?(?:before|after|when|while|since|until)\s+i\s+" + re.escape(anchor), " ", q, flags=re.I
+            r"\b(?:right |just )?(?:before|after|when|while|since|until)\s+(?:i\s+)?(?:the\s+)?" + re.escape(anchor),
+            " ",
+            q,
+            flags=re.I,
         )
     q = _POSSESSIVE.sub(r"\1", q)
     q = _PUNCT.sub(" ", q)
@@ -497,10 +545,14 @@ def plan_query(
     now_local = (now or datetime.now(UTC)).astimezone(zone)
 
     win = parse_time(query, now_local)
+    qtype = detect_type(query)
     anchor = parse_anchor(query)
     if anchor and win:
         anchor = re.sub(re.escape(win.hint), " ", anchor, flags=re.I).strip() or None
-    qtype = detect_type(query)
+        if anchor and anchor.lower() in win.hint.lower():  # "before lunch": the meal is the window, not an event
+            anchor = None
+    if anchor and qtype == "locate_object" and not _RE_ANCHOR.search(query):
+        anchor = None  # "where are my keys after work": keep the last sighting, don't window on a vague noun
     text = rewrite(query, win.span if win else None, anchor)
     if qtype == "people" and not any(w in text.split() for w in ("person", "people")):
         text = f"{text} person".strip()

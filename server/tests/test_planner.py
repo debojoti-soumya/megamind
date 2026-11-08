@@ -204,3 +204,44 @@ def test_subject_free_speech_questions_are_transcript_recency(q):
 @pytest.mark.parametrize("q", ["what did Sam say about the budget", "who did I talk to at the cafe", "what did I see?"])
 def test_speech_with_a_subject_or_no_speech_word_is_unchanged(q):
     assert plan_query(q, now=NOW).kinds is None
+
+
+def test_named_event_anchor_after_the_dentist():
+    p = plan_query("what did I buy after the dentist", now=NOW)
+    assert (p.anchor_event, p.search_text, p.time_focus) == ("dentist", "buy", "start")
+    assert plan_query("what was on the slides before the cookies came out", now=NOW).anchor_event == "cookies came out"
+    assert plan_query("what was I doing before standup", now=NOW).search_text == ""
+
+
+def test_named_event_anchor_is_not_a_time_or_a_locate_hint():
+    assert plan_query("what was I reading before lunch", now=NOW).anchor_event is None  # the meal is the window
+    assert plan_query("what did I eat after 3 pm", now=NOW).anchor_event is None
+    assert plan_query("where are my keys after work", now=NOW).anchor_event is None  # last sighting, not a window
+    assert plan_query("where were my keys after I got home", now=NOW).anchor_event == "got home"
+
+
+def test_before_after_a_clock_time_is_a_one_sided_window():
+    evening = NOW.replace(hour=19)
+    p = plan_query("what did I eat after 3 pm", now=evening)
+    assert p.search_text == "" and p.time_focus == "start" and p.anchor_event is None
+    assert datetime.fromtimestamp(p.time_from, tz=NOW.tzinfo).hour == 15 and p.time_to == evening.timestamp()
+    q = plan_query("what did I read before 9am", now=NOW)
+    assert q.search_text == "" and q.time_focus == "end"
+    assert datetime.fromtimestamp(q.time_to, tz=NOW.tzinfo).hour == 9 and q.time_from < q.time_to
+    assert plan_query("what did I eat at 3 pm", now=NOW).time_focus == "center"
+
+
+def test_between_two_clock_times_is_the_window():
+    evening = NOW.replace(hour=19)
+    p = plan_query("what was I doing between 4 and 5pm", now=evening)
+    lo, hi = (datetime.fromtimestamp(t, tz=NOW.tzinfo) for t in (p.time_from, p.time_to))
+    assert (lo.hour, hi.hour, p.search_text, p.mode) == (16, 17, "", "temporal")
+    q = plan_query("what did I read from 9:30 to 11 this morning", now=evening)
+    lo, hi = (datetime.fromtimestamp(t, tz=NOW.tzinfo) for t in (q.time_from, q.time_to))
+    assert ((lo.hour, lo.minute), hi.hour, q.search_text) == ((9, 30), 11, "")
+
+
+def test_day_part_plus_clock_is_all_time():
+    p = plan_query("what was I doing this morning at 7:30", now=NOW)
+    assert p.search_text == "" and p.mode == "temporal"
+    assert datetime.fromtimestamp(p.time_from, tz=NOW.tzinfo).strftime("%H:%M") == "06:45"

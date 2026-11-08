@@ -38,6 +38,8 @@ class HybridConfig:
     expand_max_frac: float = 0.34  # neighbours take at most this share of k
     widen_on_empty: bool = True  # drop a *parsed* (not explicit) time window if nothing matched
     anchor_pad_s: float = 15 * 60  # +/- around a resolved "when I ..." anchor
+    anchor_side_s: float = 2 * 3600  # "before/after I left": how far to one side of the anchor the window reaches
+    focus_prior: float = 0.5  # "what was I reading before lunch": extra weight for hits nearest the window's boundary
     temporal_sample_span_s: float = 3 * 3600  # windows wider than this are sampled evenly instead of by focus
     # "recent" questions: look back this far first, then each next span, then everything
     recent_lookback_s: tuple[float, ...] = (1800, 6 * 3600, 48 * 3600)
@@ -94,10 +96,12 @@ class HybridRetriever(Retriever):
             eff_mode = "hybrid"
 
         anchor_ts = None
-        if plan.anchor_event and not plan.has_time:
-            anchor_ts = await self._resolve_anchor(plan, device_id)
+        if plan.anchor_event:
+            anchor_ts = await self._resolve_anchor(plan, device_id, now.timestamp())
             if anchor_ts is not None:
-                plan.time_from, plan.time_to = self._anchor_window(plan.query, anchor_ts, now.timestamp())
+                plan.time_from, plan.time_to = self._anchor_window(plan, anchor_ts, now.timestamp())
+                if not plan.search_text:  # "what did I do after I got home": the window is the whole question
+                    eff_mode = "temporal"
 
         no_text = not (plan.search_text or plan.query.strip())
         if eff_mode in ("temporal", "recent") and not plan.search_text and not plan.has_time or no_text:
@@ -115,7 +119,14 @@ class HybridRetriever(Retriever):
         ref_ts = min(now.timestamp(), plan.time_to) if plan.time_to else now.timestamp()
         # inside an explicit/parsed window the window itself carries the time intent: no recency prior
         w = replace(plan.weights, recency=0.0) if plan.has_time else plan.weights
-        fused = await self._fuse(text, eff_mode, w, plan.time_from, plan.time_to, device_id, ref_ts)
+        around = False
+        if plan.has_time and plan.time_focus != "center" and self.cfg.focus_prior > 0:
+            # "what was I reading before lunch" / "what did I buy after the dentist": inside the window the hits
+            # nearest its boundary are the answer, so the prior pulls towards that edge instead of towards now
+            if plan.time_focus == "start" and plan.time_from is not None:
+                ref_ts = plan.time_from
+            w, around = replace(w, recency=self.cfg.focus_prior), True
+        fused = await self._fuse(text, eff_mode, w, plan.time_from, plan.time_to, device_id, ref_ts, around=around)
         widened = False
         if not fused and self.cfg.widen_on_empty and plan.has_time and not plan.explicit_time and anchor_ts is None:
             fused = await self._fuse(text, eff_mode, plan.weights, None, None, device_id, now.timestamp())
@@ -140,6 +151,7 @@ class HybridRetriever(Retriever):
         time_to: float | None,
         device_id: str | None,
         ref_ts: float,
+        around: bool = False,
     ) -> list[tuple[str, float, list[str]]]:
         """Weighted RRF over the ranked lists selected by `mode`, plus a recency prior.
 
@@ -193,7 +205,7 @@ class HybridRetriever(Retriever):
             t = toks.get(i)
             if t is None:
                 continue
-            age = max(0.0, ref_ts - t.ts)
+            age = abs(ref_ts - t.ts) if around else max(0.0, ref_ts - t.ts)
             s += w.recency * top * math.exp(-age / self.cfg.recency_tau_s)
             if w.ocr and t.ocr_text.strip():
                 s += w.ocr * top
@@ -355,19 +367,27 @@ class HybridRetriever(Retriever):
                 toks = [toks[int(i * step)] for i in range(k)]
         return [RetrievedToken(token=t, score=1.0 / (1.0 + abs(t.ts - focus) / span), reasons=["time"]) for t in toks]
 
-    async def _resolve_anchor(self, plan: QueryPlan, device_id: str | None) -> float | None:
-        """Find when 'I left the office' happened: best keyword/text match for the event."""
+    async def _resolve_anchor(self, plan: QueryPlan, device_id: str | None, now_ts: float) -> float | None:
+        """When did 'the dentist' / 'I left the office' happen: the best keyword/text match for the event. Inside a
+        window the question already carries ("... this morning") there is no pull towards now."""
         text = plan.anchor_event or ""
-        fused = await self._fuse(
-            text, "semantic", Weights(recency=0.3), None, None, device_id, datetime.now(UTC).timestamp()
-        )
+        ref = min(now_ts, plan.time_to) if plan.time_to else now_ts
+        w = Weights(recency=0.0 if plan.has_time else 0.3)
+        fused = await self._fuse(text, "semantic", w, plan.time_from, plan.time_to, device_id, ref)
         return self._cache[fused[0][0]].ts if fused else None
 
-    def _anchor_window(self, query: str, anchor_ts: float, now_ts: float) -> tuple[float | None, float | None]:
-        q = query.lower()
-        pad = self.cfg.anchor_pad_s
-        if "before" in q or "until" in q:
-            return None, anchor_ts
-        if "after" in q or "since" in q:
-            return anchor_ts, now_ts
-        return anchor_ts - pad, anchor_ts + pad
+    def _anchor_window(self, plan: QueryPlan, anchor_ts: float, now_ts: float) -> tuple[float, float]:
+        """'before I left' -> the `anchor_side_s` ending at the anchor; 'after' -> the span starting there;
+        'when/while' -> +/- `anchor_pad_s`. Clipped to the window the question already had."""
+        side, pad = self.cfg.anchor_side_s, self.cfg.anchor_pad_s
+        if plan.time_focus == "end":
+            lo, hi = anchor_ts - side, anchor_ts
+        elif plan.time_focus == "start":
+            lo, hi = anchor_ts, min(now_ts, anchor_ts + side)
+        else:
+            lo, hi = anchor_ts - pad, anchor_ts + pad
+        if plan.time_from is not None:
+            lo = max(lo, plan.time_from)
+        if plan.time_to is not None:
+            hi = min(hi, plan.time_to)
+        return lo, hi
