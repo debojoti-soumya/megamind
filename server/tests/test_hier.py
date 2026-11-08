@@ -434,3 +434,21 @@ async def test_outline_hours_lets_stage_1_pick_an_hour_and_reads_its_blocks():
     assert r.last_trace["blocks"] == [T0 + 600 * i for i in range(4)]
     assert r.last_trace["outline_chars"] == len(prompt.split("\n\nNow:")[0].split("blocks):\n", 1)[1])
     assert r.last_trace["stage1_ms"] >= 0 and r.last_trace["stage2_ms"] >= 0
+
+
+async def test_summary_reports_paths_and_stage_latency_percentiles():
+    store = await _store()
+    llm = FakeLLM(stage1={"blocks": ["B0"]}, stage2={"ids": ["a1"]})
+    base = FixedRetriever([await store.get("a1"), await store.get("b1")])
+    r = HierRetriever(
+        store, base, HierMemory(store, llm, tz="UTC"), llm, config=HierConfig(gate_margin=0.4, gate_min_hits=2)
+    )
+    now = datetime.fromtimestamp(T0 + 3600, UTC)
+    await r.retrieve("keys", k=1, now=now)  # gated
+    r.cfg.gate_margin = 0.0
+    await r.retrieve("keys", k=1, now=now)  # both stages
+    out = r.summary()
+    assert out["gated"] == 1 and out["llm"] == 1 and out["recent"] == 2
+    assert [x["path"] for x in r.recent] == ["gated", "llm"]
+    assert out["llm_ms"]["p50"] >= 0 and out["llm_ms"]["p95"] >= out["llm_ms"]["p50"]
+    assert out["stage1_ms"] is not None and out["stage2_ms"] is not None

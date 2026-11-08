@@ -232,4 +232,11 @@ async def stats(request: Request):
             "cold_decodes": media.decodes,
         },
         **({"video": app.video.stats()} if getattr(app, "video", None) is not None else {}),
+        **({"hier": hier.summary()} if (hier := _hier(app)) is not None else {}),
     }
+
+
+def _hier(app):
+    """The hier retriever when RETRIEVER_BACKEND is hier (or combo's hier route), else None."""
+    r = getattr(app, "retriever", None)
+    return r if hasattr(r, "summary") and hasattr(r, "recent") else getattr(r, "hier", None)

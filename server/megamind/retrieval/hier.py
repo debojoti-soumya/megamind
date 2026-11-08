@@ -21,6 +21,7 @@ import logging
 import math
 import re
 import time
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -448,7 +449,25 @@ class HierRetriever(Retriever):
         self.auto_build = auto_build
         self.last_trace: dict[str, Any] = {}
         self.stats = {"llm": 0, "gated": 0, "direct": 0, "errors": 0}
+        self.recent: deque[dict[str, Any]] = deque(maxlen=200)  # per recall: path + ms, for GET /v1/stats
         self._bg: asyncio.Task | None = None
+
+    def summary(self) -> dict[str, Any]:
+        """Counters plus p50/p95 of the LLM stages over the last `recent` recalls (gated ones count as 0 ms)."""
+
+        def pct(key: str) -> dict[str, int] | None:
+            xs = sorted(r[key] for r in self.recent if r.get(key) is not None)
+            if not xs:
+                return None
+            return {"p50": xs[len(xs) // 2], "p95": xs[min(len(xs) - 1, int(0.95 * len(xs)))]}
+
+        return {
+            **self.stats,
+            "recent": len(self.recent),
+            "llm_ms": pct("llm_ms"),
+            "stage1_ms": pct("stage1_ms"),
+            "stage2_ms": pct("stage2_ms"),
+        }
 
     async def _ensure_notes(self, until: float, device_id: str | None) -> None:
         """Write a few missing notes inline; a large backlog (cold start, a long upload) is built in the
@@ -496,6 +515,7 @@ class HierRetriever(Retriever):
         if self.cfg.gate_margin > 0 and n_hits >= self.cfg.gate_min_hits and top_margin(base) >= self.cfg.gate_margin:
             self.stats["gated"] += 1
             self.last_trace = {"gated": round(top_margin(base), 3)}
+            self.recent.append({"path": "gated", "llm_ms": 0})
             return _truncate(base, k)
         t0 = time.perf_counter()
         try:
@@ -507,9 +527,18 @@ class HierRetriever(Retriever):
             log.warning("hier recall fell back to hybrid: %s", e)
             self.last_trace = {"error": str(e)}
             self.stats["errors"] += 1
+            self.recent.append({"path": "error", "llm_ms": _ms(t0)})
             return _truncate(base, k)
         self.stats["llm"] += 1
-        self.last_trace["llm_ms"] = round(1000 * (time.perf_counter() - t0))
+        self.last_trace["llm_ms"] = _ms(t0)
+        self.recent.append(
+            {
+                "path": "direct" if self.last_trace.get("direct") else "llm",
+                "llm_ms": self.last_trace["llm_ms"],
+                "stage1_ms": self.last_trace.get("stage1_ms"),
+                "stage2_ms": self.last_trace.get("stage2_ms"),
+            }
+        )
         tokens = _interleave(_spread(picked, self.cfg.moment_s), base.ranked, k)
         return RetrievalResult(plan=base.plan, tokens=tokens, widened=base.widened, anchor_ts=base.anchor_ts)
 
