@@ -99,7 +99,7 @@ app = modal.App("megamind")
     volumes={DATA: volume},
     secrets=secrets,
     cpu=1.0,
-    memory=2048,
+    memory=3072,  # + CPU torch and SigLIP ViT-B/16 (~1 GB resident)
     min_containers=MIN_CONTAINERS,  # MEGAMIND_MIN_CONTAINERS=1 for a demo window, 0 afterwards
     max_containers=1,  # single writer: LanceDB + in-process background workers
     scaledown_window=600,
