@@ -258,14 +258,25 @@ class MontagePlanner:
             body = " | ".join(p for p in parts if p)[:400] or "(no description)"
             lines.append(f"[{k}] {datetime.fromtimestamp(t.ts, zone):%H:%M:%S} ({t.kind}): {body}")
         ctx = f"Request: {request}\nTarget clips: {min(n_clips, len(labels))}\n\nMoments:\n" + "\n".join(lines)
-        resp = await self._client.messages.create(
-            model=self.model,
-            max_tokens=1500,
-            system=SYSTEM,
-            tools=[PLAN_TOOL],
-            tool_choice={"type": "tool", "name": PLAN_TOOL["name"]},
-            messages=[{"role": "user", "content": ctx}],
-        )
+        req = {"model": self.model, "system": SYSTEM, "tools": [PLAN_TOOL]}
+        try:
+            resp = await self._client.messages.create(
+                **req,
+                max_tokens=1500,
+                tool_choice={"type": "tool", "name": PLAN_TOOL["name"]},
+                messages=[{"role": "user", "content": ctx}],
+            )
+        except anthropic.BadRequestError as e:
+            if "tool_choice" not in str(e):
+                raise
+            # Claude Sonnet 5.5 / Opus 5.5 reject forced tool use (400): ask for the tool instead. Thinking is on
+            # there and shares max_tokens, hence the larger budget.
+            resp = await self._client.messages.create(
+                **req,
+                max_tokens=8000,
+                tool_choice={"type": "auto"},
+                messages=[{"role": "user", "content": ctx + f"\n\nCall {PLAN_TOOL['name']} with your plan."}],
+            )
         block = next(b for b in resp.content if getattr(b, "type", "") == "tool_use")
         return MontagePlan.model_validate(block.input)
 
