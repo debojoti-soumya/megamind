@@ -288,6 +288,7 @@ def test_render_system_prompt_local_time_and_bad_tz():
     p = render_system_prompt(NOW, "America/Los_Angeles")
     assert "Thursday 2024-11-07 09:20:00 PST" in p and "2024-11-07T17:20:00+00:00" in p
     assert "2024-11-07T08:00:00-08:00" in p  # example ISO with offset
+    assert "headset draws an arrow" in p and "never say you cannot point to or highlight" in p
     p = render_system_prompt(NOW, "Not/AZone")
     assert "(UTC)" in p
 
