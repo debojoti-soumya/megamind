@@ -97,6 +97,7 @@ namespace Megamind
             };
             using (var req = UnityWebRequest.Post(config.Url("/v1/chat"), form))
             {
+                config.Authorize(req);
                 req.timeout = config.chatTimeoutSeconds;
                 yield return Send(req, echoTranscript: true);
             }
@@ -113,6 +114,7 @@ namespace Megamind
                 req.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
                 req.downloadHandler = new DownloadHandlerBuffer();
                 req.SetRequestHeader("Content-Type", "application/json");
+                config.Authorize(req);
                 req.timeout = config.chatTimeoutSeconds;
                 panel?.AddUserMessage(text);
                 yield return Send(req, echoTranscript: false);
@@ -157,6 +159,7 @@ namespace Megamind
         {
             using (var req = UnityWebRequestMultimedia.GetAudioClip(url, AudioType.WAV))
             {
+                config.Authorize(req);
                 req.timeout = 20;
                 yield return req.SendWebRequest();
                 if (req.result != UnityWebRequest.Result.Success || speaker == null) yield break;

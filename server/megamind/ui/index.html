@@ -174,6 +174,7 @@
   <div id="settings">
     <div class="row"><h2>Settings</h2><button class="iconbtn" id="closesettings" style="margin-left:auto" aria-label="close">&times;</button></div>
     <label>Server base URL <input type="text" id="s_server" placeholder="http://100.x.y.z:8000"></label>
+    <label>API token (server <code>API_TOKEN</code>; empty = none) <input type="password" id="s_token" autocomplete="off"></label>
     <div class="row">
       <label>Device id <input type="text" id="s_device"></label>
       <label>Session id <input type="text" id="s_session"></label>
@@ -210,12 +211,17 @@
     capture: false, fps: 1, width: 960, autoplay: true, showtools: false,
   };
   let cfg = { ...defaults, ...(JSON.parse(localStorage.getItem(LS) || '{}')) };
+  const qsToken = new URLSearchParams(location.search).get('token');  // /ui?token=... (docs/api.md#auth)
+  if (qsToken) cfg.token = qsToken;
   const saveCfg = () => localStorage.setItem(LS, JSON.stringify(cfg));
   saveCfg();
   const url = (p) => cfg.server.replace(/\/+$/, '') + p;
+  // API_TOKEN: Bearer header on fetch; ?token= on <img>/<audio> URLs (no headers there)
+  const authed = (init = {}) => cfg.token ? { ...init, headers: { ...(init.headers || {}), Authorization: 'Bearer ' + cfg.token } } : init;
+  const media = (p) => cfg.token ? url(p) + (p.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(cfg.token) : url(p);
 
   const fillSettings = () => {
-    $('s_server').value = cfg.server; $('s_device').value = cfg.device; $('s_session').value = cfg.session;
+    $('s_server').value = cfg.server; $('s_token').value = cfg.token || ''; $('s_device').value = cfg.device; $('s_session').value = cfg.session;
     $('s_capture').checked = cfg.capture; $('s_fps').value = cfg.fps; $('s_width').value = cfg.width;
     $('s_autoplay').checked = cfg.autoplay; $('s_showtools').checked = cfg.showtools;
   };
@@ -223,6 +229,7 @@
   $('closesettings').onclick = () => $('settings').classList.remove('show');
   $('s_save').onclick = () => {
     cfg.server = $('s_server').value.trim() || defaults.server;
+    cfg.token = $('s_token').value.trim();
     cfg.device = $('s_device').value.trim() || defaults.device;
     cfg.session = $('s_session').value.trim() || defaults.session;
     cfg.capture = $('s_capture').checked; cfg.fps = +$('s_fps').value || 1; cfg.width = +$('s_width').value || 960;
@@ -233,7 +240,7 @@
   $('s_purge').onclick = async () => {
     if (!confirm(`Delete all memory tokens for device "${cfg.device}"?`)) return;
     try {
-      const r = await fetch(url('/v1/memories?device_id=' + encodeURIComponent(cfg.device)), { method: 'DELETE' });
+      const r = await fetch(url('/v1/memories?device_id=' + encodeURIComponent(cfg.device)), authed({ method: 'DELETE' }));
       const j = await r.json(); addAssistant(`Purged ${j.deleted} memory tokens for ${cfg.device}.`, [], null, false);
     } catch (e) { addAssistant('Purge failed: ' + e, [], null, true); }
     $('settings').classList.remove('show'); pollHealth();
@@ -245,7 +252,7 @@
     clearTimeout(healthTimer);
     try {
       const ctl = new AbortController(); setTimeout(() => ctl.abort(), 3000);
-      const r = await fetch(url('/v1/health'), { signal: ctl.signal });
+      const r = await fetch(url('/v1/health'), authed({ signal: ctl.signal }));
       const j = await r.json();
       $('srvdot').className = 'dot ok'; $('srvtext').textContent = new URL(cfg.server).host;
       $('storecount').textContent = j.store_count;
@@ -289,7 +296,7 @@
       fd.append('meta', JSON.stringify({ device_id: cfg.device, ts: Date.now() / 1000, pose: null }));
       pending++;
       try {
-        const r = await fetch(url('/v1/frames'), { method: 'POST', body: fd });
+        const r = await fetch(url('/v1/frames'), authed({ method: 'POST', body: fd }));
         const j = await r.json(); sent++; if (j.accepted) accepted++; lastReason = j.reason || 'ok';
       } catch (e) { sent++; lastReason = 'net'; }
       pending--;
@@ -318,8 +325,8 @@
       for (const c of cited) {
         const t = document.createElement('div'); t.className = 'thumb'; t.title = c.caption || '';
         t.innerHTML = `<img alt="" loading="lazy"><span class="ts">${ago(c.ts)}</span>`;
-        t.querySelector('img').src = url(c.thumb_url);
-        t.onclick = () => { $('lbimg').src = url(c.thumb_url); $('lbcap').textContent = `${fmtTime(c.ts)} (${ago(c.ts)}) — ${c.caption || ''}`; $('lightbox').classList.add('show'); };
+        t.querySelector('img').src = media(c.thumb_url);
+        t.onclick = () => { $('lbimg').src = media(c.thumb_url); $('lbcap').textContent = `${fmtTime(c.ts)} (${ago(c.ts)}) — ${c.caption || ''}`; $('lightbox').classList.add('show'); };
         row.appendChild(t);
       }
       el.appendChild(row);
@@ -346,8 +353,8 @@
   // object for handleResponse (json() = the final event, i.e. the POST /v1/chat body). Plain POST /v1/chat on
   // servers without the stream endpoint.
   async function postChat(init) {
-    const r = await fetch(url('/v1/chat/stream'), init);
-    if (r.status === 404 || r.status === 405 || !r.body) return fetch(url('/v1/chat'), init);
+    const r = await fetch(url('/v1/chat/stream'), authed(init));
+    if (r.status === 404 || r.status === 405 || !r.body) return fetch(url('/v1/chat'), authed(init));
     if (!r.ok) return r;
     let draft = null;
     const setDraft = (t) => {
@@ -385,7 +392,7 @@
     addAssistant(j.answer, j.cited, j.tool_calls, false, ms);
     $('latency').textContent = (ms / 1000).toFixed(1) + 's';
     if (j.audio_url && cfg.autoplay) {
-      try { speaker?.pause(); speaker = new Audio(url(j.audio_url)); await speaker.play(); } catch (e) { console.warn('audio playback failed', e); }
+      try { speaker?.pause(); speaker = new Audio(media(j.audio_url)); await speaker.play(); } catch (e) { console.warn('audio playback failed', e); }
     }
   }
   async function sendText(text) {

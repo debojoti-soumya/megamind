@@ -1,24 +1,34 @@
 #!/usr/bin/env python3
 """CLI chat client.   python tools/ask.py --server http://localhost:8000 "where are my keys?" """
+
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 
 import httpx
+
+
+def auth_headers(token: str) -> dict[str, str]:
+    """Bearer header for a server with API_TOKEN set (docs/api.md#auth); none when the token is empty."""
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("text", nargs="?")
     ap.add_argument("--server", default="http://localhost:8000")
+    ap.add_argument(
+        "--token", default=os.environ.get("MEGAMIND_API_TOKEN", ""), help="server API_TOKEN (env MEGAMIND_API_TOKEN)"
+    )
     ap.add_argument("--session", default="cli")
     ap.add_argument("--device-id", default=None)
     ap.add_argument("--audio", help="path to a 16 kHz mono WAV to send instead of text")
     args = ap.parse_args()
 
-    with httpx.Client(base_url=args.server, timeout=60.0) as http:
+    with httpx.Client(base_url=args.server, timeout=60.0, headers=auth_headers(args.token)) as http:
         t0 = time.time()
         if args.audio:
             with open(args.audio, "rb") as f:

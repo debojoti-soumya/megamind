@@ -9,6 +9,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    api_token: str = ""  # shared secret for a public deployment; empty = no auth (megamind/auth.py)
+
     anthropic_api_key: str = ""
     claude_model: str = "claude-sonnet-4-6"  # claude-sonnet-4-5* retires 2026-11-30; override via CLAUDE_MODEL
     claude_timeout_s: float = 30.0

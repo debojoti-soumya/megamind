@@ -141,7 +141,8 @@ HTTPS URL, leave off the port unless the tunnel uses one, and don't add a traili
 | B. Laptop/phone hotspot | `http://<laptop-ip-on-hotspot>:8000` | Yes, because the hotspot is your own network | Join the Quest to the hotspot [M-wifi]. Phone hotspot: laptop and Quest both join it. |
 | C. Tailscale on both ends (recommended) | `http://100.x.y.z:8000` (`tailscale ip -4` on the server) | Usually yes, because traffic is relayed when direct paths are blocked | Quest: sideload the Tailscale Android APK (`tailscale-android-universal-*.apk`, Android 8+) from https://pkgs.tailscale.com/stable/#android with `adb install`. Then open it from *Unknown Sources* and log in to the same tailnet. Signing in inside the headset may be fiddly (verify on device). |
 | D. `tailscale serve` on the server | `https://<machine>.<tailnet>.ts.net` | Yes (tailnet only) | Needs HTTPS certificates enabled for the tailnet. The Quest still needs Tailscale. `tailscale serve 8000` [T-serve] (exact CLI syntax varies by version; verify). |
-| E. Tailscale Funnel / ngrok / any public HTTPS URL | `https://...` | Yes, and the Quest does **not** need Tailscale | Funnel is public internet, disabled by default, only on ports 443/8443/10000, and DNS can take up to 10 min [T-funnel]. **The Megamind API has no auth.** Anyone with the URL can read or wipe memories, so turn it off after the demo. The repo has no Modal deployment for this server. Modal only appears as a self-hosted VLM fallback in the [README](../README.md). |
+| E. Tailscale Funnel / ngrok / any public HTTPS URL | `https://...` | Yes, and the Quest does **not** need Tailscale | Funnel is public internet, disabled by default, only on ports 443/8443/10000, and DNS can take up to 10 min [T-funnel]. Set `API_TOKEN` on the server and `"apiToken"` in `megamind.json` ([api.md#auth](api.md#auth)). Without it anyone with the URL can read or wipe memories. Turn the tunnel off after the demo. |
+| F. Modal (public HTTPS, recommended) | `https://<workspace>--megamind-web.modal.run` | Yes. The server is in the cloud, so no hotspot, Tailscale, firewall rule or client isolation matters | Deploy with [deploy/README.md](../deploy/README.md) (one CPU container, memories on a Modal Volume). Put the deploy's `API_TOKEN` in `megamind.json` as `"apiToken"` (section 5). HTTPS needs nothing special in `UnityWebRequest`, and the manifest's cleartext flag doesn't affect `https://`. The first request after 10 min idle has a ~10-15 s cold start. The server-side checklist below does not apply. Test with `curl -H "Authorization: Bearer <token>" <url>/v1/health` then the Quest Browser at `<url>/v1/health?token=<token>` (verify on device). |
 
 **Server side checklist:**
 1. Bind to all interfaces: `uvicorn megamind.main:app --host 0.0.0.0 --port 8000`. The default `127.0.0.1` is unreachable from the headset.
@@ -261,6 +262,11 @@ Pick the URL using [2.3](#23-quest--server-the-network-path). Then use **one** o
   adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerGameActivity
   ```
   Give each headset a unique `deviceId` (`quest3-1`, `quest3-2`, ...) so memories stay separate.
+  For a server with `API_TOKEN` set (option F, Modal), add the token to the same file:
+  `{"serverBaseUrl":"https://<workspace>--megamind-web.modal.run","deviceId":"quest3-1","apiToken":"<token>"}`.
+  The app then sends `Authorization: Bearer <token>` on uploads, chat, health, thumbnails, audio and purge. A 401 in
+  logcat means the token is missing or wrong (verify on device). The token can also be baked into
+  `MegamindConfig.asset` → `Api Token`, but don't commit a real one.
 - **In-app settings panel** (PR #2 chat UI path): writes PlayerPrefs, which override both options above. If a pushed `megamind.json` seems ignored, the panel's PlayerPrefs value is winning. Clear the app data with `adb shell pm clear com.megamind.quest` to reset it. This also resets the permissions.
 
 Confirm the result: logcat prints `[Megamind] capture: server=<url> device=<id> fps=1 url-source=<source>`, and the HUD's last line shows the same.
@@ -331,7 +337,8 @@ select, type in the bar to ask.
 |---|---|---|
 | USB (simplest) | `adb reverse tcp:8000 tcp:8000`, then open `http://localhost:8000/xr` in the Quest browser | Port-forwards the headset's localhost to the laptop (see 2.1). Redo after reconnecting the cable. |
 | Tailscale serve | open `https://<machine>.<tailnet>.ts.net/xr` (option D in 2.3) | Real HTTPS, tailnet only. |
-| Public HTTPS tunnel | Funnel / ngrok URL + `/xr` (option E in 2.3) | **No auth on the API**: anyone with the URL can read or wipe memories. |
+| Modal | `https://<workspace>--megamind-web.modal.run/xr?token=<token>` (option F in 2.3) | Real HTTPS from any network. The `?token=` sets a cookie, so the page's own requests are authorized (verify on device). |
+| Public HTTPS tunnel | Funnel / ngrok URL + `/xr` (option E in 2.3) | Set `API_TOKEN` and open `/xr?token=<token>`; without it anyone with the URL can read or wipe memories. |
 
 Then press **Enter passthrough** (`immersive-ar`; falls back to **Enter VR** / `immersive-vr` where AR is
 unsupported) and allow the permission prompt. *Exit* or the Meta button leaves immersive mode.

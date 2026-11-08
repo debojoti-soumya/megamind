@@ -334,6 +334,7 @@ namespace Megamind
             var t0 = Time.realtimeSinceStartup;
             using (var req = UnityWebRequest.Post(settings.Url(config, "/v1/frames"), form))
             {
+                MegamindConfig.Authorize(req, settings.ApiToken(config));
                 req.timeout = Mathf.Max(1, settings.uploadTimeoutSeconds);
                 yield return req.SendWebRequest();
                 _pending--;

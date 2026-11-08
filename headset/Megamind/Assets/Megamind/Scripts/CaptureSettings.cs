@@ -42,6 +42,7 @@ namespace Megamind
         [NonSerialized] public string overrideSource = "asset";
         [NonSerialized] public string fileServerBaseUrl;
         [NonSerialized] public string fileDeviceId;
+        [NonSerialized] public string fileApiToken;
 
         /// <summary>Parsed megamind.json, or null when absent/unreadable.</summary>
         public static FileOverrides ReadOverrideFile()
@@ -61,6 +62,7 @@ namespace Megamind
             public string serverBaseUrl;
             public string deviceId;
             public float captureFps;
+            public string apiToken; // server API_TOKEN (public deploys); empty = no auth
         }
 
         public static string OverrideFilePath => Path.Combine(Application.persistentDataPath, OverrideFileName);
@@ -81,6 +83,7 @@ namespace Megamind
         {
             fileServerBaseUrl = null;
             fileDeviceId = null;
+            fileApiToken = null;
             overrideSource = PlayerPrefs.HasKey(UrlPrefKey) ? "PlayerPrefs" : "asset";
             try
             {
@@ -90,6 +93,7 @@ namespace Megamind
                 if (o == null) return;
                 if (!string.IsNullOrEmpty(o.serverBaseUrl)) fileServerBaseUrl = o.serverBaseUrl.Trim();
                 if (!string.IsNullOrEmpty(o.deviceId)) fileDeviceId = o.deviceId.Trim();
+                if (!string.IsNullOrEmpty(o.apiToken)) fileApiToken = o.apiToken.Trim();
                 if (o.captureFps > 0f) captureFps = o.captureFps;
                 if (fileServerBaseUrl != null && !PlayerPrefs.HasKey(UrlPrefKey)) overrideSource = OverrideFileName;
             }
@@ -114,6 +118,10 @@ namespace Megamind
             if (config != null && !string.IsNullOrEmpty(config.deviceId)) return config.deviceId.Trim();
             return "quest3-" + SystemInfo.deviceUniqueIdentifier.Substring(0, 6);
         }
+
+        /// <summary>API token: megamind.json > MegamindConfig asset; empty = none.</summary>
+        public string ApiToken(MegamindConfig config) =>
+            !string.IsNullOrEmpty(fileApiToken) ? fileApiToken : (config != null ? config.apiToken ?? "" : "");
 
         public string Url(MegamindConfig config, string path) => ServerBaseUrl(config).TrimEnd('/') + path;
     }

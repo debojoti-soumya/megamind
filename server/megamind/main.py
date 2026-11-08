@@ -16,6 +16,7 @@ from megamind.agent.router import router as agent_router
 from megamind.agent.stt import build_stt
 from megamind.agent.tools import RecallMemory
 from megamind.agent.tts import build_tts
+from megamind.auth import TokenAuth
 from megamind.config import Settings, get_settings
 from megamind.ingest.audio import TranscriptSink
 from megamind.ingest.audio import router as audio_router
@@ -169,6 +170,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_live(app, settings)  # live short-term memory: GET /v1/live/{id}.jpg (+ retriever wrap in lifespan)
     install_xr(app)  # Memory Theater: static WebXR page at GET /xr
     install_montage(app, settings)  # highlight reel: POST /v1/montage + GET /v1/montages/{id}.mp4
+    if settings.api_token:
+        app.add_middleware(TokenAuth, token=settings.api_token)  # outermost: nothing runs before the check
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health():

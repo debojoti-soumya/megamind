@@ -64,6 +64,7 @@ namespace Megamind
         {
             using (var req = UnityWebRequest.Get(config.Url("/v1/health")))
             {
+                config.Authorize(req);
                 req.timeout = 5;
                 yield return req.SendWebRequest();
                 if (feedback)
@@ -78,6 +79,7 @@ namespace Megamind
             using (var req = UnityWebRequest.Delete(config.Url("/v1/memories?device_id=" + UnityWebRequest.EscapeURL(config.deviceId))))
             {
                 req.downloadHandler = new DownloadHandlerBuffer();
+                config.Authorize(req);
                 req.timeout = 10;
                 yield return req.SendWebRequest();
                 if (req.result != UnityWebRequest.Result.Success)

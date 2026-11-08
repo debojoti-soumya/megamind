@@ -12,11 +12,13 @@ relative to the video). Servers without FrameMeta.transcript ignore the field.
 
 Requires: pip install opencv-python-headless httpx  (and ffmpeg on PATH for --audio)
 """
+
 from __future__ import annotations
 
 import argparse
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -126,9 +128,17 @@ class AudioSender:
             print(f"\naudio upload failed ({t0:.1f}-{t1:.1f}s): {exc}")
 
 
+def auth_headers(token: str) -> dict[str, str]:
+    """Bearer header for a server with API_TOKEN set (docs/api.md#auth); none when the token is empty."""
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--server", default="http://localhost:8000")
+    ap.add_argument(
+        "--token", default=os.environ.get("MEGAMIND_API_TOKEN", ""), help="server API_TOKEN (env MEGAMIND_API_TOKEN)"
+    )
     ap.add_argument("--source", default="0", help="webcam index or video path")
     ap.add_argument("--fps", type=float, default=1.0)
     ap.add_argument("--device-id", default="feeder")
@@ -173,7 +183,7 @@ def main() -> None:
 
     pcm = extract_audio(args.source) if args.audio else None
 
-    with httpx.Client(base_url=args.server, timeout=10.0) as http:
+    with httpx.Client(base_url=args.server, timeout=10.0, headers=auth_headers(args.token)) as http:
         audio = AudioSender(http, pcm, start, args.device_id, args.audio_chunk) if pcm else None
         while True:
             ok, frame = cap.read()
