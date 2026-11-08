@@ -114,29 +114,56 @@ def iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=UTC).isoformat()
 
 
-def evaluate(server: str, qa_path: Path, day: str, windows: list[float], k: int, out: Path | None) -> dict:
+def _targets(t: dict) -> list[float]:
+    times = t.get("time_list") or [t["time"]]
+    return [wall_ts(int(t["date"].removeprefix("DAY")), x) for x in times]
+
+
+def _rank(ts_list: list[float], targets: list[float], w: float) -> int | None:
+    return next((i + 1 for i, ts in enumerate(ts_list) if min(abs(ts - t) for t in targets) <= w), None)
+
+
+def evaluate(
+    server: str, qa_path: Path, day: str, windows: list[float], k: int, out: Path | None, lancedb: Path | None
+) -> dict:
+    """Scores /v1/memories against two baselines that need no retrieval: `recent` (the k newest memories
+    before query_time — strong for "just now" questions) and `chance` (k uniformly random earlier memories)."""
     qa = [
         q for q in json.loads(qa_path.read_text()) if q["target_time"]["date"] == day and q["query_time"]["date"] == day
     ]
+    all_ts: list[float] = []
+    if lancedb:
+        import lancedb as ldb
+
+        all_ts = sorted(ldb.connect(str(lancedb)).open_table("tokens").to_arrow().column("ts").to_pylist())
     w_max = max(windows)
     rows = []
     with httpx.Client(base_url=server, timeout=60) as http:
         for q in qa:
-            tq, tt = qa_ts(q["query_time"]), qa_ts(q["target_time"])
+            tq, tt = qa_ts(q["query_time"]), _targets(q["target_time"])
             res = http.get("/v1/memories", params={"q": q["question"], "k": k, "to": iso(tq)}).json()["results"]
-            dts = [abs(r["ts"] - tt) for r in res]
-            rows.append(
-                {
-                    "id": q["ID"],
-                    "type": q["type"],
-                    "need_audio": q["need_audio"],
-                    "q": q["question"],
-                    "dt_top1": dts[0] if dts else None,
-                    "best_rank": {str(w): next((i + 1 for i, d in enumerate(dts) if d <= w), None) for w in windows},
-                    "top": [{"id": r["id"], "dt": round(r["ts"] - tt), "caption": r["caption"]} for r in res[:5]],
+            got = [r["ts"] for r in res]
+            before = [x for x in all_ts if x <= tq]
+            row = {
+                "id": q["ID"],
+                "type": q["type"],
+                "need_audio": q["need_audio"],
+                "q": q["question"],
+                "dt_top1": min(abs(got[0] - t) for t in tt) if got else None,
+                "best_rank": {str(w): _rank(got, tt, w) for w in windows},
+                "top": [{"id": r["id"], "dt": round(r["ts"] - tt[0]), "caption": r["caption"]} for r in res[:5]],
+            }
+            if before:
+                row["recent_rank"] = {str(w): _rank(before[::-1][:k], tt, w) for w in windows}
+                row["chance"] = {
+                    str(w): {
+                        n: 1 - (1 - sum(min(abs(x - t) for t in tt) <= w for x in before) / len(before)) ** n
+                        for n in (1, 5, k)
+                    }
+                    for w in windows
                 }
-            )
-            br = rows[-1]["best_rank"][str(w_max)]
+            rows.append(row)
+            br = row["best_rank"][str(w_max)]
             print(f"{'OK' if br == 1 else (f'@{br}' if br else 'XX'):3} {q['type']:12} {q['question'][:60]}")
     summary: dict = {}
     for t in sorted({r["type"] for r in rows}) + ["ALL"]:
@@ -144,11 +171,12 @@ def evaluate(server: str, qa_path: Path, day: str, windows: list[float], k: int,
         summary[t] = {"n": len(rs)}
         for w in windows:
             ranks = [r["best_rank"][str(w)] for r in rs]
-            summary[t][f"±{w:g}s"] = {
-                "R@1": round(sum(r == 1 for r in ranks) / len(rs), 2),
-                "R@5": round(sum(bool(r) and r <= 5 for r in ranks) / len(rs), 2),
-                f"R@{k}": round(sum(bool(r) for r in ranks) / len(rs), 2),
-            }
+            m = {f"R@{n}": round(sum(bool(x) and x <= n for x in ranks) / len(rs), 2) for n in (1, 5, k)}
+            if all("chance" in r for r in rs):
+                rec = [r["recent_rank"][str(w)] for r in rs]
+                m["recent"] = {f"R@{n}": round(sum(bool(x) and x <= n for x in rec) / len(rs), 2) for n in (1, 5, k)}
+                m["chance"] = {f"R@{n}": round(sum(r["chance"][str(w)][n] for r in rs) / len(rs), 2) for n in (1, 5, k)}
+            summary[t][f"±{w:g}s"] = m
     print(json.dumps(summary, indent=1))
     if out:
         out.write_text(json.dumps({"summary": summary, "rows": rows}, indent=1))
@@ -207,6 +235,7 @@ def main() -> None:
     v.add_argument("--windows", default="30,120,600")
     v.add_argument("--k", type=int, default=12)
     v.add_argument("--out", type=Path, default=None)
+    v.add_argument("--lancedb", type=Path, default=None, help="token store, for the recent/chance baselines")
     a = ap.parse_args()
     if a.cmd == "extract":
         extract(a.clips, a.out, a.fps, a.width)
@@ -215,7 +244,7 @@ def main() -> None:
     elif a.cmd == "reepisode":
         reepisode(a.lancedb)
     else:
-        evaluate(a.server, a.qa, a.day, [float(x) for x in a.windows.split(",")], a.k, a.out)
+        evaluate(a.server, a.qa, a.day, [float(x) for x in a.windows.split(",")], a.k, a.out, a.lancedb)
 
 
 if __name__ == "__main__":
