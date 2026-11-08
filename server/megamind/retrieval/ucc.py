@@ -154,7 +154,9 @@ class UCCClient:
         out: list[Json] = []
         for i in range(0, len(docs), MAX_BATCH):
             batch = list(docs[i : i + MAX_BATCH])
-            key = hashlib.sha256("\n".join(d["name"] for d in batch).encode()).hexdigest()[:64]
+            # scoped to the corpus and the content: the same token ids in another corpus are a different request
+            body = "\n".join([self.corpus, *(f"{d['name']}\t{d.get('text', '')}" for d in batch)])
+            key = hashlib.sha256(body.encode()).hexdigest()[:64]
             ans = await self._call(
                 "POST",
                 f"/corpora/{self.corpus}/documents",
