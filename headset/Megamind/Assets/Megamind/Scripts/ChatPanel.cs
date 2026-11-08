@@ -6,11 +6,14 @@
 //     ScrollRect -> Viewport -> Content (VerticalLayoutGroup + ContentSizeFitter)   <- `content`
 //     Indicators: listeningIndicator, thinkingIndicator
 // Message prefabs:
-//   userBubblePrefab      : Text inside a right-aligned bubble
-//   assistantBubblePrefab : Text inside a left-aligned bubble
+//   userBubblePrefab      : ChatBubble row, bubble right-aligned in the accent colour
+//   assistantBubblePrefab : ChatBubble row, avatar glyph + neutral bubble, left-aligned
+//   systemChipPrefab      : ChatBubble row, small centred chip (voice command feedback)
+//   metaLinePrefab        : caption under an answer (latency, confidence)
 //   thumbnailRowPrefab    : HorizontalLayoutGroup; thumbnails are instantiated under it
-//   thumbnailPrefab       : RawImage (180x135 px canvas units) with optional child Text for "n min ago"
-//   collagePrefab         : optional RawImage for photo montages (default: a thumbnailPrefab sized collageWidth)
+//   thumbnailPrefab       : rounded frame with a RawImage (180x135 px canvas units) and a child Text for "n min ago"
+//   collagePrefab         : optional frame with a RawImage for photo montages (default: a thumbnailPrefab sized collageWidth)
+// Colours come from MegamindTheme (applied by the builder; the state colours below default to it).
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -24,15 +27,18 @@ namespace Megamind
         public MegamindConfig config;
         public Transform content;          // VerticalLayoutGroup
         public ScrollRect scroll;          // optional, auto-scrolls to the newest message
-        public Text userBubblePrefab;
-        public Text assistantBubblePrefab;
+        public ChatBubble userBubblePrefab;
+        public ChatBubble assistantBubblePrefab;
+        public ChatBubble systemChipPrefab;
+        public RectTransform metaLinePrefab;
         public RectTransform thumbnailRowPrefab;
-        public RawImage thumbnailPrefab;
-        public RawImage collagePrefab;
+        public RectTransform thumbnailPrefab;
+        public RectTransform collagePrefab;
         public float collageWidth = 540f;  // canvas units; height follows the image's aspect ratio
         public GameObject listeningIndicator;
         public GameObject thinkingIndicator;
         public GameObject emptyHint;        // "hold the trigger and ask…" shown until the first message
+        public SessionStore sessions;       // optional: every message is appended to the active chat; Render() replays one
 
         [Header("Status strip")]
         public FrameUploader uploader;      // optional, for the capture line (fallback when `hud` is empty)
@@ -41,16 +47,17 @@ namespace Megamind
         public Text statusLine;
         public Image serverDot;             // server health (green/red); with `recDot` set it doubles as the REC dot
         public Image recDot;                // always-visible recording indicator (privacy); blinks while capturing
-        public Color okColor = new Color(0.22f, 0.84f, 0.48f);
-        public Color errColor = new Color(1f, 0.36f, 0.42f);
-        public Color recColor = new Color(1f, 0.25f, 0.25f);
-        public Color recOffColor = new Color(0.45f, 0.48f, 0.52f);
-        public Color errorTextColor = new Color(1f, 0.70f, 0.73f);
-        public Color systemTextColor = new Color(0.62f, 0.67f, 0.74f);
+        public Color okColor = MegamindTheme.Success;
+        public Color errColor = MegamindTheme.Error;
+        public Color recColor = MegamindTheme.Rec;
+        public Color recOffColor = MegamindTheme.Paused;
+        public Color errorTextColor = MegamindTheme.ErrorText;
+        public Color errorBubbleColor = new Color(MegamindTheme.Error.r, MegamindTheme.Error.g, MegamindTheme.Error.b, 0.18f);
+        public Color systemTextColor = MegamindTheme.TextDim;
         public Color thumbFailedColor = new Color(0.30f, 0.16f, 0.18f); // thumbnail that failed to download
 
         private readonly Queue<GameObject> _messages = new Queue<GameObject>();
-        private Text _draft;                // streaming answer bubble (POST /v1/chat/stream deltas), null when none
+        private ChatBubble _draft;          // streaming answer bubble (POST /v1/chat/stream deltas), null when none
         private bool _scrollPending;
         private bool _serverOk;
         private int _storeCount = -1;
@@ -72,9 +79,19 @@ namespace Megamind
 
         public void AddUserMessage(string text)
         {
-            var t = Instantiate(userBubblePrefab, content);
-            t.text = text;
-            Track(t.gameObject);
+            var b = Instantiate(userBubblePrefab, content);
+            b.Text = text;
+            Track(b.gameObject);
+            Record("user", text, null);
+        }
+
+        /// <summary>Adds an empty assistant bubble the caller fills in later (streaming).</summary>
+        public ChatBubble AddAssistantBubble(string text)
+        {
+            var b = Instantiate(assistantBubblePrefab, content);
+            b.Text = text;
+            Track(b.gameObject);
+            return b;
         }
 
         public void AddAssistantMessage(string text, List<Citation> cited) => AddAssistantMessage(text, cited, false, null, 0f);
@@ -93,11 +110,10 @@ namespace Megamind
         public void AddAssistantMessage(string text, List<Citation> cited, bool isError, string confidence, float latencySeconds,
                                         float firstTextSeconds, CollageResponse collage = null)
         {
-            var t = Instantiate(assistantBubblePrefab, content);
-            t.text = text;
-            if (isError) t.color = errorTextColor;
-            Track(t.gameObject);
+            var b = AddAssistantBubble(text);
+            if (isError) b.SetError(errorTextColor, errorBubbleColor);
             AddAnswerDetails(cited, confidence, latencySeconds, firstTextSeconds, collage);
+            if (!isError) Record("assistant", text, cited);
         }
 
         /// <summary>Streaming answer text so far (POST /v1/chat/stream `delta`s), shown in one assistant bubble that
@@ -112,12 +128,12 @@ namespace Megamind
             if (_draft == null)
             {
                 _draft = Instantiate(assistantBubblePrefab, content);
-                _draft.text = text;
+                _draft.Text = text;
                 Track(_draft.gameObject);
                 return;
             }
             if (!_draft.gameObject.activeSelf) _draft.gameObject.SetActive(true);
-            _draft.text = text;
+            _draft.Text = text;
             RequestScroll();
         }
 
@@ -128,17 +144,18 @@ namespace Megamind
         public void FinishDraft(string text, List<Citation> cited, string confidence, float latencySeconds, float firstTextSeconds,
                                 CollageResponse collage = null)
         {
-            var t = _draft;
+            var b = _draft;
             _draft = null;
-            if (t == null)
+            if (b == null)
             {
                 AddAssistantMessage(text, cited, false, confidence, latencySeconds, firstTextSeconds, collage);
                 return;
             }
-            t.gameObject.SetActive(true);
-            t.transform.SetAsLastSibling(); // thumbnails/meta go right under it even if a system chip came in between
-            t.text = text;
+            b.gameObject.SetActive(true);
+            b.transform.SetAsLastSibling(); // thumbnails/meta go right under it even if a system chip came in between
+            b.Text = text;
             AddAnswerDetails(cited, confidence, latencySeconds, firstTextSeconds, collage);
+            Record("assistant", text, cited);
             RequestScroll();
         }
 
@@ -152,23 +169,33 @@ namespace Megamind
         private void AddAnswerDetails(List<Citation> cited, string confidence, float latencySeconds, float firstTextSeconds,
                                       CollageResponse collage)
         {
-            var collagePre = collagePrefab != null ? collagePrefab : thumbnailPrefab;
-            if (collage != null && !string.IsNullOrEmpty(collage.url) && collagePre != null)
-            {
-                var img = Instantiate(collagePre, content);
-                var label = img.GetComponentInChildren<Text>();
-                if (label) label.text = "";
-                float aspect = collage.width > 0 && collage.height > 0 ? (float)collage.height / collage.width : 0.75f;
-                var size = new Vector2(collageWidth, collageWidth * aspect);
-                img.rectTransform.sizeDelta = size;
-                var le = img.GetComponent<LayoutElement>();
-                if (le == null) le = img.gameObject.AddComponent<LayoutElement>();
-                le.preferredWidth = size.x;
-                le.preferredHeight = size.y;
-                Track(img.gameObject);
-                StartCoroutine(LoadThumb(img, config.Url(collage.url)));
-            }
-            else if (cited != null && cited.Count > 0 && thumbnailPrefab != null)
+            if (!AddCollage(collage)) AddCitations(cited);
+            AddMetaLine(confidence, latencySeconds, firstTextSeconds);
+        }
+
+        private bool AddCollage(CollageResponse collage)
+        {
+            var pre = collagePrefab != null ? collagePrefab : thumbnailPrefab;
+            if (collage == null || string.IsNullOrEmpty(collage.url) || pre == null) return false;
+            var frame = Instantiate(pre, content);
+            var img = frame.GetComponentInChildren<RawImage>();
+            var label = frame.GetComponentInChildren<Text>();
+            if (label) label.text = "";
+            float aspect = collage.width > 0 && collage.height > 0 ? (float)collage.height / collage.width : 0.75f;
+            var size = new Vector2(collageWidth, collageWidth * aspect);
+            frame.sizeDelta = size;
+            var le = frame.GetComponent<LayoutElement>();
+            if (le == null) le = frame.gameObject.AddComponent<LayoutElement>();
+            le.preferredWidth = size.x;
+            le.preferredHeight = size.y;
+            Track(frame.gameObject);
+            if (img) StartCoroutine(LoadThumb(img, config.Url(collage.url)));
+            return true;
+        }
+
+        public void AddCitations(List<Citation> cited)
+        {
+            if (cited != null && cited.Count > 0 && thumbnailPrefab != null)
             {
                 Transform row = content;
                 if (thumbnailRowPrefab != null)
@@ -179,35 +206,66 @@ namespace Megamind
                 }
                 foreach (var c in cited)
                 {
-                    var img = Instantiate(thumbnailPrefab, row);
-                    var label = img.GetComponentInChildren<Text>();
+                    if (string.IsNullOrEmpty(c.thumb_url)) continue; // text-only memory: nothing to show
+                    var frame = Instantiate(thumbnailPrefab, row);
+                    var img = frame.GetComponentInChildren<RawImage>();
+                    var label = frame.GetComponentInChildren<Text>();
                     if (label) label.text = Ago(c.ts);
-                    if (thumbnailRowPrefab == null) Track(img.gameObject);
-                    StartCoroutine(LoadThumb(img, config.Url(c.thumb_url)));
+                    if (thumbnailRowPrefab == null) Track(frame.gameObject);
+                    if (img) StartCoroutine(LoadThumb(img, config.Url(c.thumb_url)));
                 }
             }
+        }
 
-            if (!string.IsNullOrEmpty(confidence) || latencySeconds > 0f)
-            {
-                var meta = Instantiate(assistantBubblePrefab, content);
-                meta.fontSize = Mathf.Max(8, assistantBubblePrefab.fontSize * 3 / 4);
-                meta.color = new Color(0.6f, 0.65f, 0.72f);
-                meta.text = (latencySeconds > 0f && firstTextSeconds > 0f ? firstTextSeconds.ToString("0.0") + "s first \u00b7 " : "")
-                          + (latencySeconds > 0f ? latencySeconds.ToString("0.0") + "s" : "")
-                          + (!string.IsNullOrEmpty(confidence) ? "  " + confidence.Replace('_', ' ') : "");
-                Track(meta.gameObject);
-            }
+        public void AddMetaLine(string confidence, float latencySeconds) => AddMetaLine(confidence, latencySeconds, 0f);
+
+        /// <summary>"0.9 s first · 2.4 s · high" under an answer; firstTextSeconds &gt; 0 only for streamed turns.</summary>
+        public void AddMetaLine(string confidence, float latencySeconds, float firstTextSeconds)
+        {
+            if (metaLinePrefab == null || (string.IsNullOrEmpty(confidence) && latencySeconds <= 0f)) return;
+            var meta = Instantiate(metaLinePrefab, content);
+            var t = meta.GetComponentInChildren<Text>();
+            if (t) t.text = (latencySeconds > 0f && firstTextSeconds > 0f ? firstTextSeconds.ToString("0.0") + " s first  \u00b7  " : "")
+                          + (latencySeconds > 0f ? latencySeconds.ToString("0.0") + " s" : "")
+                          + (!string.IsNullOrEmpty(confidence) ? "  \u00b7  " + confidence.Replace('_', ' ') : "");
+            Track(meta.gameObject);
         }
 
         /// <summary>Small dim centred line, e.g. a recognised voice command ("open menu" -> menu opened).</summary>
         public void AddSystemMessage(string text)
         {
-            var t = Instantiate(assistantBubblePrefab, content);
-            t.text = text;
-            t.fontSize = Mathf.Max(8, assistantBubblePrefab.fontSize * 3 / 4);
-            t.color = systemTextColor;
-            t.alignment = TextAnchor.MiddleCenter;
-            Track(t.gameObject);
+            var b = Instantiate(systemChipPrefab != null ? systemChipPrefab : assistantBubblePrefab, content);
+            b.Text = text;
+            Track(b.gameObject);
+            Record("system", text, null);
+        }
+
+        /// <summary>Replaces the transcript with a stored chat (launch, session switch). Nothing is re-recorded.</summary>
+        public void Render(ChatSession session)
+        {
+            Clear();
+            if (session == null) return;
+            _replaying = true;
+            try
+            {
+                foreach (var m in session.messages)
+                {
+                    switch (m.role)
+                    {
+                        case "user": AddUserMessage(m.text); break;
+                        case "system": AddSystemMessage(m.text); break;
+                        default: AddAssistantBubble(m.text); AddCitations(m.cited); break;
+                    }
+                }
+            }
+            finally { _replaying = false; }
+        }
+
+        private bool _replaying;
+        private void Record(string role, string text, List<Citation> cited)
+        {
+            if (_replaying || sessions == null) return;
+            sessions.Append(role, text, cited);
         }
 
         public void Clear()
