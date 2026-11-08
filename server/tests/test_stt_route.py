@@ -17,13 +17,13 @@ from megamind.main import create_app
 HINTS = ["open menu", "close menu", "pause recording", "start recording", "bigger text", "show controls"]
 
 
-def _wav(seconds: float = 0.5, rate: int = 16000) -> bytes:
+def _wav(seconds: float = 0.5, rate: int = 16000, silent: bool = False) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(rate)
-        w.writeframes(b"\x00\x00" * int(seconds * rate))
+        w.writeframes((b"\x00\x00" if silent else b"\x00\x10") * int(seconds * rate))
     return buf.getvalue()
 
 
@@ -73,6 +73,32 @@ def test_match_command_exact_fuzzy_and_rejections():
     assert match_command("what time is it", HINTS) is None  # nothing close
     assert match_command("", HINTS) is None
     assert match_command("open menu", []) is None
+
+
+@pytest.mark.parametrize(
+    ("transcript", "hints"),
+    [
+        ("start recording", ["stop recording"]),
+        ("unmute", ["mute"]),
+        ("mute", ["unmute"]),
+        ("disable captions", ["enable captions"]),
+        ("lock panel", ["unlock panel"]),
+        ("open menu", ["close menu"]),
+        ("show controls", ["hide controls"]),
+        ("menu", ["open menu"]),
+    ],
+)
+def test_match_command_never_picks_a_different_command(transcript, hints):
+    assert match_command(transcript, hints) is None
+
+
+@pytest.mark.parametrize(
+    ("transcript", "phrase"),
+    [("stopped recording", "stop recording"), ("pen menu", "open menu"), ("paws recording", "pause recording")],
+)
+def test_match_command_tolerates_mishearings(transcript, phrase):
+    m = match_command(transcript, [phrase, "start recording", "close menu"])
+    assert m is not None and m.phrase == phrase and 0.8 <= m.score < 1.0
 
 
 def test_parse_hints_json_or_separated():
@@ -151,3 +177,10 @@ async def test_stt_route_requires_token_when_auth_is_on(tmp_path):
             assert (await c.post("/v1/stt", files=files)).status_code == 401
             r = await c.post("/v1/stt", files=files, headers={"Authorization": "Bearer sekrit"})
             assert r.status_code == 200 and r.json()["transcript"] == "[mock transcript]"
+
+
+async def test_silent_clip_returns_empty_transcript_without_calling_stt(app_client):
+    c, app = app_client
+    app.state.stt = ScriptedSTT("[should not be called]")
+    r = await c.post("/v1/stt", files={"audio": ("s.wav", _wav(1.0, silent=True), "audio/wav")})
+    assert r.status_code == 200 and r.json()["transcript"] == "" and r.json()["duration_s"] == 1.0

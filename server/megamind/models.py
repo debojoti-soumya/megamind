@@ -237,7 +237,7 @@ class CommandMatch(BaseModel):
     """`POST /v1/stt` `command`: the `command_hints` phrase the transcript matched (normalized, fuzzy)."""
 
     phrase: str  # the hint exactly as the client sent it
-    score: float  # 1.0 = exact after normalization; >= STT_COMMAND_MIN_SCORE otherwise
+    score: float  # 1.0 = exact after normalization; >= 0.8 (fuzzy) otherwise
 
 
 class SttResponse(BaseModel):
