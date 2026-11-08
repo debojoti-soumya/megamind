@@ -1,0 +1,358 @@
+# Meta Quest 3 guide for Megamind (first-time Quest developers)
+
+This guide is for teammates who have never built for Quest. It covers the headset basics, the
+physical links (USB, Wi-Fi, phone, power), and getting the Megamind capture app onto the headset
+and talking to the server. [`headset/README.md`](../headset/README.md) is the build reference and
+this guide links to it instead of repeating it.
+
+> **Not verified on device.** This guide was written from the repo source and Meta's/Tailscale's
+> docs. It has not been tried on a headset or in Unity. Steps that depend on device or Unity
+> behaviour are marked **(verify on device)**. Menu names come from the cited Meta pages. Horizon OS
+> renames menus often, so trust what you see in the headset over this text, then fix this file.
+
+Contents: [Demo-day quick card](#demo-day-quick-card) · [1. Quest 3 basics](#1-quest-3-basics) ·
+[2. Connections](#2-connections) · [3. Developer setup](#3-developer-setup) ·
+[4. Getting Megamind on the headset](#4-getting-megamind-on-the-headset) ·
+[5. Pointing the app at the server](#5-pointing-the-app-at-the-server) ·
+[6. Test runbook](#6-test-runbook) · [7. Troubleshooting](#7-troubleshooting) · [Sources](#sources)
+
+---
+
+## Demo-day quick card
+
+**Night before**
+1. Charge the headset to 100% (about 2.5 h on the included 18 W charger [M-charge]) and charge the controllers.
+2. Update the headset: Meta button → *Quick controls* → *Settings* → *General* → *Software update*. It must be **v74 or newer** [M-update][D-pca].
+3. Install the latest `megamind.apk`: `adb install -r Builds/megamind.apk`. Open it once and **Allow** the camera prompt.
+
+**Morning of (in this order)**
+1. **Reboot the headset.** On v74 the camera colours can be wrong after a camera app's first install, and a reboot fixes it [D-pca].
+2. Laptop: `cd server && uvicorn megamind.main:app --host 0.0.0.0 --port 8000`.
+3. Laptop: `curl http://<server-ip>:8000/v1/health` should return `{"status":"ok",...}`.
+4. Headset: confirm it is on the **same network** as the server (Wi-Fi or Tailscale, see [2.3](#23-quest--server-the-network-path)). Open `http://<server-ip>:8000/v1/health` in the Quest Browser (verify on device).
+5. Laptop: `adb devices` should list the headset as `device`. Then start `adb logcat -s Unity | grep -i megamind` in a spare terminal.
+6. Wipe old memories if you want a clean demo: `curl -X DELETE http://<server-ip>:8000/v1/memories`.
+7. Launch: Meta button → *Library* → *Unknown Sources* → **Megamind** [D-deploy].
+8. HUD line 1 should show `REC 1 fps  1280x960`. Line 2 should show `sent … accepted …` rising roughly once a second.
+9. Start casting for the audience: Navigator → *Quick controls* → *Cast* → phone/computer [M-cast]. **Cast or record, not both**, because Meta lists doing both at once as a known issue [M-cast-ts].
+10. Plug the headset into a power bank or charger between runs. Keep it worn or face-up and still. Taking it off can suspend the app (see [7](#7-troubleshooting)).
+
+**If it breaks:** look up the symptom in the [decision table](#27-decision-table-symptom--link--2-minute-check).
+Press **A/X** to pause or resume capture (the HUD shows `capture PAUSED (press A/X)`).
+
+---
+
+## 1. Quest 3 basics
+
+| Task | How |
+|---|---|
+| Open the menu ("Navigator") | Press the **Meta button** on the right controller [M-update]. Hold it to recenter the view [M-record]. |
+| Switch to hand tracking | Navigator → *Quick controls* → *Settings* → *Hands & body* → toggle *Hand and Body Tracking* [M-hands]. Megamind's A/X pause toggle uses the controllers. |
+| See your room (passthrough) | Navigator → *Quick settings* → *See your surroundings*. Turning on **Double Tap for Passthrough** in Passthrough settings lets you tap the side of the headset twice [M-passthrough]. |
+| Lighting | Meta recommends **≥ 50 lux** for colour passthrough [M-passthrough]. Dim rooms make the camera feed dark and the server rejects frames as `dark`/`blurry`. |
+| Boundary | The boundary is the virtual wall that appears near the edge of your play area [M-boundary]. Megamind is a mixed-reality app and you will mostly stand still, so a small stationary boundary is fine. |
+| Wi-Fi | Navigator → *Quick controls* → *Settings* → *Wi-Fi* [M-wifi]. |
+| Battery / charging | USB-C port on the **left** side. LED orange = charging, green = full. Quest 3 needs **18 W** [M-charge]. |
+| Cast to phone / browser / PC | Navigator → *Quick controls* → *Cast* → *Mobile*, *Web*, or a nearby device → *Next* [M-cast]. |
+| Record a video in the headset | Navigator → *Camera* → *Record video*. A red dot appears while recording; select *Stop* to end. Shortcut: hold the Meta button and then hold the right trigger. Videos are in *Files* (Media/Recents) or *Gallery* [M-record]. |
+| Screenshot or record from a laptop | Meta VR Developer Hub (MVDH, formerly MQDH) can capture screenshots and video, and can cast the headset view to the computer [D-mvdh]. |
+
+Megamind draws its own **REC** indicator and HUD (`CaptureHud.cs`). Your casts and recordings will show it, which is intended.
+
+---
+
+## 2. Connections
+
+Megamind uses up to five physical links. Most problems on the night are one of these links failing,
+not a code bug, so find the failing link first using the [decision table](#27-decision-table-symptom--link--2-minute-check).
+
+```
+            USB-C (adb, charging)         Wi-Fi / Tailscale (HTTP :8000)
+ laptop  <─────────────────────────>  Quest 3  ───────────────────────────>  server (laptop or cloud)
+ (Unity,      wireless adb :5555        │  cast (same Wi-Fi + same Meta account)
+  adb)   <─────────────────────────>    └──────────────────────────>  phone / browser / PC (demo screen)
+```
+
+### 2.1 Quest ↔ laptop over USB-C (adb)
+
+**Cable.** You need a **data-capable** USB-C cable. Many cables, including the ones bundled with
+power banks, only charge. Unity's *Build and Run* needs a data cable [D-hw]. Link needs USB 3.2
+with at least 5 Gbps [M-link], but adb works on any data cable. If a cable charges the headset
+but `adb devices` stays empty, try a different cable before anything else. Prefer a port directly
+on the laptop over a hub.
+
+**First connection (each laptop, once):**
+1. Developer mode is already on. To confirm it: Meta Horizon phone app → headset → *Headset Settings* → *Developer Mode* toggle should be on [D-setup].
+2. Plug in the cable and **put the headset on**. Accept the **"Allow USB debugging"** prompt and tick **"Always allow from this computer"** [D-setup].
+3. Run `adb devices` [D-adb]:
+
+| `adb devices` output | Meaning | Fix |
+|---|---|---|
+| `1WMHH8...  device` | Working | — |
+| `...  unauthorized` | You have not accepted the RSA prompt on this laptop yet | Put the headset on and accept the prompt. If it never appears: unplug the cable, restart the headset, plug it back in [D-adb]. Also try `adb kill-server && adb devices`. |
+| `...  offline` | adb lost the session (sleep, cable wiggle, or an adb version mismatch) | `adb kill-server && adb devices`. Replug. Close any other adb (Unity, MVDH, or Android Studio can each run their own copy). |
+| `... no permissions` (Linux) | No udev rule for the device | Add your user to `plugdev` and install the Android udev rules (on Debian/Ubuntu, `sudo apt install android-sdk-platform-tools-common`), then replug [A-device]. |
+| empty list | Charge-only cable, driver missing (Windows), or developer mode off | Use another cable or port. On Windows install the **Oculus ADB Drivers** [D-setup]. Check the Developer Mode toggle. |
+| `adb: command not found` | platform-tools are not on your PATH | Install the Android SDK Platform-Tools [A-pt][D-adb]. macOS: `brew install --cask android-platform-tools`. Unity also bundles adb under its Android SDK folder. |
+
+Per-OS notes:
+- **Windows:** needs the Oculus ADB driver (linked from [D-setup]). MVDH is available [D-mvdh].
+- **macOS:** no driver needed. MVDH is available [D-mvdh]. If the prompt never appears, try a different USB-C port or adapter.
+- **Linux:** MVDH is **not** available (Windows and macOS only) [D-mvdh]. Use plain adb and the udev rules [A-device].
+
+If both USB and wireless adb are connected, the headset is listed twice. Target one with `adb -s <serial> ...` [D-adb].
+
+### 2.2 Quest ↔ laptop wireless adb
+
+Use this when you want to walk around untethered and still read logs or reinstall [D-adb]:
+1. Connect over USB first (2.1). Put the headset and laptop on the same Wi-Fi.
+2. Find the headset IP: `adb shell ip route`. The IP is the address after `src` [D-adb].
+3. `adb tcpip 5555`
+4. Unplug the cable. Then run `adb connect <headset-ip>:5555`. `adb devices` should now show `<ip>:5555  device`.
+5. When you are done, run `adb disconnect`. Wireless adb usually stops after the headset reboots, so repeat steps 1–4 afterwards (verify on device).
+
+Wireless adb needs the laptop to reach the headset directly over the LAN, so **venue Wi-Fi with client isolation will block it** (2.3). Use a laptop or phone hotspot instead.
+MVDH can also deploy and show logs, but this guide does not cover its wireless flow because it was not verified against Meta's docs. The MVDH device-setup page says to put the headset on the same Wi-Fi as the computer for casting [D-mvdh-setup].
+
+### 2.3 Quest ↔ server: the network path
+
+The app sends plain HTTP `POST <serverBaseUrl>/v1/frames` (multipart JPEG + JSON) once per second
+(`FrameUploader.cs`, [api.md](api.md)). The app does not call `/v1/health`. Health is a manual check.
+
+**The URL comes from (highest priority first)** (`CaptureSettings.cs`):
+1. PlayerPrefs key `megamind.serverBaseUrl`, written by the in-app settings panel (the chat UI path in [PR #2](https://github.com/debojoti-soumya/megamind/pull/2)).
+2. `megamind.json` in the app's files dir (`/sdcard/Android/data/com.megamind.quest/files/`), pushed over adb.
+3. `Assets/Megamind/MegamindConfig.asset` → `Server Base Url`. This is baked into the APK. The code default is `http://100.64.0.1:8000`.
+
+The HUD's third line shows the active URL and which source it came from (`url:asset|megamind.json|PlayerPrefs`).
+Setting the URL is covered in [section 5](#5-pointing-the-app-at-the-server).
+
+**HTTP vs HTTPS.** The project's `AndroidManifest.xml` sets `android:usesCleartextTraffic="true"`, so
+both `http://` and `https://` URLs work. Android blocks cleartext HTTP by default when that flag is
+missing [A-cleartext]. If someone regenerates the manifest (*Meta → Tools → Update AndroidManifest.xml*),
+check that this flag **and** `horizonos.permission.HEADSET_CAMERA` survive [D-pca-unity]. For an
+HTTPS URL, leave off the port unless the tunnel uses one, and don't add a trailing path. The app appends `/v1/frames` itself.
+
+**Pick one network option:**
+
+| Option | serverBaseUrl | Works on venue Wi-Fi with client isolation? | Notes |
+|---|---|---|---|
+| A. Same Wi-Fi, laptop LAN IP | `http://192.168.x.y:8000` | **No.** Client isolation blocks device-to-device traffic. | Simplest at home. Get the laptop IP with `ipconfig getifaddr en0` (macOS), `hostname -I` (Linux), or `ipconfig` (Windows). |
+| B. Laptop/phone hotspot | `http://<laptop-ip-on-hotspot>:8000` | Yes, because the hotspot is your own network | Join the Quest to the hotspot [M-wifi]. Phone hotspot: laptop and Quest both join it. |
+| C. Tailscale on both ends (recommended) | `http://100.x.y.z:8000` (`tailscale ip -4` on the server) | Usually yes, because traffic is relayed when direct paths are blocked | Quest: sideload the Tailscale Android APK (`tailscale-android-universal-*.apk`, Android 8+) from https://pkgs.tailscale.com/stable/#android with `adb install`. Then open it from *Unknown Sources* and log in to the same tailnet. Signing in inside the headset may be fiddly (verify on device). |
+| D. `tailscale serve` on the server | `https://<machine>.<tailnet>.ts.net` | Yes (tailnet only) | Needs HTTPS certificates enabled for the tailnet. The Quest still needs Tailscale. `tailscale serve 8000` [T-serve] (exact CLI syntax varies by version; verify). |
+| E. Tailscale Funnel / ngrok / any public HTTPS URL | `https://...` | Yes, and the Quest does **not** need Tailscale | Funnel is public internet, disabled by default, only on ports 443/8443/10000, and DNS can take up to 10 min [T-funnel]. **The Megamind API has no auth.** Anyone with the URL can read or wipe memories, so turn it off after the demo. The repo has no Modal deployment for this server. Modal only appears as a self-hosted VLM fallback in the [README](../README.md). |
+
+**Server side checklist:**
+1. Bind to all interfaces: `uvicorn megamind.main:app --host 0.0.0.0 --port 8000`. The default `127.0.0.1` is unreachable from the headset.
+2. Open port 8000/TCP in the laptop firewall:
+   - macOS: when the "accept incoming connections" prompt for Python/uvicorn appears, allow it. Otherwise use *System Settings → Network → Firewall* (verify on your macOS version).
+   - Windows (admin PowerShell): `New-NetFirewallRule -DisplayName "megamind 8000" -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow`. Windows may also put new Wi-Fi networks under the *Public* profile, which blocks inbound connections.
+   - Linux (ufw): `sudo ufw allow 8000/tcp`.
+3. Test from the outside in, in this order:
+   1. Laptop: `curl http://127.0.0.1:8000/v1/health`. Checks that the server is up.
+   2. Laptop: `curl http://<serverBaseUrl-host>:8000/v1/health`. Checks the bind address and the firewall to self.
+   3. **Phone** on the same Wi-Fi/tailnet: open the same URL in its browser. Checks LAN reachability and client isolation.
+   4. **Quest Browser**: open the same URL (verify on device). This is the exact path the app will use.
+
+`adb shell curl` (suggested in older notes) depends on the headset having a `curl` binary. Don't rely
+on it (verify on device). `adb shell ping -c 3 <server-ip>` is a cheaper reachability check (verify on device).
+
+### 2.4 Quest ↔ phone (pairing and casting)
+
+- **Pairing / developer mode** is done in the **Meta Horizon** phone app (headset → *Headset Settings* → *Developer Mode*) [D-setup].
+- **Casting** needs the phone, computer, and headset on the **same Wi-Fi network and band**, and logged into the **same Meta account** [M-cast].
+  - From the headset: Navigator → *Quick controls* → *Cast* → *Mobile* / *Web* / nearby device → *Next*. Stop with *Cast* → *Stop casting* [M-cast].
+  - From the phone: Meta Horizon app → *Devices* → your headset → *Cast*. Bluetooth must be on [M-cast].
+  - Browser: log in at `oculus.com/casting` with the same account [M-cast-ts].
+- Guest, corporate, hotel, or airport networks **often block casting** [M-cast-ts]. On venue Wi-Fi, put the headset and the demo laptop/phone on your own hotspot (option B above). Casting also uses more battery [M-cast-ts].
+- For a big screen, cast to a laptop browser and mirror that laptop to the projector.
+- Alternative that skips casting entirely: MVDH casts the headset display to the computer over its own connection [D-mvdh].
+
+### 2.5 Quest ↔ PC (Link / Air Link): mostly skip it
+
+Link and Air Link are **Windows-only** [M-link][D-before]. Link needs a USB 3.2 cable (≥ 5 Gbps). Air Link
+needs 5 GHz Wi-Fi [M-link]. They let you press Play in Unity and see the scene in the headset, but
+Megamind's value is the **passthrough camera feed**, and Play mode does not give you a reliable
+path to that. Meta's PCA docs require a device build, and the XR Simulator does not support PCA [D-before].
+The headset README says Horizon Link 2.1+ can work, which is not verified here. **Use
+*Megamind → 4. Build and Run on headset* instead.** Link is only useful for checking HUD/panel layout on a
+Windows PC.
+
+### 2.6 Power
+
+- Full charge takes about 2.5 h on the included 18 W adapter [M-charge]. Meta has not published a runtime for Megamind's workload (passthrough + camera + Wi-Fi uploads + JPEG encoding). **Assume less than an hour and time it on the night** (verify on device). Casting drains the battery faster [M-cast-ts].
+- **Charging while tethered:** a laptop USB port usually supplies far less than 18 W, so the battery can still drain while you develop over USB (verify on device). For long sessions, use the 18 W wall charger or a USB-C PD power bank of at least 18 W, and use wireless adb (2.2) for logs.
+- **Accessories:** Meta sells charging docks [M-docks] and the **Meta Quest 3 Elite Strap with Battery** [M-elite]. A power bank in your pocket with a long USB-C cable also works.
+- Keep the dock's magnetic pins dry [M-battery]. If the headset gets hot, stop and let it cool (see 7).
+
+### 2.7 Decision table: symptom → link → 2-minute check
+
+| Symptom | Likely link at fault | 2-minute check |
+|---|---|---|
+| `adb devices` is empty | USB cable/driver (2.1) | Swap cable/port. Windows: Oculus ADB driver. Check the Developer Mode toggle in the phone app. |
+| `adb devices` shows `unauthorized` | USB trust prompt (2.1) | Put the headset on and accept the *Allow USB debugging* prompt. Otherwise restart the headset and replug. |
+| `adb devices` shows `offline` | adb server (2.1) | `adb kill-server && adb devices`. Quit Unity/MVDH's adb. |
+| `adb connect <ip>:5555` times out | Wireless adb / LAN (2.2) | Same Wi-Fi? Re-run `adb tcpip 5555` over USB. Venue Wi-Fi isolation → use a hotspot. |
+| HUD `NET ERR: ... Cannot connect to destination host` and `last net` | Quest → server (2.3) | Can you open `<url>/v1/health` in the Quest Browser? If not: is the server bound to `0.0.0.0`, is the firewall open, is Tailscale connected on the Quest? |
+| Laptop can reach `/v1/health` but phone/Quest can't | Firewall or client isolation (2.3) | Try from the phone. If the phone also fails, switch to a hotspot or Tailscale. |
+| HUD shows the wrong URL or `url:asset` with an old IP | Config (2.3, 5) | `adb shell cat /sdcard/Android/data/com.megamind.quest/files/megamind.json`. PlayerPrefs from the settings panel override the file. |
+| `https://` URL fails but `http://` works (or the reverse) | TLS / tunnel (2.3) | `curl -v <url>/v1/health` from the laptop. Funnel DNS can take 10 min [T-funnel]. Check that the URL has no `:8000` and no trailing path. |
+| Cast list is empty or casting fails | Phone ↔ Quest Wi-Fi (2.4) | Same Wi-Fi, same band, same Meta account? Venue network blocks casting → hotspot [M-cast-ts]. |
+| Battery drains while plugged into the laptop | Power (2.6) | Switch to the 18 W wall charger or a PD bank. Use wireless adb. |
+| App relaunches or freezes when you take the headset off | Proximity sensor / sleep (7) | Keep it on your head, or turn off the proximity sensor in MVDH [D-mvdh]. |
+
+---
+
+## 3. Developer setup
+
+1. **Pairing:** each headset is paired with a phone in the **Meta Horizon** app, and that app holds the Developer Mode toggle [D-setup]. Developer mode requires a verified developer account [D-setup].
+2. **Verify developer mode:** phone app → headset → *Headset Settings* → *Developer Mode* should be on. In the headset, the *Settings* → *Developer* section should exist (verify on device) [D-setup].
+3. **Install adb** (any OS): Android SDK Platform-Tools [A-pt]. Check with `adb version`.
+4. **Optional: MVDH** (Windows/macOS). It provides a device manager, logs, screenshots/video, APK deploy by drag-and-drop, cast to computer, and toggles to disable the proximity sensor and boundary for development [D-mvdh][D-mvdh-start].
+5. **Connect:** follow [2.1](#21-quest--laptop-over-usb-c-adb) and finish with `adb devices` showing `device`.
+
+---
+
+## 4. Getting Megamind on the headset
+
+Exact versions (from the repo): **Unity `6000.0.66f2`** (`headset/Megamind/ProjectSettings/ProjectVersion.txt`),
+Meta XR Core SDK **85.0.0**, MR Utility Kit **85.0.0**, OpenXR 1.15.1 (`Packages/manifest.json`). Package
+`com.megamind.quest`, ARM64, IL2CPP, min SDK 32. Full details are in [`headset/README.md` → Build + sideload](../headset/README.md#build--sideload-step-by-step).
+None of this was run here, so all Unity steps are **(verify on device)**.
+
+1. **Unity Hub** → *Installs* → *Install Editor* → `6000.0.66f2`. Add the **Android Build Support** module, including **OpenJDK** and **Android SDK & NDK Tools** [U-android].
+2. Hub → *Add* → open the folder `headset/Megamind`. The first import downloads the Meta packages.
+3. *File → Build Profiles* (Unity 6) → **Android** → *Switch Platform* [D-unity-build].
+4. Open the Meta **Project Setup Tool** (*Window → Meta → Tools → Project Setup Tool*) and resolve the **required** issues on the Android tab [D-unity-setup][D-pca-unity].
+5. Run the project's menu items in order (`Assets/Megamind/Editor/MegamindSceneBuilder.cs`):
+   - **Megamind → 1. Create Capture Scene**. Creates the scene, `MegamindConfig.asset`, and `CaptureSettings.asset`.
+   - **Megamind → Check Project**. Every line should read `OK`.
+   - **Megamind → Select Config**. Set `Server Base Url` (see 2.3).
+   - **Megamind → 2. Apply Android Player Settings**
+   - **Megamind → 3. Build APK** → `Builds/megamind.apk`. Or run **Megamind → 4. Build and Run on headset** to build, install, and launch over USB. The first IL2CPP build takes about 10 min.
+6. **Sideload** an APK someone else built:
+   - adb: `adb install -r Builds/megamind.apk` (`-r` keeps the app data and permissions) [D-adb].
+   - MVDH: *Device Manager* → *Apps* → drag in the APK, or use *Add Build* [D-deploy].
+7. **Launch:** in the headset, Meta button → *Library* → **Unknown Sources** → **Megamind** [D-deploy]. From the laptop:
+   ```sh
+   adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerGameActivity
+   ```
+   The manifest declares `UnityPlayerGameActivity` (Unity 6 GameActivity entry point, `androidApplicationEntry: 2`).
+   Older notes used `UnityPlayerActivity`, which does not match the manifest (verify on device).
+8. **Permission dialog (one per run of `MegamindPermissions`):** on first launch the app requests the passthrough-camera permission (`horizonos.permission.HEADSET_CAMERA`) and the microphone, in a single request through `OVRPermissionsRequester` [D-pca-unity]. Select **Allow**. The exact dialog wording was not verified (verify on device). The HUD then changes from `waiting for camera permission…` to `starting passthrough camera…` to `REC ...`.
+   - **If you hit Deny:** the app does not ask again in that session. Fix it either way:
+     - Headset: *Settings → Apps → Megamind → Permissions* → allow Camera (verify on device, path from the headset README).
+     - Laptop: `adb shell pm grant com.megamind.quest horizonos.permission.HEADSET_CAMERA`, then force-stop and relaunch (verify on device; runtime-permission behaviour per [D-pca-native]).
+9. **OS requirement:** the Passthrough Camera API needs **Quest 3/3S on Horizon OS v74+** [D-pca]. Check the version under Navigator → *Quick controls* → *Settings* → *General* → *Software update*, which shows the current version and offers an update when one is available [M-update]. On an old OS the HUD shows `Passthrough Camera API unsupported (Quest 3 + v74 required)`.
+
+---
+
+## 5. Pointing the app at the server
+
+Pick the URL using [2.3](#23-quest--server-the-network-path). Then use **one** of:
+
+- **Baked in:** *Megamind → Select Config* → `Server Base Url`, then rebuild.
+- **No rebuild (adb):** use the editor menu *Megamind → Push config to headset (adb)*, or:
+  ```sh
+  adb shell mkdir -p /sdcard/Android/data/com.megamind.quest/files
+  adb shell 'echo "{\"serverBaseUrl\":\"http://100.101.102.103:8000\",\"deviceId\":\"quest3-1\"}" > /sdcard/Android/data/com.megamind.quest/files/megamind.json'
+  adb shell am force-stop com.megamind.quest
+  adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerGameActivity
+  ```
+  Give each headset a unique `deviceId` (`quest3-1`, `quest3-2`, ...) so memories stay separate.
+- **In-app settings panel** (PR #2 chat UI path): writes PlayerPrefs, which override both options above. If a pushed `megamind.json` seems ignored, the panel's PlayerPrefs value is winning. Clear the app data with `adb shell pm clear com.megamind.quest` to reset it. This also resets the permissions.
+
+Confirm the result: logcat prints `[Megamind] capture: server=<url> device=<id> fps=1 url-source=<source>`, and the HUD's last line shows the same.
+
+---
+
+## 6. Test runbook
+
+Keep a log terminal open the whole time. Unity writes `Debug.Log` under the logcat tag **`Unity`** (Unity convention; verify on device), and
+every Megamind line starts with `[Megamind]` (`-s`, `-c`, `> file` usage per [D-logcat]):
+```sh
+adb logcat -c                                  # clear old logs
+adb logcat -s Unity | grep -i "\[megamind\]"   # -s filters by tag; grep filters the message
+adb logcat > session.log                       # full log for crashes; search for "backtrace:"
+```
+On the server, watch the uvicorn output for `POST /v1/frames ... 200`.
+
+| # | Step | Success looks like | Failure looks like → go to |
+|---|---|---|---|
+| 0 | Sanity: Meta's unmodified `CameraViewer` sample ([samples repo](https://github.com/oculus-samples/Unity-PassthroughCameraApiSamples)) | Shows the camera image | No image → OS/permission problem, not Megamind |
+| 1 | `adb devices` | `<serial>  device` | 2.1 table |
+| 2 | Server health from the laptop and the Quest Browser | `{"status":"ok","store_count":N,...}` | 2.3 |
+| 3 | Install + launch | App is under *Unknown Sources*. The REC dot and HUD appear | 7: "not in library", "App not installed" |
+| 4 | Permission | One dialog. Log: `[Megamind] permissions: camera=False mic=False (requested 2)` then `[Megamind] permission granted: ...`. Relaunches show `camera=True` | Two dialogs → see headset README troubleshooting. HUD stuck on `waiting for camera permission…` → 4.8 |
+| 5 | Config | `[Megamind] capture: server=http://... device=quest3-1 fps=1 url-source=...` with the URL you expect | Wrong URL → 5 |
+| 6 | Camera | `[Megamind] camera: os=... device=... requested=1280x960 supported=[...]` then **`[Megamind] camera playing: 1280x960 maxFps=30`**. HUD: `REC 1 fps  1280x960` | `Passthrough Camera API unsupported...` → OS < v74. `no PassthroughCameraAccess in scene` → re-run *1. Create Capture Scene*. If `supported=[...]` lacks `1280x960`, pick one from the list for `CaptureSettings.cameraResolution` |
+| 7 | Upload | HUD `sent` and `accepted` rise about once per second. `last ok` with a latency in ms and the size in KB | `last net` + `NET ERR: ...` and the log line `[Megamind] frame upload failed (Nx): ... url=...` → 2.7 |
+| 8 | Server filter | Some `last duplicate` / `too_soon` while still is normal (the filter keeps roughly 10–30% at 1 fps) | Mostly `dark`/`blurry` → 7 |
+| 9 | Pause | A/X → `capture PAUSED (press A/X)`. Press again to resume | — |
+| 10 | Image check | Open a stored thumbnail (`/v1/thumbs/{id}.jpg`, see [api.md](api.md)). Colours should be right, upright, not mirrored | Blue skin → reboot the headset [D-pca] |
+
+Expected camera numbers: the app requests **1280×960** with a max of **30 fps** from the camera (`CaptureSettings.cs`).
+It then samples and uploads only **1 frame/s**, as a JPEG downscaled to a width of 960 px at quality 75. 1280×960 is
+one of the resolutions Meta documents for PCA [D-pca-unity]. Meta documents about 20–40 ms latency [D-pca].
+
+---
+
+## 7. Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| **Black passthrough / black camera image** | Is passthrough on? Re-run *Megamind → Check Project*, because PCA requires passthrough to be enabled [D-pca]. Is the room bright enough (≥ 50 lux [M-passthrough])? Make sure nothing is covering the front cameras. If the HUD shows `0x0`, the camera has not started. Check step 6 of the runbook. |
+| **No permission prompt** | It was already answered. Run `adb shell dumpsys package com.megamind.quest \| grep -i camera` to check (verify on device). The app asks once per session only (`MegamindPermissions.cs`). Grant it manually (4.8). After regenerating the manifest, re-add `HEADSET_CAMERA` [D-pca-unity]. |
+| **App not in the library** | Look under *Library → Unknown Sources*, not the main grid [D-deploy]. Check that `adb shell pm list packages \| grep megamind` prints `package:com.megamind.quest`. |
+| **`App not installed` / `INSTALL_FAILED_UPDATE_INCOMPATIBLE`** | A build signed with a different key (another teammate's debug keystore) is installed. Run `adb uninstall com.megamind.quest` and reinstall. This deletes the app data, `megamind.json`, and permission grants. |
+| **Boundary / "Guardian" blocks the view or pauses** | Redraw a small stationary boundary [M-boundary]. For bench testing, MVDH can disable the boundary [D-mvdh]. Turn it back on before anyone walks around. |
+| **Headset falls asleep or the app restarts when removed** | The proximity sensor suspends apps when the headset is off a head. Disable it in MVDH [D-mvdh], or keep the headset on. The commonly used adb broadcast `adb shell am broadcast -a com.oculus.vrpowermanager.prox_close` is **not** in the Meta docs checked here (verify on device). Power/sleep timeout settings are in the headset's *Settings* (exact path not verified). `SensorLockActivity` in logcat means it was idle: put it on, press power once, then relaunch. |
+| **Overheating / throttling** | Stop casting and recording, and take it off the charger and out of direct sun. Let it cool before continuing. This advice is general and not from a Meta doc. |
+| **Frames rejected (`accepted` flat, `last <reason>`)** | Reasons come from `server/megamind/ingest/filter.py` ([api.md](api.md)). `dark` means more light. `blurry` means move your head slower; the camera auto-exposes slowly after start. `duplicate` / `too_soon` are expected when the scene is static, so walk around. `budget` means the per-device kept-frames cap was hit (`filter_max_per_min`). `client:motion` / `client:backlog` are skipped on the headset and never sent. |
+| **Colours wrong (blue skin)** | Reboot the headset. This is a known issue on v74 after a camera app's first install [D-pca]. |
+| **Wipe memories** | `curl -X DELETE http://<server>:8000/v1/memories` wipes **all** devices. Add `?device_id=quest3-1` to wipe one device, or `&since=<ts>` to wipe from a time onwards ([api.md](api.md)). |
+
+---
+
+## Sources
+
+Meta developer docs (all accessed while writing this guide):
+- [D-setup] Device setup, developer mode, USB debugging, Windows driver: https://developers.meta.com/vr/documentation/native/android/mobile-device-setup/
+- [D-adb] adb on Quest (devices, wireless, install, `ip route`): https://developers.meta.com/vr/documentation/native/android/ts-adb/
+- [D-logcat] Logcat: https://developers.meta.com/vr/documentation/native/android/ts-logcat/
+- [D-mvdh] Meta VR Developer Hub overview: https://developers.meta.com/vr/documentation/unity/ts-mqdh/
+- [D-mvdh-start] MVDH getting started: https://developers.meta.com/vr/documentation/unity/ts-mqdh-getting-started/
+- [D-mvdh-setup] MVDH device setup: https://developers.meta.com/vr/documentation/unity/ts-mqdh-device-setup/
+- [D-deploy] Deploy a build with MVDH (Unknown Sources): https://developers.meta.com/vr/documentation/unity/ts-odh-deploy-build/
+- [D-pca] Passthrough Camera API overview (v74+, Quest 3/3S, known issues): https://developers.meta.com/vr/documentation/unity/unity-pca-overview/
+- [D-pca-unity] PCA Unity docs (resolutions, permissions, manifest): https://developers.meta.com/vr/documentation/unity/unity-pca-documentation/
+- [D-pca-native] PCA permissions (native): https://developers.meta.com/vr/documentation/native/android/pca-native-documentation/
+- [D-unity-setup] Unity project setup: https://developers.meta.com/vr/documentation/unity/unity-project-setup/
+- [D-unity-build] Unity build configuration: https://developers.meta.com/vr/documentation/unity/unity-build/
+- [D-hw] Unity device setup (data cable): https://developers.meta.com/vr/documentation/unity/unity-env-device-setup/
+- [D-before] Before you begin (Link Windows-only, simulator): https://developers.meta.com/vr/documentation/unity/unity-before-you-begin/
+
+Meta Quest Help Center:
+- [M-update] Software update: https://www.meta.com/help/quest/540602136930952/
+- [M-passthrough] Passthrough: https://www.meta.com/help/quest/617966963105359/
+- [M-hands] Hand tracking: https://www.meta.com/help/quest/290147772643252/
+- [M-boundary] Boundary: https://www.meta.com/help/quest/463504908043519/
+- [M-wifi] Wi-Fi: https://www.meta.com/help/quest/1816744325172615/ and troubleshooting https://www.meta.com/help/quest/517103729284781/
+- [M-cast] Casting: https://www.meta.com/help/quest/192719842695017/
+- [M-cast-ts] Casting troubleshooting: https://www.meta.com/help/quest/214966974548157/
+- [M-record] Record video: https://www.meta.com/help/quest/516228089650875/
+- [M-charge] Charging: https://www.meta.com/help/quest/3482884435359892/
+- [M-battery] Battery life: https://www.meta.com/help/quest/1275691429562711/
+- [M-docks] Charging docks: https://www.meta.com/help/quest/1571448446949054/
+- [M-elite] Elite Strap with Battery: https://www.meta.com/help/quest/556883619437824/
+- [M-link] Link / Air Link: https://www.meta.com/help/quest/509273027107091/
+
+Android / Tailscale:
+- [U-android] Unity Android environment setup: https://docs.unity3d.com/6000.0/Documentation/Manual/android-sdksetup.html
+- [A-pt] Platform-Tools: https://developer.android.com/tools/releases/platform-tools
+- [A-device] Run on a hardware device (Linux udev, plugdev): https://developer.android.com/studio/run/device
+- [A-cleartext] Network security config / cleartext: https://developer.android.com/privacy-and-security/security-config
+- [T-serve] Tailscale Serve: https://tailscale.com/kb/1312/serve
+- [T-funnel] Tailscale Funnel: https://tailscale.com/kb/1223/funnel
+- Tailscale Android APKs: https://pkgs.tailscale.com/stable/#android
