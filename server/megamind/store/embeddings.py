@@ -43,6 +43,7 @@ __all__ = [
     "build_image_embedder",
     "build_text_embedder",
     "normalize",
+    "siglip_calibration",
 ]
 
 DEFAULT_TEXT_DIM = 1024
@@ -210,6 +211,32 @@ class OpenCLIPImageEmbedder(ImageEmbedder):
     async def embed_text(self, text: str) -> list[float]:
         """Visual-mode query: callers should pass `"a photo of {phrase}"`."""
         return await asyncio.to_thread(self._text, text)
+
+    @property
+    def calibration(self) -> tuple[float, float] | None:
+        """SigLIP's (exp(logit_scale), logit_bias); None for CLIP-style models (no sigmoid bias)."""
+        return siglip_calibration(self.model)
+
+
+def _scalar(x: Any) -> float:
+    if hasattr(x, "detach"):
+        x = x.detach()
+    if hasattr(x, "item"):
+        x = x.item()
+    return float(x)
+
+
+def siglip_calibration(model: Any) -> tuple[float, float] | None:
+    """(scale, bias) with p(match) = sigmoid(scale * cos + bias), read from an open_clip model.
+
+    SigLIP is trained with exactly this sigmoid, so p is a usable match probability; CLIP models have a
+    `logit_scale` but no `logit_bias` and are left uncalibrated. Ported from PR #54.
+    """
+    bias = getattr(model, "logit_bias", None)
+    scale = getattr(model, "logit_scale", None)
+    if bias is None or scale is None:
+        return None
+    return math.exp(_scalar(scale)), _scalar(bias)
 
 
 # ---------------------------------------------------------------------- factories

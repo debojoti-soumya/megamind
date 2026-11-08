@@ -1,0 +1,27 @@
+pluginManagement {
+    repositories {
+        **ARTIFACTORYREPOSITORY**
+        gradlePluginPortal()
+        google()
+        // Maven Central mirror first: repo.maven.apache.org rate-limits shared CI egress IPs (HTTP 429).
+        maven { url "https://maven-central.storage-download.googleapis.com/maven2/" }
+        mavenCentral()
+    }
+}
+
+include ':launcher', ':unityLibrary'
+**INCLUDES**
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        **ARTIFACTORYREPOSITORY**
+        google()
+        // Maven Central mirror first: repo.maven.apache.org rate-limits shared CI egress IPs (HTTP 429).
+        maven { url "https://maven-central.storage-download.googleapis.com/maven2/" }
+        mavenCentral()
+        flatDir {
+            dirs "${project(':unityLibrary').projectDir}/libs"
+        }
+    }
+}
