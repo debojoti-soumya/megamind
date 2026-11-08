@@ -24,14 +24,30 @@ Contents: [Demo-day quick card](#demo-day-quick-card) · [1. Quest 3 basics](#1-
 1. Charge the headset to 100% (about 2.5 h on the included 18 W charger [M-charge]) and charge the controllers.
 2. Update the headset: Meta button → *Quick controls* → *Settings* → *General* → *Software update*. It must be **v74 or newer** [M-update][D-pca].
 3. Install the latest `megamind.apk`: `adb install -r Builds/megamind.apk`. Open it once and **Allow** the camera prompt.
+4. Rehearse the route: film it on a phone, write the question card, and run
+   `python tools/rehearse.py walk.mp4 questions.txt --server $U` (token from `MEGAMIND_API_TOKEN`). It plays the clip
+   through the real server as a throwaway device, asks every question, and prints answer / PASS / seconds. Film only
+   the questions that pass, then delete the rehearsal memories (the tool does this unless you pass `--keep`). See
+   [tools/README.md](../tools/README.md#demo-tools).
 
 **Morning of (in this order)**
 1. **Reboot the headset.** On v74 the camera colours can be wrong after a camera app's first install, and a reboot fixes it [D-pca].
-2. Laptop: `cd server && uvicorn megamind.main:app --host 0.0.0.0 --port 8000`.
-3. Laptop: `curl http://<server-ip>:8000/v1/health` should return `{"status":"ok",...}`.
+2. Server. Modal (option F): `python deploy/keep_warm.py on --hours 3` keeps one container warm for the shoot. Local:
+   `cd server && uvicorn megamind.main:app --host 0.0.0.0 --port 8000`.
+3. Laptop: `python tools/demo_check.py --server $U` (with the app running, after step 8). It prints one PASS / WARN / FAIL
+   line each for:
+   - health and warmup
+   - the live models: Claude, STT, TTS, text embeddings, SigLIP image vectors
+   - the turn log the captions come from
+   - adb and the headset battery
+   - frames from the headset in the last 20 s
+   - a timed test question
+
+   Exit code 1 means fix before recording. Run it again before each take, but not during one: its test question is a
+   real turn.
 4. Headset: confirm it is on the **same network** as the server (Wi-Fi or Tailscale, see [2.3](#23-quest--server-the-network-path)). Open `http://<server-ip>:8000/v1/health` in the Quest Browser (verify on device).
 5. Laptop: `adb devices` should list the headset as `device`. Then start `adb logcat -s Unity | grep -i megamind` in a spare terminal.
-6. Wipe old memories if you want a clean demo: `curl -X DELETE http://<server-ip>:8000/v1/memories`.
+6. Wipe old memories if you want a clean demo: `curl -X DELETE -H "Authorization: Bearer $MEGAMIND_API_TOKEN" $U/v1/memories`.
 7. Launch: Meta button → *Library* → *Unknown Sources* → **Megamind** [D-deploy].
 8. The chat panel header should show a blinking red REC dot and `REC 1 fps · N sent · mic M · url:<source>` with `sent` rising roughly once a second (corner tab → *Debug stats* shows the full stats: resolution, accepted, last reason, latency). "HUD" below means this header strip / Debug view.
 9. Start casting for the audience: Navigator → *Quick controls* → *Cast* → phone/computer [M-cast]. **Cast or record, not both**, because Meta lists doing both at once as a known issue [M-cast-ts].

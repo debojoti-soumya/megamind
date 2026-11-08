@@ -76,6 +76,14 @@ def active_provider(settings: Settings, configured: str, impl: object, active: s
     return f"mock ({configured} configured, {why})"
 
 
+def _image_label(settings: Settings, image_embedder: object | None) -> str:
+    """Health label for image vectors: "openclip:ViT-B-16-SigLIP", "mock", or "none (...)" when they are off."""
+    configured = settings.image_embed_provider.lower()
+    if image_embedder is None:
+        return "none" if configured in ("", "none") else f"none ({configured} configured, not installed)"
+    return active_provider(settings, configured, image_embedder, f"{configured}:{settings.image_embed_model}")
+
+
 def image_calibration(settings: Settings, image_embedder: object | None) -> tuple[float, float] | None:
     """SigLIP (scale, bias) for calibrated image fusion, or None (toggle off, no embedder, or a CLIP model)."""
     if image_embedder is None or not settings.search_calibrate_image:
@@ -245,6 +253,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "enrich": _enrich_label(settings, st.worker.enricher),
                 "stt": active_provider(settings, settings.stt_provider, st.stt, settings.stt_provider),
                 "tts": active_provider(settings, settings.tts_provider, st.tts, settings.tts_provider),
+                "image": _image_label(settings, st.image_embedder),
             },
         )
 
