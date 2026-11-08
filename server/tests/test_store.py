@@ -358,3 +358,32 @@ async def test_range_orders_ties_by_id_and_truncates(store):
     assert [t.id for t in got] == [t.id for t in toks[:4]]
     assert await store.range(None, None, limit=0) == []
     assert [t.id for t in await store.neighbors(toks[2].id, before=1, after=1)] == [t.id for t in toks[1:4]]
+
+
+async def test_memory_vector_search_matches_bruteforce_and_tracks_updates():
+    import math
+    import random
+
+    rnd = random.Random(7)
+    store = InMemoryStore()
+    toks = [_token(i).model_copy(update={"text_vec": [rnd.uniform(-1, 1) for _ in range(DIM)]}) for i in range(40)]
+    toks[3].text_vec = [0.0] * DIM  # zero vector scores 0 and is dropped, as before
+    await store.add_many(toks)
+    q = [rnd.uniform(-1, 1) for _ in range(DIM)]
+
+    def cos(a, b):
+        na = math.sqrt(sum(x * x for x in a)) or 1.0
+        nb = math.sqrt(sum(x * x for x in b)) or 1.0
+        return sum(x * y for x, y in zip(a, b)) / (na * nb)
+
+    want = sorted(((t, cos(q, t.text_vec)) for t in toks if cos(q, t.text_vec) > 1e-6), key=lambda x: (x[1], x[0].ts))
+    got = await store.vector_search(q, 10)
+    assert [t.id for t, _ in got] == [t.id for t, _ in reversed(want)][:10]
+    assert [s for _, s in got] == pytest.approx([s for _, s in reversed(want)][:10])
+
+    toks[0].text_vec = list(q)  # reassigned in place on the stored object -> cache must not go stale
+    assert (await store.vector_search(q, 1))[0][0].id == toks[0].id
+    await store.add(toks[5].model_copy(update={"id": toks[0].id, "text_vec": [-x for x in q]}))
+    assert toks[0].id not in {t.id for t, _ in await store.vector_search(q, 40)}
+    await store.purge()
+    assert await store.vector_search(q, 5) == []
