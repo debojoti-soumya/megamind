@@ -25,7 +25,7 @@ import statistics
 import sys
 import tempfile
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -82,7 +82,8 @@ def load_day(path: Path | str = DEFAULT_DATASET, thumb_dir: Path | None = None) 
             MemoryToken(
                 id=e["id"],
                 device_id=device_id,
-                ts=_local(d, e["time"], tz).timestamp(),
+                kind=e.get("kind", "frame"),
+                ts=_local(d + timedelta(days=e.get("day", 0)), e["time"], tz).timestamp(),
                 caption=e["caption"],
                 ocr_text=e.get("ocr", ""),
                 entities=e.get("entities", []),
@@ -92,7 +93,8 @@ def load_day(path: Path | str = DEFAULT_DATASET, thumb_dir: Path | None = None) 
             )
         )
     cases = [Case(q=q["q"], gold=list(q.get("gold", [])), expect=list(q.get("expect", []))) for q in raw["questions"]]
-    return Day(tokens=tokens, cases=cases, now=_local(d, raw["now"], tz).timestamp(), tz=tz, device_id=device_id)
+    now = _local(d + timedelta(days=raw.get("now_day", 0)), raw["now"], tz).timestamp()
+    return Day(tokens=tokens, cases=cases, now=now, tz=tz, device_id=device_id)
 
 
 def render_thumbs(day: Day, out_dir: Path, width: int = 512) -> None:
@@ -117,8 +119,13 @@ def render_thumbs(day: Day, out_dir: Path, width: int = 512) -> None:
 async def seed_store(tokens: list[MemoryToken], text_embedder=None) -> InMemoryStore:
     emb = text_embedder or MockTextEmbedder()
     store = InMemoryStore()
-    for t in tokens:
-        await store.add(t.model_copy(update={"text_vec": await emb.embed(f"{t.caption} {t.ocr_text}")}))
+    texts = [f"{t.caption} {t.ocr_text}" for t in tokens]
+    if hasattr(emb, "embed_many") and len(tokens) > 64:  # long datasets: batched provider calls
+        vecs = [v for i in range(0, len(texts), 256) for v in await emb.embed_many(texts[i : i + 256])]
+    else:
+        vecs = [await emb.embed(x) for x in texts]
+    for t, v in zip(tokens, vecs, strict=True):
+        await store.add(t.model_copy(update={"text_vec": v}))
     return store
 
 
@@ -320,7 +327,8 @@ async def eval_retriever(settings: Settings, store, text_emb, image_emb, day: Da
     if indexer is not None:
         indexer.client.keep_alive_s = 3 * 86400
         await indexer.sync_once()
-        want, deadline = len([t for t in day.tokens if t.caption]), _time.monotonic() + 180
+        want = len([t for t in day.tokens if t.caption])
+        deadline = _time.monotonic() + float(os.environ.get("EVAL_UCC_WAIT_S", "180"))
         while len(await indexer.client.token_ids()) < want and _time.monotonic() < deadline:
             await asyncio.sleep(3)  # uploads become queryable once the engine has read them
     hier = retriever if isinstance(retriever, HierRetriever) else getattr(retriever, "hier", None)

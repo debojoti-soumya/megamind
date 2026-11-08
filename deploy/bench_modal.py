@@ -37,6 +37,19 @@ secrets = [modal.Secret.from_name("megamind-providers")]
 SAIL = {"READER_BASE_URL": "https://api.sailresearch.com/v1", "READER_PROVIDER": "vlm"}
 CONFIGS: dict[str, dict[str, str]] = {
     "defaults": {},
+    "long_hybrid": {
+        "_ARGS": "--dataset tools/data/long_week.json",
+        "EMBED_PROVIDER": "openai",
+        "EVAL_UCC_WAIT_S": "900",
+    },
+    "long_combo": {
+        **{"_ARGS": "--dataset tools/data/long_week.json", "EMBED_PROVIDER": "openai", "EVAL_UCC_WAIT_S": "900"},
+        "RETRIEVER_BACKEND": "combo",
+    },
+    "long_hier": {
+        **{"_ARGS": "--dataset tools/data/long_week.json", "EMBED_PROVIDER": "openai", "EVAL_UCC_WAIT_S": "900"},
+        "RETRIEVER_BACKEND": "hier",
+    },
     "haiku55": {"CLAUDE_MODEL": "claude-haiku-5-5"},
     "sonnet55": {"CLAUDE_MODEL": "claude-sonnet-5-5"},
     "opus55": {"CLAUDE_MODEL": "claude-opus-5-5"},
@@ -51,17 +64,19 @@ CONFIGS: dict[str, dict[str, str]] = {
 }
 
 
-@app.function(image=image, secrets=secrets, timeout=1500, cpu=2.0)
+@app.function(image=image, secrets=secrets, timeout=3600, cpu=2.0, memory=4096)
 def eval_config(name: str, env: dict[str, str], limit: int) -> tuple[str, str, dict | None]:
     out = Path(f"/tmp/{name}.json")
-    cmd = ["python", "tools/eval_agent.py", "--live", "--limit", str(limit), "--thumb-width", "960"]
+    env = dict(env)
+    extra = env.pop("_ARGS", "").split()
+    cmd = ["python", "tools/eval_agent.py", "--live", "--limit", str(limit), "--thumb-width", "960", *extra]
     r = subprocess.run(
         [*cmd, "--answers", "--json", str(out)],
         cwd="/app/server",
         env={**os.environ, "RECALL_FIRST": "true", "RECALL_PREFETCH": "true", **env},
         capture_output=True,
         text=True,
-        timeout=1400,
+        timeout=3500,
     )
     return name, r.stdout[-8000:] + r.stderr[-2000:], json.loads(out.read_text()) if out.exists() else None
 
