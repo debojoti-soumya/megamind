@@ -306,6 +306,22 @@ def test_build_refiner_none_and_missing_deps(monkeypatch):
     assert build_refiner(_cfg(refine="auto")) is None
 
 
+def test_build_refiner_auto_needs_a_gpu(monkeypatch):
+    import sys
+    import types
+
+    from megamind.agent import locate
+
+    built = []
+    monkeypatch.setattr(locate, "OwlRefiner", lambda name: built.append(name) or "refiner")
+    fake_torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: False))
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    assert build_refiner(_cfg(refine="auto")) is None and built == []  # CPU: ~9 s a frame, past the refine timeout
+    assert build_refiner(_cfg(refine="owlv2")) == "refiner"  # explicit: the operator takes the latency
+    fake_torch.cuda.is_available = lambda: True
+    assert build_refiner(_cfg(refine="auto")) == "refiner"
+
+
 async def test_refine_has_its_own_budget_beyond_the_llm_timeout():
     ref = FakeRefiner([((32, 24, 96, 72), 0.7)])
     ref.delay = 0.4

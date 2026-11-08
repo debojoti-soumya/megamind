@@ -222,10 +222,12 @@ def _sharpness(jpeg: bytes) -> float:
 
 
 def choose_hero(tiles: list[Tile]) -> int:
-    """Index of the lead photo: the best match, the sharpest photo among equally good ones."""
+    """Index of the lead photo: the best match, the sharpest photo among equally good ones (only those get decoded)."""
     if not tiles:
         return 0
-    return max(range(len(tiles)), key=lambda i: (round(tiles[i].score, 2), _sharpness(tiles[i].jpeg)))
+    best = max(round(t.score, 2) for t in tiles)
+    tied = [i for i, t in enumerate(tiles) if round(t.score, 2) == best]
+    return tied[0] if len(tied) == 1 else max(tied, key=lambda i: _sharpness(tiles[i].jpeg))
 
 
 def layout_tiles(
@@ -437,11 +439,12 @@ async def make_collage(
     else:
         chosen, n_moments = smart.pick_moments(picks, cap, cfg.moment_gap_s)
 
-    tiles: list[Tile] = []
-    for p in chosen:
-        data = await _load_image(st, p.token)
-        if data:
-            tiles.append(Tile(p.token, _tile_title(p.token, p.title, zone), data, p.score))
+    loaded = await asyncio.gather(*(_load_image(st, p.token) for p in chosen))
+    tiles = [
+        Tile(p.token, _tile_title(p.token, p.title, zone), data, p.score)
+        for p, data in zip(chosen, loaded, strict=True)
+        if data
+    ]
     if not tiles:
         raise CollageError(404, "the matching moments have no stored photos left")
     verified = any(p.verified for p in picks)

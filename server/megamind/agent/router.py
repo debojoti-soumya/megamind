@@ -76,7 +76,7 @@ async def _finish(app, resp: ChatResponse, dev: ChatDevice, speaker: StreamingSp
 
     async def markers() -> None:
         locator = getattr(app, "locator", None)
-        if locator is not None and resp.cited:
+        if locator is not None and resp.cited and resp.collage is None:  # "show me photos of X" is not "where is X"
             resp.markers = await locator.markers(resp.transcript, resp.answer, list(resp.cited))
 
     await asyncio.gather(annotate_citations(app, resp.cited, dev.device_id), tts(), markers())
