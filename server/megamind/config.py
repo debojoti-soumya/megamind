@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     ucc_api_key: str = ""
     ucc_base_url: str = "https://api.universalconstructor.co/v1"
     ucc_corpus: str = "megamind"
-    ucc_timeout_s: float = 4.0  # per recall; past it the hybrid answers
+    ucc_timeout_s: float = 2.0  # per recall; the hybrid races UCC and answers past it
     ucc_candidates: int = 0  # >0: UCC reranks the hybrid's top-N instead of the whole time window
     ucc_sync_interval_s: float = 30.0
     ucc_keep_alive_s: int | None = None  # corpus retention; None keeps it until deleted
