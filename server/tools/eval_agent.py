@@ -70,6 +70,7 @@ def _local(d: date, hhmm: str, tz: ZoneInfo) -> datetime:
     return datetime.combine(d, time(int(h), int(m)), tzinfo=tz)
 
 
+PHOTOS: dict[str, str] = {}  # token id -> real photo path (tools/make_coco_day.py)
 SCENES: dict[str, dict] = {}  # token id -> drawn scene (tools/make_visual_day.py); else a caption card
 
 
@@ -120,6 +121,8 @@ def load_day(path: Path | str = DEFAULT_DATASET, thumb_dir: Path | None = None) 
     for t, e in zip(tokens, raw["stream"], strict=True):
         if "scene" in e:
             SCENES[t.id] = e["scene"]
+        if "image" in e:
+            PHOTOS[t.id] = e["image"]
     cases = [Case(q=q["q"], gold=list(q.get("gold", [])), expect=list(q.get("expect", []))) for q in raw["questions"]]
     now = _local(d + timedelta(days=raw.get("now_day", 0)), raw["now"], tz).timestamp()
     return Day(tokens=tokens, cases=cases, now=now, tz=tz, device_id=device_id)
@@ -134,6 +137,11 @@ def render_thumbs(day: Day, out_dir: Path, width: int = 512) -> None:
     scale = width / 512
     font = ImageFont.load_default(size=round(11 * scale)) if scale != 1 else None
     for t in day.tokens:
+        if t.id in PHOTOS:
+            ph = Image.open(PHOTOS[t.id]).convert("RGB")
+            ph.thumbnail((width, width))
+            ph.save(t.thumb_path, "JPEG", quality=85)
+            continue
         if t.id in SCENES:
             _draw_scene(SCENES[t.id], width).save(t.thumb_path, "JPEG", quality=80)
             continue

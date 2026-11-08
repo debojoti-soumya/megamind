@@ -29,6 +29,7 @@ image = (
         copy=True,
         ignore=[".venv", ".env", "data", "**/__pycache__", "*.egg-info", ".pytest_cache"],
     )
+    .add_local_dir(Path.home() / ".cache/coco/img", str(Path.home() / ".cache/coco/img"), copy=True)
     .run_commands(
         "pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu",
         "pip install --no-cache-dir /app/server open-clip-torch>=2.24 transformers sentencepiece protobuf",
@@ -41,6 +42,14 @@ secrets = [modal.Secret.from_name("megamind-providers")]
 SAIL = {"READER_BASE_URL": "https://api.sailresearch.com/v1", "READER_PROVIDER": "vlm"}
 CONFIGS: dict[str, dict[str, str]] = {
     "defaults": {},
+    "coco_off": {
+        **{"_ARGS": "--dataset tools/data/coco_day.json", "EMBED_PROVIDER": "openai"},
+        "IMAGE_EMBED_PROVIDER": "none",
+    },
+    "coco_on": {
+        **{"_ARGS": "--dataset tools/data/coco_day.json", "EMBED_PROVIDER": "openai"},
+        "IMAGE_EMBED_PROVIDER": "openclip",
+    },
     "visual_off": {
         **{"_ARGS": "--dataset tools/data/visual_day.json", "EMBED_PROVIDER": "openai"},
         "IMAGE_EMBED_PROVIDER": "none",
