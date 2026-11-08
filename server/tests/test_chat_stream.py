@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -157,6 +158,13 @@ async def _stream(c, body: dict) -> list[tuple[str, dict]]:
     return _parse_sse(r.text)
 
 
+def _same_call(q: dict) -> dict:
+    """A request body minus `stream` and the clock line (separate turns can straddle a second boundary)."""
+    out = {k: v for k, v in q.items() if k != "stream"}
+    out["system"] = re.sub(r"\d", "0", out["system"])
+    return out
+
+
 ANSWER = "Your keys are on the kitchen counter, about twenty minutes ago. <cites>t_keys</cites>"
 
 
@@ -227,7 +235,7 @@ async def test_final_event_equals_post_chat_body(app_client):
     assert list(events[-1][1]) == list(ChatResponse.model_fields)
 
     # identical model requests apart from the stream flag (same pipeline, same answer)
-    assert [{k: v for k, v in q.items() if k != "stream"} for q in streamed.requests] == plain.requests
+    assert [_same_call(q) for q in streamed.requests] == [_same_call(q) for q in plain.requests]
     assert all("stream" not in q for q in plain.requests)
 
 
@@ -287,26 +295,44 @@ async def test_post_chat_unchanged_non_streaming_requests(app_client):
     assert len(script.requests) == 2 and all("stream" not in q for q in script.requests)
 
 
-async def test_prompt_cache_only_on_the_tool_picking_call(app_client):
+async def test_prompt_cache_is_opt_in_and_read_back_by_the_tool_round(app_client):
     c, app = app_client
     body = {"session_id": "s", "text": "where are my keys?"}
 
+    # default off: request bodies exactly as before (plain string question, no cache_control anywhere)
     script = ScriptedAnthropic(_two_rounds())
     _use_script(app, script)
     await c.post("/v1/chat", json=body)
-    assert script.requests[0]["cache_control"] == {"type": "ephemeral"}
-    assert "cache_control" not in script.requests[1]  # the answer round only reads it
+    assert all("cache_control" not in json.dumps(q) for q in script.requests)
+    assert script.requests[0]["messages"] == [{"role": "user", "content": "where are my keys?"}]
 
+    # on: the same breakpoint (end of the question) on the picking call AND the tool round; a cache read needs a
+    # breakpoint in the reading request, so marking only the first call would pay the write and never read it
     script = ScriptedAnthropic(_two_rounds())
-    _use_script(app, script, claude_prompt_cache=False)
-    await c.post("/v1/chat", json=body)
-    assert all("cache_control" not in q for q in script.requests)
+    _use_script(app, script, claude_prompt_cache=True)
+    r = await c.post("/v1/chat", json=body)
+    assert r.json()["answer"] == "Your keys are on the kitchen counter, about twenty minutes ago."
+    q_block = {"type": "text", "text": "where are my keys?", "cache_control": {"type": "ephemeral"}}
+    assert len(script.requests) == 2
+    for q in script.requests:
+        assert "cache_control" not in q  # no top-level param (older SDKs reject it)
+        assert q["messages"][0] == {"role": "user", "content": [q_block]}
+    assert [m["role"] for m in script.requests[1]["messages"]] == ["user", "assistant", "user"]
+    # stored history keeps the plain question (the marker is per-request only)
+    hist = app.state.agent.histories["s"][-1]
+    assert hist[0] == {"role": "user", "content": "where are my keys?"}
+
+    # streaming sends the same bodies apart from `stream`
+    stream_script = ScriptedAnthropic(_two_rounds())
+    _use_script(app, stream_script, claude_prompt_cache=True)
+    await _stream(c, body)
+    assert [_same_call(q) for q in stream_script.requests] == [_same_call(q) for q in script.requests]
 
     # recall_first: the first call already carries a tool result (usually the only call): no cache write
     script = ScriptedAnthropic([_message([text(ANSWER)])])
-    _use_script(app, script, recall_first=True)
+    _use_script(app, script, recall_first=True, claude_prompt_cache=True)
     await c.post("/v1/chat", json=body)
-    assert len(script.requests) == 1 and "cache_control" not in script.requests[0]
+    assert len(script.requests) == 1 and "cache_control" not in json.dumps(script.requests[0])
 
 
 def test_ui_and_xr_stream_with_post_chat_fallback():

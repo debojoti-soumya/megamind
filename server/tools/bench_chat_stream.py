@@ -200,7 +200,7 @@ async def main() -> None:
     print(
         f"  agent: llm {med([s.llm_ms for s in stats_log])}, tools {med([s.tool_ms for s in stats_log])}, "
         f"model calls {statistics.median([s.model_calls for s in stats_log]):.0f}, "
-        f"cache-read tokens {sum(s.extra.get('cache_read_tokens', 0) for s in stats_log)}"
+        f"cache-read tokens {sum(s.extra.get('cache_read_input_tokens', 0) for s in stats_log)}"
     )
 
 

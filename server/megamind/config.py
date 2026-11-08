@@ -33,9 +33,10 @@ class Settings(BaseSettings):
     recall_first: bool = (
         True  # standalone recall questions: the prefetch is Claude's first tool result (no picking call)
     )
-    # prompt caching on Claude's tool-picking call (the turn's messages end with the question): the tool round
-    # that follows re-reads tools + system + history from cache. Never changes answers; off = no cache_control
-    claude_prompt_cache: bool = True
+    # opt-in prompt caching within a turn that starts with Claude's tool-picking call: a cache breakpoint on the
+    # question, so the tool round re-reads tools + system + history. Never changes answers; off (default) = the
+    # request bodies are exactly as before
+    claude_prompt_cache: bool = False
     reader_extra_body: str = ""  # JSON merged into the request, e.g. {"chat_template_kwargs":{"enable_thinking":false}}
     enrich_provider: str = "auto"  # auto (vlm iff an enrich/reader key is set, else local if installed, else mock)
     enrich_base_url: str = ""  # "" -> reader_base_url (and the reader's extra body / completion window)

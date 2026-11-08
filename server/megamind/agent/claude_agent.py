@@ -454,28 +454,32 @@ class ClaudeAgent:
                 turn.append({"role": "user", "content": [record(use_id, "recall_memory", args, r, t_tool)]})
                 if emit is not None:
                     await emit.retrieval(r)
+            # opt-in prompt caching when the turn opens with Claude's tool-picking call: a breakpoint on the question
+            # block on every call of the turn, so call 1 writes tools + system + history + question and the tool
+            # round(s) read it back (a cache read needs a breakpoint in the reading request too). The system prompt
+            # carries the time, so turns can't share an entry. Request bodies are unchanged when the flag is off.
+            cache_question = self.settings.claude_prompt_cache and len(turn) == 1
             for _round in range(MAX_TOOL_ROUNDS + 1):
                 t_llm = time.perf_counter()
+                messages = prior + turn
+                if cache_question:
+                    question = {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}
+                    messages = [*prior, {"role": "user", "content": [question]}, *turn[1:]]
                 req = {
                     "model": self.settings.claude_model,
                     "max_tokens": MAX_TOKENS,
                     "system": self.system_prompt(now),
                     "tools": [RECALL_MEMORY_TOOL],
-                    "messages": prior + turn,
+                    "messages": messages,
                 }
-                if self.settings.claude_prompt_cache and len(turn) == 1:
-                    # tool-picking call (no tool result yet): the tool round that usually follows re-reads tools +
-                    # system + history from cache (system carries the time, so turns can't share it)
-                    req["cache_control"] = {"type": "ephemeral"}
                 msg = await self._create(req, emit)
                 stats.llm_ms += (time.perf_counter() - t_llm) * 1000
                 stats.model_calls += 1
                 stats.input_tokens += msg.usage.input_tokens
                 stats.output_tokens += msg.usage.output_tokens
-                if getattr(msg.usage, "cache_read_input_tokens", None):
-                    stats.extra["cache_read_tokens"] = (
-                        stats.extra.get("cache_read_tokens", 0) + msg.usage.cache_read_input_tokens
-                    )
+                for k in ("cache_creation_input_tokens", "cache_read_input_tokens"):
+                    if n := getattr(msg.usage, k, None):
+                        stats.extra[k] = stats.extra.get(k, 0) + n
 
                 assistant_content = [b.model_dump(exclude_none=True) for b in msg.content]
                 turn.append({"role": "assistant", "content": assistant_content})
