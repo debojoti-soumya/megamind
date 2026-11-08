@@ -10,6 +10,7 @@
 //   assistantBubblePrefab : Text inside a left-aligned bubble
 //   thumbnailRowPrefab    : HorizontalLayoutGroup; thumbnails are instantiated under it
 //   thumbnailPrefab       : RawImage (180x135 px canvas units) with optional child Text for "n min ago"
+//   collagePrefab         : optional RawImage for photo montages (default: a thumbnailPrefab sized collageWidth)
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -27,6 +28,8 @@ namespace Megamind
         public Text assistantBubblePrefab;
         public RectTransform thumbnailRowPrefab;
         public RawImage thumbnailPrefab;
+        public RawImage collagePrefab;
+        public float collageWidth = 540f;  // canvas units; height follows the image's aspect ratio
         public GameObject listeningIndicator;
         public GameObject thinkingIndicator;
         public GameObject emptyHint;        // "hold the trigger and ask…" shown until the first message
@@ -76,13 +79,34 @@ namespace Megamind
         public void AddAssistantMessage(string text, List<Citation> cited, bool isError) => AddAssistantMessage(text, cited, isError, null, 0f);
 
         public void AddAssistantMessage(string text, List<Citation> cited, bool isError, string confidence, float latencySeconds)
+            => AddAssistantMessage(text, cited, isError, confidence, latencySeconds, null);
+
+        /// <summary>`collage` (photo montage) replaces the thumbnail row: it already shows every cited photo.</summary>
+        public void AddAssistantMessage(string text, List<Citation> cited, bool isError, string confidence, float latencySeconds,
+                                        CollageResponse collage)
         {
             var t = Instantiate(assistantBubblePrefab, content);
             t.text = text;
             if (isError) t.color = errorTextColor;
             Track(t.gameObject);
 
-            if (cited != null && cited.Count > 0 && thumbnailPrefab != null)
+            var collagePre = collagePrefab != null ? collagePrefab : thumbnailPrefab;
+            if (collage != null && !string.IsNullOrEmpty(collage.url) && collagePre != null)
+            {
+                var img = Instantiate(collagePre, content);
+                var label = img.GetComponentInChildren<Text>();
+                if (label) label.text = "";
+                float aspect = collage.width > 0 && collage.height > 0 ? (float)collage.height / collage.width : 0.75f;
+                var size = new Vector2(collageWidth, collageWidth * aspect);
+                img.rectTransform.sizeDelta = size;
+                var le = img.GetComponent<LayoutElement>();
+                if (le == null) le = img.gameObject.AddComponent<LayoutElement>();
+                le.preferredWidth = size.x;
+                le.preferredHeight = size.y;
+                Track(img.gameObject);
+                StartCoroutine(LoadThumb(img, config.Url(collage.url)));
+            }
+            else if (cited != null && cited.Count > 0 && thumbnailPrefab != null)
             {
                 Transform row = content;
                 if (thumbnailRowPrefab != null)

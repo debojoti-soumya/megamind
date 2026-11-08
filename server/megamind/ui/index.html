@@ -78,6 +78,7 @@
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .thumb .ts { position: absolute; left: 6px; bottom: 5px; font-size: 11px; padding: 1px 6px; border-radius: 6px;
     background: rgba(0,0,0,0.6); color: #fff; font-variant-numeric: tabular-nums; }
+  .collage { display: block; max-width: min(100%, 560px); border-radius: 12px; border: 1px solid rgba(255,255,255,0.12); cursor: zoom-in; }
   .empty { margin: auto; text-align: center; color: var(--muted); font-size: 14px; max-width: 320px; }
   .empty kbd { background: rgba(255,255,255,0.1); border-radius: 5px; padding: 1px 6px; font-family: inherit; }
 
@@ -330,11 +331,16 @@
     el.innerHTML = `<div class="bubble"></div><div class="meta"><span>${fmtTime(Date.now() / 1000)}</span></div>`;
     el.querySelector('.bubble').textContent = text; transcript.appendChild(el); scrollEnd();
   }
-  function addAssistant(text, cited, toolCalls, isError, ms) {
+  function addAssistant(text, cited, toolCalls, isError, ms, collage) {
     $('empty')?.remove();
     const el = document.createElement('div'); el.className = 'msg assistant';
     const b = document.createElement('div'); b.className = 'bubble' + (isError ? ' error' : ''); b.textContent = text; el.appendChild(b);
-    if (cited && cited.length) {
+    if (collage?.url) {
+      const img = document.createElement('img'); img.className = 'collage'; img.alt = collage.title || 'photo montage';
+      img.src = media(collage.url);
+      img.onclick = () => { $('lbimg').src = media(collage.url); $('lbcap').textContent = collage.narration || collage.title || ''; $('lightbox').classList.add('show'); };
+      el.appendChild(img);
+    } else if (cited && cited.length) {
       const row = document.createElement('div'); row.className = 'thumbs';
       for (const c of cited) {
         const t = document.createElement('div'); t.className = 'thumb'; t.title = c.caption || '';
@@ -404,7 +410,7 @@
     const j = await r.json();
     if (echoTranscript && j.transcript) addUser(j.transcript);
     if (j.warning) addAssistant('Note: ' + j.warning, [], null, true);
-    addAssistant(j.answer, j.cited, j.tool_calls, false, ms);
+    addAssistant(j.answer, j.cited, j.tool_calls, false, ms, j.collage);
     $('latency').textContent = (ms / 1000).toFixed(1) + 's';
     if (j.audio_url && cfg.autoplay) {
       try { speaker?.pause(); speaker = new Audio(media(j.audio_url)); await speaker.play(); } catch (e) { console.warn('audio playback failed', e); }

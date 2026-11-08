@@ -10,6 +10,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from megamind.agent.claude_agent import ClaudeAgent
+from megamind.agent.collage import agent_tool as collage_tool
+from megamind.agent.collage import install as install_collage
 from megamind.agent.montage import install as install_montage
 from megamind.agent.reader import build_reader
 from megamind.agent.router import router as agent_router
@@ -133,7 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.recall = RecallMemory(
             st.store, st.text_embedder, st.image_embedder, st.reader, retriever=st.retriever, tz=settings.wearer_tz
         )
-        st.agent = ClaudeAgent(settings, st.recall)
+        st.agent = ClaudeAgent(settings, st.recall, collage=collage_tool(st))
         st.stt = build_stt(settings)
         st.tts = build_tts(settings)
         st.audio_stt = build_audio_stt(settings, st.stt)
@@ -190,6 +192,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_live(app, settings)  # live short-term memory: GET /v1/live/{id}.jpg (+ retriever wrap in lifespan)
     install_xr(app)  # Memory Theater: static WebXR page at GET /xr
     install_montage(app, settings)  # highlight reel: POST /v1/montage + GET /v1/montages/{id}.mp4
+    install_collage(app, settings)  # photo montage: POST /v1/collage + GET /v1/collages/{id}.jpg + chat tool
     if settings.api_token:
         app.add_middleware(TokenAuth, token=settings.api_token)  # outermost: nothing runs before the check
 

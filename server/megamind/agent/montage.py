@@ -646,8 +646,10 @@ class _PurgeMirror:
             await send(msg)
 
         await self.app(scope, receive, _send)
-        if status[:1] == [200] and (cache := getattr(self.state, "montage_cache", None)) is not None:
-            cache.clear()
+        if status[:1] == [200]:
+            for name in ("montage_cache", "collage_cache"):
+                if (cache := getattr(self.state, name, None)) is not None:
+                    cache.clear()
 
 
 def install(app: FastAPI, settings, montage_settings: MontageSettings | None = None) -> None:
