@@ -220,8 +220,7 @@ added. Don't commit a real token.
 `PassthroughCameraAccess.IsPlaying`, then every `1/captureFps` s:
 1. (settings from `CaptureSettings.asset`) skips the frame if `maxPendingUploads` uploads are still in flight (slow network),
    while backing off after upload failures (network error / 5xx / 429: `backoffBaseSeconds` 1 s doubling to
-   `backoffMaxSeconds` 30 s, ±20% jitter, reset by the next success; no offline queue — stale frames are
-   worthless to a live memory) or, if `maxHeadDegPerSec` > 0, when the head is turning faster than that (off by
+   `backoffMaxSeconds` 30 s, ±20% jitter, reset by the next success) or, if `maxHeadDegPerSec` > 0, when the head is turning faster than that (off by
    default — the server's blur filter handles motion blur);
 2. blits `cameraAccess.GetTexture()` into a ≤ `jpegMaxWidth` (1280 px, the full camera frame) texture (GPU resize +
    `ReadPixels`), then JPEG-encodes it on the *next* frame (`jpegQuality` 75 ⇒ ~60–120 KB) so
@@ -239,6 +238,26 @@ added. Don't commit a real token.
    (`OnApplicationFocus(false)` / `OVRManager.InputFocusLost`: system menu, boundary warning, Meta-button dialog)
    does **not** pause capture unless `CaptureSettings.pauseOnFocusLoss` is on (default off). See
    [Boundary (Guardian) and walking around](#boundary-guardian-and-walking-around).
+
+
+### Offline spool (hotspot dead zones)
+With `offlineSpool` on (the default), a frame that cannot be uploaded is not lost. This covers a network error, 5xx
+or 429, and frames captured while backing off. `FrameSpool` writes it to `persistentDataPath/frame-spool/`
+(`<epoch ms>-<seq>.jpg` + `.json` with its `FrameMeta`). `DrainSpool` then uploads the spool oldest-first, one frame at
+a time, with the original `ts` and pose, once the backoff ends.
+
+- **Order.** While anything is spooled, new frames queue behind it. The server's keyframe filter drops a frame older
+  than the device's newest kept one (`too_soon`), so uploads have to stay in time order. The drain uploads several
+  frames a second, so at 1 fps the backlog catches up.
+- **Bounded.** The spool holds at most `offlineSpoolMaxFrames` frames (900 = 15 min at 1 fps) and `offlineSpoolMaxMB`
+  (200 MB); past that, the oldest are dropped first. Frames older than `offlineSpoolMaxAgeMinutes` (30) are dropped
+  rather than uploaded, so a spool left over from yesterday can't land after a `DELETE /v1/memories` wipe.
+- **Restarts.** The spool survives an app restart.
+- **HUD.** The strip shows `spool N` while frames are waiting, and the debug report shows
+  `spool N (dropped M)`.
+- **Known loss.** When the network drops, one or two live uploads already in flight can still succeed after an
+  earlier frame went to the spool. That earlier frame is then rejected as `too_soon`.
+- **Tests.** `dotnet run --project headset/tests/FrameSpoolTests` (no Unity needed; CI job `headset-spool`).
 
 ## Boundary (Guardian) and walking around
 The demo walks between rooms with capture running. Field report: crossing the boundary pulled the app out of the
