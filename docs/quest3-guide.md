@@ -279,7 +279,7 @@ adb logcat -c                                  # clear old logs
 adb logcat -s Unity | grep -i "\[megamind\]"   # -s filters by tag; grep filters the message
 adb logcat > session.log                       # full log for crashes; search for "backtrace:"
 ```
-On the server, watch the uvicorn output for `POST /v1/frames ... 200` and (ambient audio, every ~5 s while someone talks) `POST /v1/audio ... 200`.
+On the server, watch the uvicorn output for `POST /v1/frames ... 200` and (ambient audio, every ~15 s while someone talks) `POST /v1/audio ... 200`.
 
 | # | Step | Success looks like | Failure looks like → go to |
 |---|---|---|---|
@@ -294,8 +294,8 @@ On the server, watch the uvicorn output for `POST /v1/frames ... 200` and (ambie
 | 8 | Server filter | Some `last duplicate` / `too_soon` while still is normal (the filter keeps roughly 10–30% at 1 fps) | Mostly `dark`/`blurry` → 7 |
 | 9 | Pause | A/X → `capture PAUSED (press A/X)`. Press again to resume | — |
 | 10 | Image check | Open a stored thumbnail (`/v1/thumbs/{id}.jpg`, see [api.md](api.md)). Colours should be right, upright, not mirrored | Blue skin → reboot the headset [D-pca] |
-| 11 | Ambient audio (verify on device) | Log `[Megamind] ambient audio: mic started 16000 Hz x1, 5 s chunks`. Talk near the headset: HUD `mic: chunks sent N  accepted M  (on -NN dB)` rises about every 5 s; in silence only `silent N` rises (chunks below −50 dBFS are not sent). Hold the trigger: state shows `push-to-talk`, then back to `on`. A/X: `paused` | `waiting for mic permission` → 4.8. `ERR …` → same network checks as step 7 (2.7). Only `silent` rises while talking → 7 |
-| 12 | "What did I hear?" (verify on device) | After ~15 s of talking, hold the trigger and ask *"what did I hear?"*. The answer cites a speech memory (`Speech heard nearby: "…"`; with mock STT the words are `[mock transcript]`, real words need `AUDIO_STT_PROVIDER=openai` or `faster-whisper` on the server). Laptop check: `curl 'http://<server>:8000/v1/memories/recent?kind=transcript&k=5'` | `not_found` / only frames → no `POST /v1/audio 200` yet (step 11), or a different `deviceId` than the chat uses |
+| 11 | Ambient audio (verify on device) | Log `[Megamind] ambient audio: mic started 16000 Hz x1, 15 s chunks`. Talk near the headset: HUD `mic: chunks sent N  accepted M  (on -NN dB)` rises about every 15 s; in silence only `silent N` rises (chunks below −50 dBFS are not sent). Hold the trigger: state shows `push-to-talk`, then back to `on`. A/X: `paused` | `waiting for mic permission` → 4.8. `ERR …` → same network checks as step 7 (2.7). Only `silent` rises while talking → 7 |
+| 12 | "What did I hear?" (verify on device) | After ~30 s of talking, hold the trigger and ask *"what did I hear?"*. The answer cites a speech memory (`Speech heard nearby: "…"`; with mock STT the words are `[mock transcript]`, real words need `AUDIO_STT_PROVIDER=openai` or `faster-whisper` on the server). Laptop check: `curl 'http://<server>:8000/v1/memories/recent?kind=transcript&k=5'` | `not_found` / only frames → no `POST /v1/audio 200` yet (step 11), or a different `deviceId` than the chat uses |
 
 Expected camera numbers: the app requests **1280×960** with a max of **30 fps** from the camera (`CaptureSettings.cs`).
 It then samples and uploads only **1 frame/s**, as a JPEG downscaled to a width of 960 px at quality 75. 1280×960 is
@@ -315,7 +315,7 @@ one of the resolutions Meta documents for PCA [D-pca-unity]. Meta documents abou
 | **Headset falls asleep or the app restarts when removed** | The proximity sensor suspends apps when the headset is off a head. Disable it in MVDH [D-mvdh], or keep the headset on. The commonly used adb broadcast `adb shell am broadcast -a com.oculus.vrpowermanager.prox_close` is **not** in the Meta docs checked here (verify on device). Power/sleep timeout settings are in the headset's *Settings* (exact path not verified). `SensorLockActivity` in logcat means it was idle: put it on, press power once, then relaunch. |
 | **Overheating / throttling** | Stop casting and recording, and take it off the charger and out of direct sun. Let it cool before continuing. This advice is general and not from a Meta doc. |
 | **Frames rejected (`accepted` flat, `last <reason>`)** | Reasons come from `server/megamind/ingest/filter.py` ([api.md](api.md)). `dark` means more light. `blurry` means move your head slower; the camera auto-exposes slowly after start. `duplicate` / `too_soon` are expected when the scene is static, so walk around. `budget` means the per-device kept-frames cap was hit (`filter_max_per_min`). `client:motion` / `client:backlog` / `client:backoff` (server unreachable, retrying with exponential backoff up to 30 s) are skipped on the headset and never sent. |
-| **HUD `mic:` shows only `silent N` while people talk** | Every 5 s chunk was quieter than `CaptureSettings.audioSilenceDb` (−50 dBFS): mic muted by the system (headset off-head) or speech too far away. Lower the gate (e.g. −60, or −120 to send everything) and rebuild (verify on device). |
+| **HUD `mic:` shows only `silent N` while people talk** | Every 15 s chunk was quieter than `CaptureSettings.audioSilenceDb` (−50 dBFS): mic muted by the system (headset off-head) or speech too far away. Lower the gate (e.g. −60, or −120 to send everything) and rebuild (verify on device). |
 | **Colours wrong (blue skin)** | Reboot the headset. This is a known issue on v74 after a camera app's first install [D-pca]. |
 | **Wipe memories** | `curl -X DELETE http://<server>:8000/v1/memories` wipes **all** devices. Add `?device_id=quest3-1` to wipe one device, or `&since=<ts>` to wipe from a time onwards ([api.md](api.md)). |
 

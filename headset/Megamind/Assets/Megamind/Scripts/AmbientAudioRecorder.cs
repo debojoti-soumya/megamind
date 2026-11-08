@@ -1,6 +1,6 @@
 // Stream 1: ambient audio memory, so "what did I hear?" works from the Unity app.
 // Records the headset mic through Unity's Microphone API (16 kHz mono), cuts it into fixed chunks
-// (CaptureSettings.audioChunkSeconds = 5 s, the native headset-android app's default chunk_sec) and POSTs each
+// (CaptureSettings.audioChunkSeconds = 15 s, the ~15–30 s docs/api.md recommends) and POSTs each
 // chunk to /v1/audio as a PCM16 mono WAV + meta {"device_id", "ts_start"} (docs/api.md, AudioChunkCodec).
 //
 //   ts_start   wall clock (Unix s) of the chunk's first sample, the same clock FrameUploader stamps frames with;

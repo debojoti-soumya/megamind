@@ -79,13 +79,13 @@ component (the current official path; the older `WebCamTextureManager` sample is
     permission, for frames — allow) and **Microphone** (`RECORD_AUDIO`, for push-to-talk *and* ambient audio
     memory — allow) (verify on device: order/wording). The capture HUD then shows `camera starting…` →
     `capturing 1280x960 → 960px JPEG` and `sent N / accepted M (reason)` updating once per second, plus
-    `mic: chunks sent N  accepted M  (on -NN dB)` once per 5 s audio chunk (verify on device).
+    `mic: chunks sent N  accepted M  (on -NN dB)` once per 15 s audio chunk (verify on device).
 11. **Watch logs** from the laptop:
     ```sh
     adb logcat -s Unity:I | grep -i megamind
     ```
     Expected lines: `[Megamind] permissions: camera=True`, `[Megamind] capture: server=…`,
-    `[Megamind] camera playing: 1280x960 maxFps=30`, `[Megamind] ambient audio: mic started 16000 Hz x1, 5 s chunks`,
+    `[Megamind] camera playing: 1280x960 maxFps=30`, `[Megamind] ambient audio: mic started 16000 Hz x1, 15 s chunks`,
     and on the server `POST /v1/frames … 200` / `POST /v1/audio … 200`.
 
 ### Headless build (CI / a box without a display)
@@ -152,14 +152,14 @@ microphone with Unity's `Microphone` API and uploads it to `POST /v1/audio` (`do
 URL and device id as frames** (`CaptureSettings.ServerBaseUrl/DeviceId`: settings panel → `megamind.json` →
 `MegamindConfig.asset`):
 - **Format** = the native app's, so the server path is identical: 16 kHz mono PCM16 little-endian in a 44-byte
-  RIFF/WAVE header, **5 s chunks** (native `chunk_sec` default), `meta` = `{"device_id":…,"ts_start":…}` (+ head
+  RIFF/WAVE header, **15 s chunks** (`audioChunkSeconds`; docs/api.md recommends ~15–30 s — fewer STT calls, more context per transcript; the native app defaults to 5 s), `meta` = `{"device_id":…,"ts_start":…}` (+ head
   `pose` when available), file name `yyyyMMdd_HHmmss_SSS.wav` (`AudioChunkCodec.cs`). `ts_start` is the Unix wall
   clock of the chunk's first sample, the clock `FrameUploader` stamps frames with, re-derived from
   `Microphone.GetPosition` every 100 ms so it does not drift.
 - **Silence gate:** a chunk whose loudest 100 ms window is below `audioSilenceDb` (−50 dBFS) is dropped on the
   headset (no Whisper cost; Horizon also feeds digital silence while the headset is off-head). HUD `silent N`.
 - **Uploads:** one at a time, oldest first (consecutive chunks merge into one speech token on the server); up to
-  `audioMaxQueuedChunks` (24 ≈ 2 min) kept in memory while the server is unreachable; network error / 429 / 5xx
+  `audioMaxQueuedChunks` (8 × 15 s = 2 min) kept in memory while the server is unreachable; network error / 429 / 5xx
   back off like frames (`backoffBaseSeconds` doubling to `backoffMaxSeconds`, ±20% jitter); a chunk is dropped
   after `audioMaxAttempts` 429/5xx answers or any other 4xx.
 - **Pauses** (partial chunk ≥ 1 s is flushed, the mic is released): A/X capture pause (one button stops all
@@ -174,7 +174,7 @@ URL and device id as frames** (`CaptureSettings.ServerBaseUrl/DeviceId`: setting
   `push-to-talk`, `waiting for mic permission`, `no microphone` or `off`; plus `silent N` / `queued N` / `ERR …`.
 
 Test without a headset: `server/tests/test_quest_unity_audio.py` replays the exact bytes (mock STT). On the
-headset (verify on device): start the server with mock providers, launch, talk near the headset for ~15 s, watch
+headset (verify on device): start the server with mock providers, launch, talk near the headset for ~30 s (a chunk is stored ~15 s after it starts), watch
 the HUD `mic:` counters and `POST /v1/audio 200` in the server log, then hold the trigger and ask *"what did I
 hear?"* — the answer cites `Speech heard nearby: "[mock transcript]"` (real words with `AUDIO_STT_PROVIDER=openai`
 or `faster-whisper` on the server, see `server/.env.example`). `curl 'http://<server>:8000/v1/memories/recent?kind=transcript&k=5'`
@@ -199,7 +199,7 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | `Dto.cs` | shared | C# mirrors of `docs/api.md` payloads |
 | `MegamindPermissions.cs` | 1 | requests `HEADSET_CAMERA` + mic at start, exposes `CameraGranted` / `MicrophoneGranted` |
 | `FrameUploader.cs` | 1 | 1 fps sample of `PassthroughCameraAccess.GetTexture()` → JPEG → `POST /v1/frames` with pose meta |
-| `AmbientAudioRecorder.cs` | 1 | ambient mic → 5 s 16 kHz mono PCM16 WAV chunks → `POST /v1/audio`; silence gate, backoff, pauses for push-to-talk / A/X / background |
+| `AmbientAudioRecorder.cs` | 1 | ambient mic → 15 s 16 kHz mono PCM16 WAV chunks → `POST /v1/audio`; silence gate, backoff, pauses for push-to-talk / A/X / background |
 | `AudioChunkCodec.cs` | 1 | pure C# WAV + meta encoding (native-app layout) and the RMS level for the silence gate |
 | `CaptureHud.cs` | 1 | world-locked capture status HUD (+ `mic:` line) + recording indicator, A/X pause |
 | `ChatClient.cs` | 3 | push-to-talk (trigger or index pinch) → 16 kHz WAV → `POST /v1/chat` → play audio; barge-in, latency; tells `AmbientAudioRecorder` to release the mic while recording |
@@ -245,7 +245,7 @@ Nothing in this project has run on a headset yet. Hour-0, in this order:
    - **Pose/ts:** server-side `meta.pose.yaw` changes when you turn your head; `ts` is within ~1 s of the server clock.
    - **Perf:** no visible hitch each second (readback and JPEG encode run on consecutive frames); note `enc` ms on the HUD.
    - **Image:** open a stored thumbnail: colours correct (skin not blue — reboot if so), upright, not mirrored.
-   - **Ambient audio (verify on device):** HUD `mic: chunks sent/accepted` climbs every ~5 s while people talk and `silent N` climbs in a quiet room; server log `POST /v1/audio 200`; the `mic:` state shows `push-to-talk` while you hold the trigger and goes back to `on` after the reply; A/X shows `paused`; push-to-talk replies still work. Then ask *"what did I hear?"*.
+   - **Ambient audio (verify on device):** HUD `mic: chunks sent/accepted` climbs every ~15 s while people talk and `silent N` climbs in a quiet room; server log `POST /v1/audio 200`; the `mic:` state shows `push-to-talk` while you hold the trigger and goes back to `on` after the reply; A/X shows `paused`; push-to-talk replies still work. Then ask *"what did I hear?"*.
 4. Demo day: reboot the headset in the morning (RGB-flip bug), disable auto-sleep (Settings → General → Power), keep the HUD visible as a self-test.
 
 ## Troubleshooting
@@ -260,7 +260,7 @@ Nothing in this project has run on a headset yet. Hour-0, in this order:
 | Compile errors mentioning `PassthroughCameraAccess` | MRUK must be 81+ (we pin 85). Project Settings → Meta XR → make sure "Passthrough Camera Access" is enabled (it is in `OculusProjectConfig.asset`). |
 | HUD `mic: … (waiting for mic permission)` | The microphone prompt was denied. Settings → Apps → Megamind → Permissions → Microphone → Allow, or `adb shell pm grant com.megamind.quest android.permission.RECORD_AUDIO`; push-to-talk needs it too. |
 | HUD `mic:` only climbs `silent N`, never `sent` | Every chunk is below `CaptureSettings.audioSilenceDb` (−50 dBFS): mic muted (headset off-head, system mute) or a very quiet room. Lower it (e.g. −60) or set −120 to upload everything. |
-| HUD `mic: … ERR 0 …` while frames upload fine | `/v1/audio` transcribes synchronously; a slow STT provider can exceed `audioUploadTimeoutSeconds` (30 s). Check the server log for the `/v1/audio` request. |
+| HUD `mic: … ERR 0 …` while frames upload fine | `/v1/audio` transcribes synchronously; a slow STT provider can exceed `audioUploadTimeoutSeconds` (60 s). Check the server log for the `/v1/audio` request. |
 | HUD stuck at `waiting for camera permission` | The permission dialog was dismissed. Settings → Apps → Megamind → Permissions → Camera → Allow, or `adb shell pm grant com.megamind.quest horizonos.permission.HEADSET_CAMERA` (and `android.permission.CAMERA`). |
 | HUD `camera starting…` forever / `camera not supported` | Headset must be Quest 3/3S on Horizon OS v74+ (Quick controls → Settings → General → Software update). Passthrough Camera API does **not** work in the XR Simulator or on Quest 2/Pro; only on device (or Horizon Link 2.1+). |
 | Black image / 0×0 resolution in HUD | Passthrough disabled: `OVRManager.isInsightPassthroughEnabled` must be on (scene builder sets it); re-run *Megamind → Check Project*. |

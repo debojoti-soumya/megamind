@@ -15,7 +15,7 @@ import pytest
 
 T0 = 1_762_000_000.25
 RATE = 16000
-CHUNK_S = 5  # CaptureSettings.audioChunkSeconds, = the native headset-android app's default chunk_sec
+CHUNK_S = 15  # CaptureSettings.audioChunkSeconds default (docs/api.md: ~15-30 s chunks)
 
 
 def _f32(x: float) -> float:
@@ -81,7 +81,8 @@ async def test_unity_ambient_chunk_accepted_and_heard(client):
     j = r.json()
     assert j["audio_id"]
     assert j["duration_s"] == pytest.approx(CHUNK_S)
-    assert j["transcript"] == "[mock transcript]"  # default MockSTT: no OpenAI key needed
+    # default MockSTT (no OpenAI key): one "[mock transcript]" segment per few seconds of audio
+    assert j["transcript"].startswith("[mock transcript]")
     (tid,) = j["token_ids"]
     tok = await app.state.store.get(tid)
     assert tok.kind == "transcript" and tok.device_id == "quest3-unity"
@@ -92,7 +93,7 @@ async def test_unity_ambient_chunk_accepted_and_heard(client):
 
 
 async def test_unity_consecutive_chunks_merge(client):
-    """Back-to-back 5 s chunks (the recorder uploads oldest first) continue one speech token."""
+    """Back-to-back 15 s chunks (the recorder uploads oldest first) continue one speech token."""
     c, app = client
     first = (await _post(c, "quest3-unity", T0, _speech_like())).json()
     second = (await _post(c, "quest3-unity", T0 + CHUNK_S, _speech_like())).json()

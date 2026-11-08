@@ -22,9 +22,9 @@ MonoBehaviour:
   maxHeadDegPerSec: 0
   captureOnStart: 1
   ambientAudio: 1
-  audioChunkSeconds: 5
+  audioChunkSeconds: 15
   audioSampleRate: 16000
   audioSilenceDb: -50
-  audioMaxQueuedChunks: 24
+  audioMaxQueuedChunks: 8
   audioMaxAttempts: 3
-  audioUploadTimeoutSeconds: 30
+  audioUploadTimeoutSeconds: 60
