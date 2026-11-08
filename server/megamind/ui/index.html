@@ -532,8 +532,13 @@
     card.appendChild(v);
     const clipsOf = m.clips || [], total = clipsOf.reduce((s, c) => s + (c.duration_s || 0), 0);
     const bar = document.createElement('div'); bar.className = 'bar';
-    bar.innerHTML = `<b></b><span>${clipsOf.length} moment${clipsOf.length === 1 ? '' : 's'} · ${Math.round(total)} s</span><span style="margin-left:auto">${m.planner === 'claude' ? 'planned by Claude' : 'auto plan'}</span>`;
-    bar.querySelector('b').textContent = m.title || 'Your highlights'; card.appendChild(bar);
+    const how = m.mode === 'smart'
+      ? (m.planner === 'claude' ? `${m.matches} of ${m.candidates} checked moments matched` : `${m.candidates} likely matches, not checked`)
+      : (m.planner === 'claude' ? 'planned by Claude' : 'auto plan');
+    bar.innerHTML = `<b></b><span>${clipsOf.length} moment${clipsOf.length === 1 ? '' : 's'} · ${Math.round(total)} s</span><span style="margin-left:auto"></span>`;
+    bar.querySelector('b').textContent = m.title || 'Your highlights';
+    const right = bar.lastElementChild; right.textContent = how; if (m.subject) right.title = `every clip shows: ${m.subject}`;
+    card.appendChild(bar);
     if (clipsOf.length) {
       const chips = document.createElement('div'); chips.className = 'chips';
       for (const c of clipsOf) { const s = document.createElement('span'); s.textContent = `${fmtTime(c.ts)} · ${c.title}`; s.title = `${c.source}, ${c.duration_s} s`; chips.appendChild(s); }
