@@ -75,6 +75,32 @@ def test_match_command_exact_fuzzy_and_rejections():
     assert match_command("open menu", []) is None
 
 
+@pytest.mark.parametrize(
+    ("transcript", "hints"),
+    [
+        ("start recording", ["stop recording"]),
+        ("unmute", ["mute"]),
+        ("mute", ["unmute"]),
+        ("disable captions", ["enable captions"]),
+        ("lock panel", ["unlock panel"]),
+        ("open menu", ["close menu"]),
+        ("show controls", ["hide controls"]),
+        ("menu", ["open menu"]),
+    ],
+)
+def test_match_command_never_picks_a_different_command(transcript, hints):
+    assert match_command(transcript, hints) is None
+
+
+@pytest.mark.parametrize(
+    ("transcript", "phrase"),
+    [("stopped recording", "stop recording"), ("pen menu", "open menu"), ("paws recording", "pause recording")],
+)
+def test_match_command_tolerates_mishearings(transcript, phrase):
+    m = match_command(transcript, [phrase, "start recording", "close menu"])
+    assert m is not None and m.phrase == phrase and 0.8 <= m.score < 1.0
+
+
 def test_parse_hints_json_or_separated():
     assert parse_hints(json.dumps(["open menu", " close menu "])) == ["open menu", "close menu"]
     assert parse_hints("open menu|close menu\npause recording") == ["open menu", "close menu", "pause recording"]

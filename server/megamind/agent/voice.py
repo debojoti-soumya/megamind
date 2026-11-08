@@ -39,8 +39,10 @@ def match_command(
     transcript: str, hints: list[str], *, min_score: float = 0.8, max_words: int = 6
 ) -> CommandMatch | None:
     """The hint the transcript means, or None. Exact match after normalization scores 1.0; otherwise the best
-    `difflib` ratio >= `min_score` wins ("open the menu" ~ "open menu", "paws recording" ~ "pause recording").
-    Transcripts longer than `max_words` (after normalization) are questions, never commands."""
+    `difflib` ratio >= `min_score` wins ("open the menu" ~ "open menu", "paws recording" ~ "pause recording"),
+    among hints whose words line up with the transcript's (`_words_align`), so "start recording" never matches
+    "stop recording" nor "unmute" "mute". Transcripts longer than `max_words` (after normalization) are questions,
+    never commands."""
     t = normalize_command(transcript)
     if not t or len(t.split()) > max_words:
         return None
@@ -52,9 +54,24 @@ def match_command(
         if h == t:
             return CommandMatch(phrase=hint, score=1.0)
         score = difflib.SequenceMatcher(None, t, h).ratio()
-        if score >= min_score and (best is None or score > best[0]):
+        if score >= min_score and _words_align(t, h) and (best is None or score > best[0]):
             best = (score, hint)
     return CommandMatch(phrase=best[1], score=round(best[0], 3)) if best else None
+
+
+def _word_close(a: str, b: str) -> bool:
+    """A misheard word ("paws"/"pause", "stopped"/"stop", "pen"/"open"), not a different one ("start"/"stop",
+    "unmute"/"mute", "disable"/"enable"): same first letter (or one clipped leading letter) and similar spelling."""
+    if a == b:
+        return True
+    if a[1:] == b or b[1:] == a:
+        return True
+    return a[0] == b[0] and difflib.SequenceMatcher(None, a, b).ratio() >= 0.6
+
+
+def _words_align(t: str, h: str) -> bool:
+    tw, hw = t.split(), h.split()
+    return len(tw) == len(hw) and all(_word_close(a, b) for a, b in zip(tw, hw, strict=True))
 
 
 def parse_hints(raw: Any) -> list[str]:
