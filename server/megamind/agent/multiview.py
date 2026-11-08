@@ -27,23 +27,32 @@ def frame_size(w: int, h: int) -> tuple[int, int, int]:
 
 def prepare(images: list[bytes], boxes: list[list[float] | None]) -> tuple[np.ndarray, np.ndarray]:
     """Photos -> float32 (N,3,H,W) in [0,1] at one common size (the first photo's), and (N,H,W) box masks
-    (the box grown 10%; all True for a photo without a box)."""
+    (the box grown 10%; all True for a photo without a box). A photo of another shape is centre-cropped to the
+    first one's aspect ratio rather than stretched."""
     first = ImageOps.exif_transpose(Image.open(io.BytesIO(images[0])))
-    nh, top, ch = frame_size(*first.size)
+    fw, fh = first.size
+    nh, top, ch = frame_size(fw, fh)
     out = np.empty((len(images), 3, ch, SIDE), np.float32)
     masks = np.ones((len(images), ch, SIDE), bool)
     for i, (data, box) in enumerate(zip(images, boxes, strict=True)):
         img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
         w, h = img.size
-        arr = np.asarray(img.resize((SIDE, nh), Image.BICUBIC), np.float32)[top : top + ch] / 255.0
-        out[i] = arr.transpose(2, 0, 1)
+        cw, chh = (h * fw / fh, h) if w * fh > h * fw else (w, w * fh / fw)
+        ox, oy = (w - cw) / 2, (h - chh) / 2
+        img = img.resize((SIDE, nh), Image.BICUBIC, box=(ox, oy, ox + cw, oy + chh))
+        out[i] = (np.asarray(img, np.float32)[top : top + ch] / 255.0).transpose(2, 0, 1)
         if box is not None:
             x0, y0, x1, y1 = box
             gx, gy = 0.1 * (x1 - x0), 0.1 * (y1 - y0)
-            sx, sy = SIDE / w, nh / h
+            sx, sy = SIDE / cw, nh / chh
             v, u = np.mgrid[0:ch, 0:SIDE]
             v = v + top
-            masks[i] = (u >= (x0 - gx) * sx) & (u <= (x1 + gx) * sx) & (v >= (y0 - gy) * sy) & (v <= (y1 + gy) * sy)
+            masks[i] = (
+                (u >= (x0 - gx - ox) * sx)
+                & (u <= (x1 + gx - ox) * sx)
+                & (v >= (y0 - gy - oy) * sy)
+                & (v <= (y1 + gy - oy) * sy)
+            )
     return out, masks
 
 

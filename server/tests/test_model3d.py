@@ -454,3 +454,27 @@ def test_clean_points_confidence_is_judged_inside_the_box():
     conf = np.where(obj, 0.2, 5.0).astype(np.float32)  # the table is far more confident than the object
     q, c, _ = clean_points(pts, conf, rgb, obj)
     assert len(q) > 0 and (c[:, 1] == 200).all()
+
+
+def test_prepare_crops_a_portrait_photo_instead_of_stretching_it():
+    import io
+
+    from PIL import Image, ImageDraw
+
+    from megamind.agent.multiview import prepare
+
+    def photo(size, sq):
+        img = Image.new("RGB", size, (0, 0, 0))
+        ImageDraw.Draw(img).rectangle(sq, fill=(255, 255, 255))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    sq = (200, 300, 399, 499)  # a 200 px white square in the middle of a 600x800 portrait photo
+    arr, masks = prepare([photo((800, 600), (0, 0, 1, 1)), photo((600, 800), sq)], [None, list(map(float, sq))])
+    white = arr[1, 0] > 0.5
+    ys, xs = np.nonzero(white)
+    assert 0.85 < (np.ptp(xs) + 1) / (np.ptp(ys) + 1) < 1.15  # still square, not squashed
+    my, mx = np.nonzero(masks[1])
+    assert my.min() <= ys.min() and my.max() >= ys.max() and mx.min() <= xs.min() and mx.max() >= xs.max()
+    assert masks[1].mean() < 0.5
