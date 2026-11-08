@@ -91,6 +91,7 @@ class StreamingSpeaker:
         self.audio_id = str(ULID())
         self.buf = SentenceBuffer(self.min_chars)
         self.texts: list[str] = []
+        self.started_ms: list[float] = []  # when each clip's TTS call began (ms since the turn started)
         self.parts: list[asyncio.Task[str | None]] = []
         self.sender: asyncio.Task[None] | None = None
 
@@ -101,6 +102,7 @@ class StreamingSpeaker:
     def _start(self, sentence: str) -> None:
         seq = len(self.texts)
         self.texts.append(sentence)
+        self.started_ms.append((time.perf_counter() - self.t0) * 1000)
         self.parts.append(asyncio.create_task(self.tts.synthesize(sentence, f"{self.audio_id}-{seq}")))
         if self.sender is None:
             self.sender = asyncio.create_task(self._send())
@@ -155,8 +157,9 @@ class StreamingSpeaker:
         if not ok:
             return await self.tts.synthesize(answer, self.audio_id)
         log.info(
-            "tts stream: %d clips, first audio at %s ms, done at %.0f ms",
+            "tts stream: %d clips started at %s ms, first audio at %s ms, done at %.0f ms",
             len(paths),
+            [round(t) for t in self.started_ms],
             f"{self.first_audio_ms:.0f}" if self.first_audio_ms is not None else "-",
             (time.perf_counter() - self.t0) * 1000,
         )
