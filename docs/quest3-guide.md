@@ -339,7 +339,7 @@ On the server, watch the uvicorn output for `POST /v1/frames ... 200` and (ambie
 | 12 | "What did I hear?" (verify on device) | After ~30 s of talking, hold the trigger and ask *"what did I hear?"*. The answer cites a speech memory (`Speech heard nearby: "…"`; with mock STT the words are `[mock transcript]`, real words need `AUDIO_STT_PROVIDER=openai` or `faster-whisper` on the server). Laptop check: `curl 'http://<server>:8000/v1/memories/recent?kind=transcript&k=5'` | `not_found` / only frames → no `POST /v1/audio 200` yet (step 11), or a different `deviceId` than the chat uses |
 
 Expected camera numbers: the app requests **1280×960** with a max of **30 fps** from the camera (`CaptureSettings.cs`).
-It then samples and uploads only **1 frame/s**, as a JPEG downscaled to a width of 960 px at quality 75. 1280×960 is
+It then samples and uploads only **1 frame/s**, as a full-size 1280×960 JPEG at quality 80. 1280×960 is
 one of the resolutions Meta documents for PCA [D-pca-unity]. Meta documents about 20–40 ms latency [D-pca].
 
 ---

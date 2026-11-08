@@ -37,7 +37,7 @@ logs an error, `status` becomes `"degraded"` and `store` reads `lancedb (degrade
 
 ## `POST /frames`  (headset / feeder -> server)
 `multipart/form-data`
-- `image`: JPEG bytes (<= 960 px wide recommended)
+- `image`: JPEG bytes (the headset sends the full 1280x960 camera frame; stored as-is)
 - `meta`: JSON string
   ```json
   { "device_id": "quest3-abc", "ts": 1731000000.123,

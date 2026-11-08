@@ -14,8 +14,8 @@ namespace Megamind
 
         [Header("Capture")]
         public float captureFps = 1f;
-        public int jpegMaxWidth = 960;
-        [Range(30, 95)] public int jpegQuality = 75;
+        public int jpegMaxWidth = 1280;
+        [Range(30, 95)] public int jpegQuality = 80;
         public int maxPendingUploads = 10;
 
         [Header("Voice")]

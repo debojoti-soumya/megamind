@@ -15,8 +15,8 @@ MonoBehaviour:
   serverBaseUrl: http://100.64.0.1:8000
   deviceId: quest3-1
   captureFps: 1
-  jpegMaxWidth: 960
-  jpegQuality: 75
+  jpegMaxWidth: 1280
+  jpegQuality: 80
   maxPendingUploads: 10
   micSampleRate: 16000
   maxRecordSeconds: 15
