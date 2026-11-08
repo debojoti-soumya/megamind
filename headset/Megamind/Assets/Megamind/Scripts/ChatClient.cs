@@ -38,6 +38,9 @@ namespace Megamind
         [Tooltip("POST /v1/chat/stream: show the answer as it is written and speak it sentence by sentence. Falls back to " +
                  "POST /v1/chat on servers without the stream endpoint.")]
         public bool streamAnswers = true;
+        [Tooltip("Voice: POST /v1/stt first (≈0.5 s), match commands locally, then ask the transcript as text. Falls back to " +
+                 "sending the audio to the chat stream on servers without /v1/stt (404/405).")]
+        public bool transcribeFirst = true;
 
         public event Action<ChatResponse> OnResponse;
         /// <summary>Seconds from sending the question to the complete answer.</summary>
@@ -167,6 +170,24 @@ namespace Megamind
             var samples = new float[pos * _recording.channels];
             _recording.GetData(samples, 0);
             byte[] wav = WavEncoder.Encode(samples, _recording.channels, config.micSampleRate);
+            if (transcribeFirst && !SttUnsupported)
+            {
+                var stt = new SttResult();
+                yield return Transcribe(wav, stt);
+                if (stt.Ok)
+                {
+                    string text = (stt.Response.transcript ?? "").Trim();
+                    if (text.Length == 0) { panel?.AddSystemMessage("(didn\u2019t catch that)"); yield break; }
+                    // the server's fuzzy match (difflib >= 0.8) also fires on short questions ("did I start recording" = 0.83),
+                    // so only a near-exact server hit backs up the local matcher
+                    var sc = stt.Response.command;
+                    string serverPhrase = sc != null && sc.score >= 0.9f ? sc.phrase : null;
+                    if (menu != null && menu.TryVoiceCommand(text, serverPhrase)) yield break;
+                    yield return SendTextCo(text); // shows the transcript as the user bubble, then streams the answer
+                    yield break;
+                }
+                if (!stt.FallBack) yield break; // STT failed (error shown); don't pay for a chat turn on the same audio
+            }
 
             var form = new List<IMultipartFormSection>
             {
@@ -194,6 +215,44 @@ namespace Megamind
             var body = JsonUtility.ToJson(new ChatRequest { session_id = SessionId, device_id = config.deviceId, text = text });
             panel?.AddUserMessage(text);
             yield return Ask(Encoding.UTF8.GetBytes(body), "application/json", voice: false);
+        }
+
+        // ---- POST /v1/stt (issue #138 contract): multipart audio + command_hints -> { transcript, command } ----
+
+        private class SttResult { public bool Ok, FallBack; public SttResponse Response; }
+        private string _noSttServer;
+        private bool SttUnsupported => _noSttServer != null && _noSttServer == config.serverBaseUrl;
+
+        private IEnumerator Transcribe(byte[] wav, SttResult result)
+        {
+            IsThinking = true;
+            _turnPhase = Phase.Transcribing;
+            panel?.SetThinking(true);
+            var form = new List<IMultipartFormSection>
+            {
+                new MultipartFormFileSection("audio", wav, "q.wav", "audio/wav"),
+                new MultipartFormDataSection("command_hints", string.Join("|", VoiceCommands.AllPhrases())),
+            };
+            using (var req = UnityWebRequest.Post(config.Url("/v1/stt"), form))
+            {
+                config.Authorize(req);
+                req.timeout = 20;
+                yield return req.SendWebRequest();
+                IsThinking = false;
+                panel?.SetThinking(false);
+                long code = req.responseCode;
+                if (code == 404 || code == 405) { _noSttServer = config.serverBaseUrl; result.FallBack = true; yield break; }
+                if (req.result != UnityWebRequest.Result.Success)
+                {
+                    // network-level failure (no response): let the chat path try the audio; HTTP errors are shown
+                    if (code == 0) { result.FallBack = true; yield break; }
+                    panel?.AddAssistantMessage("(speech-to-text failed: " + req.error + ")", null, true);
+                    yield break;
+                }
+                try { result.Response = JsonUtility.FromJson<SttResponse>(req.downloadHandler.text); } catch (Exception) { }
+                if (result.Response == null) { result.FallBack = true; yield break; }
+                result.Ok = true;
+            }
         }
 
         private UnityWebRequest MakeChatRequest(string path, byte[] body, string contentType, DownloadHandler download)
