@@ -34,12 +34,12 @@ COMMON_ENV = {
     "LANCEDB_PATH": f"{DATA}/lancedb",
     "THUMB_DIR": f"{DATA}/thumbs",  # chunks / replay / montages default to siblings of this dir, i.e. on the Volume
     "AUDIO_DIR": f"{DATA}/audio",
-    "IMAGE_EMBED_PROVIDER": "none",  # SigLIP needs CPU torch (~1 GB image, slow cold start); opt-in by editing here
 }
 PROFILE_ENV = {
     # mirrors server/.env.example; keys come from the megamind-providers secret
     "live": {
         "EMBED_PROVIDER": "openai",
+        "IMAGE_EMBED_PROVIDER": "openclip",  # SigLIP ViT-B/16 image vectors (weights baked into the image below)
         "RETRIEVER_BACKEND": "hybrid",  # combo/hier are opt-in: on a 9k-memory week UCC timed out and hier took 16 s p50
         "READER_PROVIDER": "auto",
         "READER_BASE_URL": "https://api.sailresearch.com/v1",
@@ -52,6 +52,7 @@ PROFILE_ENV = {
     "mock": {
         "EMBED_PROVIDER": "mock",
         "RETRIEVER_BACKEND": "hybrid",
+        "IMAGE_EMBED_PROVIDER": "none",
         "READER_PROVIDER": "mock",
         "ENRICH_PROVIDER": "mock",
         "STT_PROVIDER": "mock",
@@ -72,7 +73,13 @@ image = (
         copy=True,
         ignore=[".venv", ".env", "data", "tests", "tools", "**/__pycache__", "*.egg-info", ".pytest_cache"],
     )
-    .run_commands("pip install --no-cache-dir /app/server", "ffmpeg -hide_banner -version | head -1")
+    .run_commands(
+        "pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu",
+        "pip install --no-cache-dir /app/server open-clip-torch>=2.24 transformers sentencepiece protobuf",
+        "ffmpeg -hide_banner -version | head -1",
+        # bake the SigLIP weights in: no download on a cold start
+        "python -c \"import open_clip; open_clip.create_model_and_transforms('ViT-B-16-SigLIP', pretrained='webli')\"",
+    )
     .env(COMMON_ENV | PROFILE_ENV[PROFILE])
 )
 
