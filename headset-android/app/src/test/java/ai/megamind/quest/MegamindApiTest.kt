@@ -2,9 +2,15 @@ package ai.megamind.quest
 
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
+import java.net.InetAddress
+import java.net.ServerSocket
+import kotlin.concurrent.thread
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -16,6 +22,7 @@ import org.junit.Test
 class MegamindApiTest {
   private val t0 = 1_762_000_000.25
   private val liveUrl: String = System.getProperty("megamind.url").orEmpty()
+  private val liveToken: String = System.getProperty("megamind.token").orEmpty()
 
   @Test
   fun frameMetaMatchesContract() {
@@ -108,6 +115,109 @@ class MegamindApiTest {
     assertEquals(null, MegamindApi.normalizeBaseUrl("/v1"))
   }
 
+  @Test
+  fun authorizationHeader() {
+    assertNull(MegamindApi.authorization(""))
+    assertNull(MegamindApi.authorization("  "))
+    assertNull(MegamindApi.authorization(null))
+    assertEquals("Bearer s3cret", MegamindApi.authorization(" s3cret "))
+  }
+
+  @Test
+  fun authFailuresAreNotRetryable() {
+    assertTrue(MegamindApi.isAuthFailure(401))
+    assertTrue(MegamindApi.isAuthFailure(403))
+    for (code in listOf(200, 202, 400, 404, 413, 429, 500, 502, 503)) assertFalse("$code", MegamindApi.isAuthFailure(code))
+    assertTrue(MegamindApi.authFailureMessage(MegamindApi.FRAMES_PATH, 401).contains("API token"))
+  }
+
+  /**
+   * In-process stand-in for a server with API_TOKEN=tok (plain ServerSocket: android.jar has no
+   * com.sun.net.httpserver): records each request's Authorization header, 202 for "Bearer tok", else 401.
+   */
+  private fun <T> withTokenServer(block: (base: String, seen: MutableList<String?>) -> T): T {
+    val seen = java.util.Collections.synchronizedList(mutableListOf<String?>())
+    val server = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
+    val acceptor = thread(isDaemon = true) {
+      while (!server.isClosed) {
+        val sock = runCatching { server.accept() }.getOrNull() ?: break
+        sock.use {
+          val input = it.getInputStream()
+          val headers = mutableMapOf<String, String>()
+          while (true) {
+            val line = readLine(input)
+            if (line.isEmpty()) break
+            val i = line.indexOf(':')
+            if (i > 0) headers[line.substring(0, i).trim().lowercase()] = line.substring(i + 1).trim()
+          }
+          if (headers["transfer-encoding"].equals("chunked", ignoreCase = true)) {
+            while (true) {
+              val size = readLine(input).substringBefore(';').trim().toInt(16)
+              if (size > 0) input.readNBytes(size)
+              readLine(input)
+              if (size == 0) break
+            }
+          } else {
+            headers["content-length"]?.toIntOrNull()?.let { n -> input.readNBytes(n) }
+          }
+          val auth = headers["authorization"]
+          seen.add(auth)
+          val (code, body) =
+              if (auth == "Bearer tok") 202 to "{\"accepted\":true}" else 401 to "{\"detail\":\"missing or invalid API token\"}"
+          val bytes = body.toByteArray()
+          it.getOutputStream().apply {
+            write(("HTTP/1.1 $code X\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\n" +
+                "Connection: close\r\n\r\n").toByteArray())
+            write(bytes)
+            flush()
+          }
+        }
+      }
+    }
+    try {
+      return block("http://127.0.0.1:${server.localPort}", seen)
+    } finally {
+      server.close()
+      acceptor.join(2_000)
+    }
+  }
+
+  private fun readLine(input: InputStream): String {
+    val sb = StringBuilder()
+    while (true) {
+      val c = input.read()
+      if (c < 0 || c == '\n'.code) break
+      if (c != '\r'.code) sb.append(c.toChar())
+    }
+    return sb.toString()
+  }
+
+  @Test
+  fun postSendsBearerTokenOnEveryPath() = withTokenServer { base, seen ->
+    val jpeg = MegamindApi.Body.Bytes(byteArrayOf(-1, -40, -1, -39))
+    val pcm = MegamindApi.Body.Bytes(ByteArray(320))
+    val requests =
+        listOf(
+            MegamindApi.FRAMES_PATH to MegamindApi.frameRequest("dev", t0, jpeg),
+            MegamindApi.AUDIO_PATH to MegamindApi.audioRequest("dev", t0, pcm, 16000),
+            MegamindApi.VIDEO_PATH to MegamindApi.videoRequest("dev", t0, MegamindApi.Body.Bytes(testClip())),
+        )
+    for ((path, body) in requests) assertEquals(path, 202, MegamindApi.post(base, path, body, token = "tok").code)
+    assertEquals(202, MegamindApi.get(base, MegamindApi.HEALTH_PATH, token = "tok").code)
+    assertEquals(listOf("Bearer tok", "Bearer tok", "Bearer tok", "Bearer tok"), seen.toList())
+  }
+
+  @Test
+  fun missingOrWrongTokenIs401AuthFailure() = withTokenServer { base, seen ->
+    val body = MegamindApi.frameRequest("dev", t0, MegamindApi.Body.Bytes(byteArrayOf(-1, -40, -1, -39)))
+    val none = MegamindApi.post(base, MegamindApi.FRAMES_PATH, body)
+    val wrong = MegamindApi.post(base, MegamindApi.FRAMES_PATH, body, token = "nope")
+    assertEquals(401, none.code)
+    assertTrue(MegamindApi.isAuthFailure(none.code) && MegamindApi.isAuthFailure(wrong.code))
+    assertEquals(listOf(null, "Bearer nope"), seen.toList()) // no header at all when the token is empty
+    assertEquals(401, MegamindApi.get(base, MegamindApi.HEALTH_PATH).code)
+  }
+
   // ---- live: replay the exact bytes against a running server ----
 
   /** 640x480 checkerboard JPEG (test resource): bright and sharp, so the keyframe filter keeps it. */
@@ -128,7 +238,7 @@ class MegamindApiTest {
     assumeTrue("set -Pmegamind.url to run", liveUrl.isNotEmpty())
     val base = MegamindApi.normalizeBaseUrl(liveUrl)!!
     val ts = System.currentTimeMillis() / 1000.0
-    val r = MegamindApi.post(base, MegamindApi.FRAMES_PATH, MegamindApi.frameRequest("quest3-native-test", ts, MegamindApi.Body.Bytes(testJpeg()), "000000.jpg"))
+    val r = MegamindApi.post(base, MegamindApi.FRAMES_PATH, MegamindApi.frameRequest("quest3-native-test", ts, MegamindApi.Body.Bytes(testJpeg()), "000000.jpg"), token = liveToken)
     println("POST /v1/frames -> ${r.code} ${r.body}")
     assertEquals(202, r.code)
     assertTrue(r.body.contains("\"frame_id\""))
@@ -141,7 +251,7 @@ class MegamindApiTest {
     val base = MegamindApi.normalizeBaseUrl(liveUrl)!!
     val ts = System.currentTimeMillis() / 1000.0
     val pcm = File.createTempFile("megamind", ".pcm16").apply { writeBytes(tonePcm(5.0)); deleteOnExit() }
-    val r = MegamindApi.post(base, MegamindApi.AUDIO_PATH, MegamindApi.audioRequest("quest3-native-test", ts, MegamindApi.Body.FileBody(pcm), 16000, "chunk.wav"))
+    val r = MegamindApi.post(base, MegamindApi.AUDIO_PATH, MegamindApi.audioRequest("quest3-native-test", ts, MegamindApi.Body.FileBody(pcm), 16000, "chunk.wav"), token = liveToken)
     println("POST /v1/audio -> ${r.code} ${r.body}")
     assertEquals(200, r.code)
     assertTrue(r.body.contains("\"audio_id\""))
@@ -153,10 +263,21 @@ class MegamindApiTest {
     assumeTrue("set -Pmegamind.url to run", liveUrl.isNotEmpty())
     val base = MegamindApi.normalizeBaseUrl(liveUrl)!!
     val ts = System.currentTimeMillis() / 1000.0
-    val r = MegamindApi.post(base, MegamindApi.VIDEO_PATH, MegamindApi.videoRequest("quest3-native-test", ts, MegamindApi.Body.Bytes(testClip()), "chunk.mp4"))
+    val r = MegamindApi.post(base, MegamindApi.VIDEO_PATH, MegamindApi.videoRequest("quest3-native-test", ts, MegamindApi.Body.Bytes(testClip()), "chunk.mp4"), token = liveToken)
     println("POST /v1/video -> ${r.code} ${r.body}")
     assertEquals(200, r.code)
     assertTrue(r.body.contains("\"video_id\""))
     assertTrue(r.body.contains("\"accepted\":true"))
+  }
+
+  @Test
+  fun liveRejectsMissingToken() {
+    assumeTrue("set -Pmegamind.url and -Pmegamind.token to run", liveUrl.isNotEmpty() && liveToken.isNotEmpty())
+    val base = MegamindApi.normalizeBaseUrl(liveUrl)!!
+    val ts = System.currentTimeMillis() / 1000.0
+    val r = MegamindApi.post(base, MegamindApi.FRAMES_PATH, MegamindApi.frameRequest("quest3-native-test", ts, MegamindApi.Body.Bytes(testJpeg()), "000000.jpg"))
+    println("POST /v1/frames without token -> ${r.code} ${r.body}")
+    assertTrue(MegamindApi.isAuthFailure(r.code))
+    assertEquals(200, MegamindApi.get(base, MegamindApi.HEALTH_PATH, token = liveToken).code)
   }
 }
