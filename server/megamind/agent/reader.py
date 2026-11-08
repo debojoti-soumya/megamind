@@ -9,7 +9,7 @@ This is the "attention over memory tokens" component. The context layout is deli
   caption: ... / text: ...`` immediately followed by its thumbnail, so the id the model
   cites sits right next to the pixels it saw;
 * the question comes last, together with the strict JSON output schema
-  ``{"answer", "evidence": [{"id", "why"}], "confidence"}``;
+  ``{"answer", "evidence": [id, ...], "confidence"}`` (kept terse: output tokens dominate reader latency);
 * more than ``reader_max_images`` tokens (Sail allows 20 images/request) are split into
   equal chronological chunks read concurrently and merged by confidence.
 
@@ -58,30 +58,24 @@ captured, a caption, any text read from the image, and the thumbnail itself. Ans
 question using ONLY these tokens. Look at the images: they override the captions when they
 disagree. Never identify people; describe them neutrally.
 
-Reply with strict JSON and nothing else:
-{"answer": "<one or two sentences, mention when it was seen>",
- "evidence": [{"id": "<token id>", "why": "<what in this token supports the answer>"}],
- "confidence": "high" | "medium" | "low" | "not_found"}
-Rules: cite only ids from the list, most relevant first, at most 4. Use "not_found" with an
-empty evidence list and answer "No matching memory." when nothing answers the question.
-"high" = the image clearly shows it; "medium" = caption/text says it but the image is
-ambiguous; "low" = a plausible but uncertain match."""
+Be brief: your reply is an intermediate note another model answers from, and every extra word costs
+the wearer latency. Reply with one line of raw JSON, no code fence, nothing else:
+{"answer":"<one short sentence; say when it was seen>","evidence":["<token id>"],"confidence":"<level>"}
+Summary questions (summarize / what did I do / what have I been doing) may use up to three short
+clauses, each with its time, so no part of the period is lost. Keep the specifics the question asks
+for (text read, object, place). Rules: evidence lists only ids from the list, most relevant first,
+at most 3. confidence is "high" (the image clearly shows it), "medium" (caption/text says it but the
+image is ambiguous), "low" (a plausible but uncertain match) or "not_found": then answer
+"No matching memory." with evidence []."""
 
 
+# evidence is bare ids: a per-item "why" doubled the output tokens and nothing downstream reads it
+# (parse_reader_json still accepts {"id", "why"} objects from older prompts / other models).
 READER_JSON_SCHEMA = {
     "type": "object",
     "properties": {
         "answer": {"type": "string"},
-        "evidence": {
-            "type": "array",
-            "maxItems": 4,
-            "items": {
-                "type": "object",
-                "properties": {"id": {"type": "string"}, "why": {"type": "string"}},
-                "required": ["id", "why"],
-                "additionalProperties": False,
-            },
-        },
+        "evidence": {"type": "array", "maxItems": 3, "items": {"type": "string"}},
         "confidence": {"type": "string", "enum": list(_CONFIDENCES)},
     },
     "required": ["answer", "evidence", "confidence"],
@@ -273,9 +267,11 @@ def build_user_content(
     thumb_max_px: int,
     zone: ZoneInfo | None = None,
     images: dict[str, str | None] | None = None,
+    sizes: dict[str, int] | None = None,
 ) -> list[dict]:
     """Interleaved text/image parts, chronological. Image count == number of readable thumbs.
-    `images` (token id -> data URI) replaces reading `thumb_path` when given (cold-tier frames)."""
+    `images` (token id -> data URI) replaces reading `thumb_path` when given (cold-tier frames);
+    `sizes` (token id -> long side) overrides `thumb_max_px` per token when thumbs are read here."""
     ordered = sorted(tokens, key=lambda t: t.ts)
     first_ts = ordered[0].ts if ordered else now
     parts: list[dict] = [
@@ -283,7 +279,10 @@ def build_user_content(
     ]
     for t in ordered:
         parts.append({"type": "text", "text": token_header(t, first_ts, now, zone)})
-        uri = images.get(t.id) if images is not None else encode_thumb(t.thumb_path, thumb_max_px)
+        if images is not None:
+            uri = images.get(t.id)
+        else:
+            uri = encode_thumb(t.thumb_path, sizes.get(t.id, thumb_max_px) if sizes else thumb_max_px)
         if uri:
             parts.append({"type": "image_url", "image_url": {"url": uri}})
         else:
@@ -445,6 +444,9 @@ class VLMReader(Reader):
         self.fallback_model = settings.reader_fallback_model if settings.reader_fallback_model != self.model else ""
         self.max_images = max(1, settings.reader_max_images)
         self.thumb_max_px = settings.reader_thumb_max_px
+        self.full_images = settings.reader_full_images
+        self.small_px = min(settings.reader_vlm_small_px, self.thumb_max_px)  # 0 = every image at thumb_max_px
+        self.send_temperature = True  # cleared once the endpoint rejects it (claude-haiku-5-5): no 400 per call
         self.max_retries = settings.reader_max_retries
         self.timeout_s = settings.reader_timeout_s
         self.deadline_s = settings.reader_deadline_s
@@ -472,9 +474,13 @@ class VLMReader(Reader):
         t0 = time.perf_counter()
         now = time.time() if now is None else now
         chunks = chunk_chronological(tokens, self.max_images)
-        images = await self._load_images(tokens) if self.image_loader is not None else None
+        sizes = self.image_sizes(tokens)
+        images = await self._load_images(tokens, sizes) if self.image_loader is not None else None
         outs = await asyncio.gather(
-            *(self._read_chunk(query, c, now, images, started=t0 if images is not None else None) for c in chunks)
+            *(
+                self._read_chunk(query, c, now, images, sizes, started=t0 if images is not None else None)
+                for c in chunks
+            )
         )
         out = merge_outputs(list(outs)) if len(outs) > 1 else outs[0]
         out.latency_ms = (time.perf_counter() - t0) * 1000
@@ -492,9 +498,20 @@ class VLMReader(Reader):
         )
         return out
 
-    async def _load_images(self, tokens: list[MemoryToken]) -> dict[str, str | None]:
+    def image_sizes(self, tokens: list[MemoryToken]) -> dict[str, int] | None:
+        """token id -> long side, or None = every image at `thumb_max_px` (the default). With READER_VLM_SMALL_PX
+        set, only the best `reader_full_images` hits stay at `thumb_max_px` (tokens arrive best-first, temporal
+        context at the tail) and the rest shrink, mirroring ClaudeVisionReader; the tail's caption/OCR is unchanged."""
+        if self.small_px <= 0 or self.full_images <= 0:
+            return None
+        return {t.id: self.thumb_max_px if i < self.full_images else self.small_px for i, t in enumerate(tokens)}
+
+    async def _load_images(
+        self, tokens: list[MemoryToken], sizes: dict[str, int] | None = None
+    ) -> dict[str, str | None]:
         assert self.image_loader is not None
-        return await load_images(self.image_loader, tokens, self.thumb_max_px, self.deadline_s * _IMAGE_LOAD_SHARE)
+        budget = self.deadline_s * _IMAGE_LOAD_SHARE
+        return await load_images(self.image_loader, tokens, self.thumb_max_px, budget, sizes)
 
     async def _read_chunk(
         self,
@@ -502,6 +519,7 @@ class VLMReader(Reader):
         tokens: list[MemoryToken],
         now: float,
         images: dict[str, str | None] | None = None,
+        sizes: dict[str, int] | None = None,
         *,
         started: float | None = None,
     ) -> ReaderOutput:
@@ -509,7 +527,9 @@ class VLMReader(Reader):
         never do) or fails fast, the fallback model runs too and the first good JSON wins. Everything
         shares one wall-clock deadline, after which the chunk degrades to captions-only."""
         # JPEG decode/resize/base64 is ~5-10 ms per image: keep it off the event loop (concurrent turns, Claude I/O)
-        content = await asyncio.to_thread(build_user_content, query, tokens, now, self.thumb_max_px, self.zone, images)
+        content = await asyncio.to_thread(
+            build_user_content, query, tokens, now, self.thumb_max_px, self.zone, images, sizes
+        )
         body: dict[str, Any] = {
             "model": self.model,
             "messages": [
@@ -517,7 +537,7 @@ class VLMReader(Reader):
                 {"role": "user", "content": content},
             ],
             "max_tokens": self.settings.reader_max_tokens,
-            "temperature": 0,
+            **({"temperature": 0} if self.send_temperature else {}),
             **self.extra_body,
         }
         st = _ChunkState(json_mode=self.json_mode, known={t.id for t in tokens})
@@ -605,7 +625,10 @@ class VLMReader(Reader):
                     raise httpx.HTTPStatusError(f"reader HTTP {r.status_code}", request=r.request, response=r)
                 r.raise_for_status()
                 data = r.json()
-                text = data["choices"][0]["message"]["content"] or ""
+                choice = data["choices"][0]
+                if choice.get("finish_reason") == "length":  # a cut JSON fails to parse below -> retry / captions
+                    log.warning("reader %s hit max_tokens=%s, reply truncated", model, body.get("max_tokens"))
+                text = choice["message"]["content"] or ""
                 answer, conf, items = parse_reader_json(text, st.known)
                 usage = {k: int(v) for k, v in (data.get("usage") or {}).items() if isinstance(v, int | float)}
                 return ReaderOutput(
@@ -623,6 +646,13 @@ class VLMReader(Reader):
                     st.fatal = True  # same key for both models: degrade now
                     log.warning("reader HTTP %d on %s (auth), degrading", code, model)
                     return None
+                if code in (400, 422) and "temperature" in body and "temperature" in e.response.text.lower():
+                    # newer models (e.g. claude-haiku-5-5) reject `temperature`: drop it, keep the retry budget and
+                    # the json_mode (this body is this model's own copy, the other model still sends it)
+                    body.pop("temperature")
+                    self.send_temperature = False
+                    log.warning("reader HTTP %d on %s, retrying without temperature", code, model)
+                    continue
                 if code in (400, 422):
                     # endpoint rejects the request shape: most likely the response_format. Downgrade
                     # schema -> object -> off (does not consume the retry budget), then give up on both models.
