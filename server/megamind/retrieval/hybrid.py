@@ -21,6 +21,7 @@ from megamind.retrieval.adapter import StoreAdapter
 from megamind.retrieval.base import RetrievalResult, RetrievedToken, RetrieveMode, Retriever
 from megamind.retrieval.planner import QueryPlan, Weights, plan_query
 from megamind.store.base import MemoryStore
+from megamind.store.rrf import image_conf
 
 
 @dataclass
@@ -137,37 +138,47 @@ class HybridRetriever(Retriever):
         device_id: str | None,
         ref_ts: float,
     ) -> list[tuple[str, float, list[str]]]:
-        """Weighted RRF over the ranked lists selected by `mode`, plus a recency prior."""
+        """Weighted RRF over the ranked lists selected by `mode`, plus a recency prior.
+
+        With `store.image_calibration` set (SigLIP, SEARCH_CALIBRATE_IMAGE=true) each image hit contributes
+        `weight * sigmoid(scale * cos + bias) / (c + rank + 1)`, so a weak nearest image can't outrank exact
+        text/OCR hits (ported from PR #54). Hybrid mode only: visual mode ranks the image list alone, unchanged."""
         flt = dict(time_from=time_from, time_to=time_to, device_id=device_id)
         n = self.cfg.pool
 
-        async def ids(coro) -> list[str]:
-            return [i for i, _ in await coro]
-
-        async def vec_ids(embed, field: str) -> list[str]:
-            return await ids(self.adapter.vector_search(await self._embed_query(field, embed, text), n, field, **flt))
+        async def vec(embed, field: str) -> list[tuple[str, float]]:
+            return await self.adapter.vector_search(await self._embed_query(field, embed, text), n, field, **flt)
 
         # the legs are independent store calls (LanceDB runs each in a worker thread): run them concurrently
-        legs: list[tuple[str, float, Coroutine[Any, Any, list[str]]]] = []
+        legs: list[tuple[str, float, Coroutine[Any, Any, list[tuple[str, float]]]]] = []
         text_lists = mode in ("semantic", "hybrid") or (mode == "visual" and self.image_embedder is None)
         if text_lists:
-            legs.append(("bm25", w.bm25, ids(self.adapter.keyword_search(text, n, **flt))))
+            legs.append(("bm25", w.bm25, self.adapter.keyword_search(text, n, **flt)))
             if self.text_embedder is not None:
-                legs.append(("text", w.text, vec_ids(self.text_embedder.embed, "text_vec")))
+                legs.append(("text", w.text, vec(self.text_embedder.embed, "text_vec")))
         if mode in ("semantic", "hybrid") and w.ocr_bm25:
-            legs.append(("ocr_bm25", w.ocr_bm25, ids(self.adapter.ocr_search(text, n, **flt))))
+            legs.append(("ocr_bm25", w.ocr_bm25, self.adapter.ocr_search(text, n, **flt)))
         if mode in ("visual", "hybrid") and self.image_embedder is not None:
             weight = 1.0 if mode == "visual" else w.image
-            legs.append(("image", weight, vec_ids(self.image_embedder.embed_text, "image_vec")))
+            legs.append(("image", weight, vec(self.image_embedder.embed_text, "image_vec")))
         ranked = await asyncio.gather(*(c for _, _, c in legs))
-        lists = [(name, weight, r) for (name, weight, _), r in zip(legs, ranked, strict=True)]
+
+        # calibrate only when the image list is fused against text lists: in visual mode it is the only
+        # list, and shrinking it would just hand the ranking to the additive recency/OCR priors
+        cal = getattr(self.adapter.store, "image_calibration", None) if mode == "hybrid" else None
+        # (name, weight, ranked ids, optional per-hit multipliers aligned with the ids)
+        lists: list[tuple[str, float, list[str], list[float] | None]] = []
+        for (name, weight, _), hits in zip(legs, ranked, strict=True):
+            mults = [image_conf(cos, *cal) for _, cos in hits] if name == "image" and cal is not None else None
+            lists.append((name, weight, [i for i, _ in hits], mults))
 
         scores: dict[str, float] = {}
         reasons: dict[str, list[str]] = {}
         c = self.cfg.rrf_c
-        for name, weight, ids in lists:
+        for name, weight, ids, mults in lists:
             for rank, i in enumerate(ids):
-                scores[i] = scores.get(i, 0.0) + weight / (c + rank + 1)
+                m = 1.0 if mults is None else mults[rank]
+                scores[i] = scores.get(i, 0.0) + weight * m / (c + rank + 1)
                 reasons.setdefault(i, []).append(name)
         if not scores:
             return []

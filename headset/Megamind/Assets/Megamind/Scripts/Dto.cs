@@ -1,4 +1,5 @@
 // C# mirrors of docs/api.md. Keep in sync with server/megamind/models.py.
+// Note: JsonUtility cannot deserialize `tool_calls[].args` (a free-form object); only name/confidence are read.
 using System;
 using System.Collections.Generic;
 
@@ -30,5 +31,20 @@ namespace Megamind
         public string audio_url;
         public List<Citation> cited = new List<Citation>();
         public List<ToolCallRecord> tool_calls = new List<ToolCallRecord>();
+
+        /// <summary>Confidence of the recall_memory call, or null if the agent did not recall.</summary>
+        public string Confidence()
+        {
+            if (tool_calls == null) return null;
+            foreach (var t in tool_calls)
+                if (t.name == "recall_memory" && !string.IsNullOrEmpty(t.confidence)) return t.confidence;
+            return null;
+        }
     }
+
+    [Serializable] public class HealthModels { public string claude, reader, embed; }
+
+    [Serializable] public class HealthResponse { public string status; public int store_count; public HealthModels models; }
+
+    [Serializable] public class PurgeResponse { public int deleted; }
 }

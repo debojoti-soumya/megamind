@@ -6,7 +6,7 @@ from typing import Literal
 
 from megamind.models import MemoryHit, MemoryToken, SearchMode
 from megamind.store.episodes import EpisodeTracker
-from megamind.store.rrf import Scored
+from megamind.store.rrf import Calibration, Scored
 
 VectorField = Literal["text_vec", "image_vec"]
 
@@ -32,6 +32,10 @@ class MemoryStore(ABC):
     """
 
     episodes: EpisodeTracker | None = None
+    # SigLIP (scale, bias) of the image embedder that wrote `image_vec`, set by main.py when
+    # SEARCH_CALIBRATE_IMAGE is on. `search()` and the hybrid retriever then scale each image hit's RRF
+    # contribution by sigmoid(scale * cos + bias); None = plain rank credit (the pre-calibration behaviour).
+    image_calibration: Calibration | None = None
 
     async def _episodize(self, tokens: Sequence[MemoryToken]) -> None:
         tracker = self.episodes

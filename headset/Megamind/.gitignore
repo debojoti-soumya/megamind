@@ -13,3 +13,4 @@
 *.aab
 *.unitypackage
 .vs/
+.utmp/
