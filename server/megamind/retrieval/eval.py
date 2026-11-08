@@ -262,7 +262,9 @@ async def evaluate(
                 latency_ms=latency,
                 cost=cost,
                 failed=delta.get("errors", 0) > 0,
-                hybrid_only=(delta.get("fallback", 0) > 0 and not delta.get("errors", 0)) or delta.get("gated", 0) > 0,
+                hybrid_only=(delta.get("fallback", 0) > 0 and not delta.get("errors", 0))
+                or delta.get("gated", 0) > 0
+                or delta.get("hybrid", 0) > 0,
             )
         )
     return rep

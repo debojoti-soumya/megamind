@@ -50,6 +50,8 @@ BACKENDS = {
     "ucc-rerank": ("ucc", "UCC reranks hybrid top-N (UCC_CANDIDATES)"),
     "hier": ("openai", "LLM notes + 2-stage pick/rank over hybrid top-30"),
     "hier-gated": ("openai", "hier only when hybrid top-1/top-2 margin < HIER_GATE_MARGIN"),
+    "combo": ("", "per question (#149): recent / pure time -> hybrid, hard -> hier, else UCC"),
+    "combo-hier": ("openai", "combo with hier in UCC's slot: recent / pure time -> hybrid, else hier"),
 }
 
 
@@ -234,6 +236,15 @@ async def build_backend(name, args, s, store, ds, hybrid, meter, overrides=None)
     """(retriever, one-time setup note) for one bake-off row."""
     if name == "hybrid":
         return hybrid, None
+    if name.startswith("combo"):
+        from megamind.retrieval.combo import ComboRetriever
+
+        key = getattr(s, "hier_api_key", "") or s.openai_api_key
+        hier, note = await build_backend("hier", args, s, store, ds, hybrid, meter, overrides) if key else (None, None)
+        ucc = hier if name == "combo-hier" else None
+        if name == "combo" and s.ucc_api_key:
+            ucc, _ = await build_backend("ucc", args, s, store, ds, hybrid, meter)
+        return ComboRetriever(hybrid, ucc=ucc, hier=hier, tz=ds.tz), note
     if name.startswith("ucc"):
         from megamind.retrieval.ucc import UCCConfig, UCCRetriever
 
