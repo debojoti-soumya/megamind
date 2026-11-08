@@ -9,7 +9,7 @@ from datetime import datetime
 from megamind.models import MemoryHit, MemoryToken
 from megamind.retrieval.planner import QueryPlan
 
-RetrieveMode = str  # "semantic" | "visual" | "hybrid" | "temporal"
+RetrieveMode = str  # "semantic" | "visual" | "hybrid" | "temporal" | "recent"
 
 
 @dataclass

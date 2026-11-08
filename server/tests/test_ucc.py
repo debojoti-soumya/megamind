@@ -180,6 +180,8 @@ async def test_empty_corpus_and_pure_time_questions_use_hybrid():
     selects = fake.selects
     await retr.retrieve("what was I doing 10 minutes ago", k=3)
     assert fake.selects == selects  # temporal: no select
+    await retr.retrieve("what did I just see?", k=3)
+    assert fake.selects == selects  # recency: no select
 
 
 def test_build_retriever_selects_backend(tmp_path):
