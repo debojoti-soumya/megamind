@@ -96,6 +96,23 @@ def test_thumb_url_by_tier():
     assert MemoryToken(id="e", thumb_path="", **base).thumb_url == ""  # hot without a file: unchanged behaviour
 
 
+async def test_live_now_frame_reads_through_media_store(tmp_path):
+    """Main's live short-term memory (#98) hands the reader unstored `LiveFrameToken`s from its own cache;
+    with tiered media the reader loads every image through `MediaStore.read`, so those must still load."""
+    from megamind.live import LiveFrameToken
+
+    jpeg = _frame(7)
+    p = tmp_path / "live" / "now_abc.jpg"
+    p.parent.mkdir()
+    p.write_bytes(jpeg)
+    media = MediaStore(Settings(_env_file=None, thumb_dir=tmp_path / "thumbs"), InMemoryStore())
+    tok = LiveFrameToken(id="now_abc", device_id="d", ts=T0, thumb_path=str(p), frame_hash="", kind="frame")
+    assert tok.thumb_url == "/v1/live/now_abc.jpg"
+    assert await media.read(tok) == jpeg
+    p.unlink()
+    assert await media.read(tok) is None  # evicted from the live cache: no store lookup hit, no crash
+
+
 # ---------------------------------------------------------------------- no encoder
 
 

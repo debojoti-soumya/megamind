@@ -99,7 +99,8 @@ Response:
 ```
 `replay_url` is optional and `null` when the server holds neither buffered frames nor kept keyframes with pixels
 around the citation (pixels aged out, replay disabled, or a different device). It covers `ts - 5 s .. ts + 5 s`.
-`cited[].thumb_url` is `""` when the cited token has no image (heard speech): show the caption, skip the thumbnail.
+`cited[].thumb_url` is `""` when the cited token has no image (heard speech, or a frame whose pixels aged out,
+`tier="text"`): show the caption, skip the thumbnail.
 For questions about the present ("what am I looking at right now", "what did I just see") the evidence also
 includes live short-term memory (see `GET /live/{id}.jpg`): a cited raw frame has an id starting `now_`, a
 caption starting `LIVE NOW-<n>:` and `thumb_url` `/v1/live/{id}.jpg`. Treat `thumb_url` as an opaque URL.
