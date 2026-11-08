@@ -17,6 +17,12 @@ goes to Claude as its first tool result, and Claude can still re-query.
 Without ``ANTHROPIC_API_KEY`` (or when the API fails) the deterministic
 ``_no_llm_fallback`` path answers straight from the reader's evidence so the
 whole system keeps working offline.
+
+Streaming (``POST /v1/chat/stream``): pass ``on_event`` to :meth:`ClaudeAgent.chat_with_stats` and the same
+turn runs with ``messages.stream`` instead of ``messages.create`` (identical request parameters, so the same
+answer), reporting ``retrieval`` (candidate citations after each tool result), ``delta`` (answer text as it is
+generated, ``<cites>`` trailer held back) and ``reset`` (discard the streamed text: that round turned into a tool
+call, or the API failed and the caption fallback answers instead). The final :class:`ChatResponse` is unchanged.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -226,6 +233,75 @@ async def _cancel(task: asyncio.Task | None) -> None:
             await task
 
 
+EventCallback = Callable[[str, dict], Awaitable[None]]
+
+
+class _TrailerFilter:
+    """Streams answer text minus the `<cites>...</cites>` trailer: holds back a possible partial tag."""
+
+    OPEN, CLOSE = "<cites>", "</cites>"
+
+    def __init__(self) -> None:
+        self.buf = ""
+        self.inside = False
+
+    def feed(self, s: str) -> str:
+        self.buf += s
+        out: list[str] = []
+        while True:
+            if self.inside:
+                j = self.buf.find(self.CLOSE)
+                if j < 0:
+                    self.buf = self.buf[-(len(self.CLOSE) - 1) :]
+                    return "".join(out)
+                self.buf, self.inside = self.buf[j + len(self.CLOSE) :], False
+                continue
+            j = self.buf.find(self.OPEN)
+            if j >= 0:
+                out.append(self.buf[:j])
+                self.buf, self.inside = self.buf[j + len(self.OPEN) :], True
+                continue
+            keep = next(
+                (
+                    k
+                    for k in range(min(len(self.buf), len(self.OPEN) - 1), 0, -1)
+                    if self.OPEN.startswith(self.buf[-k:])
+                ),
+                0,
+            )
+            cut = len(self.buf) - keep
+            out.append(self.buf[:cut])
+            self.buf = self.buf[cut:]
+            return "".join(out)
+
+    def flush(self) -> str:
+        rest, self.buf = ("" if self.inside else self.buf), ""
+        return rest
+
+
+class _Emitter:
+    """Typed wrapper over the streaming callback; remembers whether answer text went out (for `reset`)."""
+
+    def __init__(self, cb: EventCallback) -> None:
+        self.cb = cb
+        self.dirty = False
+
+    async def delta(self, text: str) -> None:
+        if text:
+            self.dirty = True
+            await self.cb("delta", {"text": text})
+
+    async def reset(self) -> None:
+        if self.dirty:
+            self.dirty = False
+            await self.cb("reset", {})
+
+    async def retrieval(self, r: RecallResult) -> None:
+        seen: set[str] = set()
+        cands = [c for c in [*r.cited, *r.all_retrieved] if not (c.id in seen or seen.add(c.id))]
+        await self.cb("retrieval", {"confidence": r.confidence, "candidates": cands})
+
+
 def _split_cites(text: str) -> tuple[str, list[str] | None]:
     m = _CITES_RE.search(text)
     if not m:
@@ -262,22 +338,32 @@ class ClaudeAgent:
         return resp
 
     async def chat_with_stats(
-        self, session_id: str, text: str, device_id: str | None, *, now: float | None = None
+        self,
+        session_id: str,
+        text: str,
+        device_id: str | None,
+        *,
+        now: float | None = None,
+        on_event: EventCallback | None = None,
     ) -> tuple[ChatResponse, TurnStats]:
-        """`now` pins the wall clock (system prompt, relative times) for deterministic evals."""
+        """`now` pins the wall clock (system prompt, relative times) for deterministic evals. `on_event` streams
+        the turn (see the module docstring); without it the turn is exactly the non-streaming one."""
         stats = TurnStats(request_id=str(ULID()))
+        emit = _Emitter(on_event) if on_event is not None else None
         live_question.set(text)  # lets live short-term memory see "right now" behind Claude's keyword query
         t0 = time.perf_counter()
         if not self.enabled:
             stats.path = "fallback"
-            resp = await self._no_llm_fallback(text, device_id, stats, now=now)
+            resp = await self._no_llm_fallback(text, device_id, stats, now=now, emit=emit)
         else:
             try:
-                resp = await self._claude_turn(session_id, text, device_id, stats, now=now)
+                resp = await self._claude_turn(session_id, text, device_id, stats, now=now, emit=emit)
             except (anthropic.APIError, anthropic.APIConnectionError) as e:  # network, 4xx/5xx, timeouts
                 log.warning("req=%s claude failed (%s); using caption fallback", stats.request_id, e)
                 stats.path, stats.error = "fallback", f"{type(e).__name__}: {e}"
-                resp = await self._no_llm_fallback(text, device_id, stats, now=now)
+                if emit is not None:
+                    await emit.reset()
+                resp = await self._no_llm_fallback(text, device_id, stats, now=now, emit=emit)
         stats.total_ms = (time.perf_counter() - t0) * 1000
         log.info(
             "req=%s session=%s path=%s llm_calls=%d tool_calls=%d in_tok=%d out_tok=%d "
@@ -296,7 +382,14 @@ class ClaudeAgent:
         return resp, stats
 
     async def _claude_turn(
-        self, session_id: str, text: str, device_id: str | None, stats: TurnStats, *, now: float | None = None
+        self,
+        session_id: str,
+        text: str,
+        device_id: str | None,
+        stats: TurnStats,
+        *,
+        now: float | None = None,
+        emit: _Emitter | None = None,
     ) -> ChatResponse:
         assert self._client is not None
         now = time.time() if now is None else now
@@ -359,19 +452,30 @@ class ClaudeAgent:
                     }
                 )
                 turn.append({"role": "user", "content": [record(use_id, "recall_memory", args, r, t_tool)]})
+                if emit is not None:
+                    await emit.retrieval(r)
             for _round in range(MAX_TOOL_ROUNDS + 1):
                 t_llm = time.perf_counter()
-                msg = await self._client.messages.create(
-                    model=self.settings.claude_model,
-                    max_tokens=MAX_TOKENS,
-                    system=self.system_prompt(now),
-                    tools=[RECALL_MEMORY_TOOL],
-                    messages=prior + turn,
-                )
+                req = {
+                    "model": self.settings.claude_model,
+                    "max_tokens": MAX_TOKENS,
+                    "system": self.system_prompt(now),
+                    "tools": [RECALL_MEMORY_TOOL],
+                    "messages": prior + turn,
+                }
+                if self.settings.claude_prompt_cache and len(turn) == 1:
+                    # tool-picking call (no tool result yet): the tool round that usually follows re-reads tools +
+                    # system + history from cache (system carries the time, so turns can't share it)
+                    req["cache_control"] = {"type": "ephemeral"}
+                msg = await self._create(req, emit)
                 stats.llm_ms += (time.perf_counter() - t_llm) * 1000
                 stats.model_calls += 1
                 stats.input_tokens += msg.usage.input_tokens
                 stats.output_tokens += msg.usage.output_tokens
+                if getattr(msg.usage, "cache_read_input_tokens", None):
+                    stats.extra["cache_read_tokens"] = (
+                        stats.extra.get("cache_read_tokens", 0) + msg.usage.cache_read_input_tokens
+                    )
 
                 assistant_content = [b.model_dump(exclude_none=True) for b in msg.content]
                 turn.append({"role": "assistant", "content": assistant_content})
@@ -381,6 +485,8 @@ class ClaudeAgent:
                 uses = [b for b in msg.content if b.type == "tool_use"]
                 if msg.stop_reason != "tool_use" or not uses or _round == MAX_TOOL_ROUNDS:
                     break
+                if emit is not None:
+                    await emit.reset()  # text before a tool call is not the answer
 
                 results: list[dict] = []
                 for use in uses:
@@ -395,6 +501,8 @@ class ClaudeAgent:
                         r = await self._run_tool(use.name, args, device_id, now)
                     prefetch = None
                     results.append(record(use.id, use.name, args, r, t_tool))
+                    if emit is not None:
+                        await emit.retrieval(r)
                 turn.append({"role": "user", "content": results})
 
         finally:
@@ -419,6 +527,25 @@ class ClaudeAgent:
         del cite_hist[:-MAX_TURNS]
         return ChatResponse(transcript=text, answer=answer, cited=cited, tool_calls=tool_calls)
 
+    async def _create(self, req: dict, emit: _Emitter | None):
+        """One Messages API call: `messages.create`, or `messages.stream` (same parameters) forwarding text deltas."""
+        assert self._client is not None
+        if emit is None:
+            return await self._client.messages.create(**req)
+        filt = _TrailerFilter()
+        n_text = 0
+        async with self._client.messages.stream(**req) as stream:
+            async for ev in stream:
+                if ev.type == "content_block_start" and ev.content_block.type == "text":
+                    if n_text:
+                        await emit.delta(filt.feed("\n"))  # answer_text joins text blocks with newlines
+                    n_text += 1
+                elif ev.type == "text":
+                    await emit.delta(filt.feed(ev.text))
+            msg = await stream.get_final_message()
+        await emit.delta(filt.flush())
+        return msg
+
     async def _run_tool(self, name: str, args: dict, device_id: str | None, now: float | None = None) -> RecallResult:
         if name != "recall_memory":
             return RecallResult(evidence=f"Unknown tool {name}.", confidence="not_found", cited=[], all_retrieved=[])
@@ -433,7 +560,13 @@ class ClaudeAgent:
             return RecallResult(evidence=f"Tool error: {e}", confidence="not_found", cited=[], all_retrieved=[])
 
     async def _no_llm_fallback(
-        self, text: str, device_id: str | None, stats: TurnStats | None = None, *, now: float | None = None
+        self,
+        text: str,
+        device_id: str | None,
+        stats: TurnStats | None = None,
+        *,
+        now: float | None = None,
+        emit: _Emitter | None = None,
     ) -> ChatResponse:
         """Deterministic path used before Claude is wired: always recall, echo evidence."""
         t_tool = time.perf_counter()
@@ -442,6 +575,9 @@ class ClaudeAgent:
             stats.tool_ms += (time.perf_counter() - t_tool) * 1000
             stats.tool_calls += 1
         answer = r.evidence if r.confidence != "not_found" else NOT_FOUND_ANSWER
+        if emit is not None:
+            await emit.retrieval(r)
+            await emit.delta(answer)
         return ChatResponse(
             transcript=text,
             answer=answer,

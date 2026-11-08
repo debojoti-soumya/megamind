@@ -46,6 +46,14 @@ namespace Megamind
         }
     }
 
+    // POST /v1/chat/stream (Server-Sent Events): `event: <name>` + one `data:` JSON line per event. The `final`
+    // event's data is a ChatResponse (same as POST /v1/chat); the others deserialize into these.
+    [Serializable] public class ChatStreamRetrieval { public string confidence; public List<Citation> candidates = new List<Citation>(); }
+
+    [Serializable] public class ChatStreamDelta { public string text; }
+
+    [Serializable] public class ChatStreamError { public string detail; }
+
     [Serializable] public class HealthModels { public string claude, reader, embed; }
 
     [Serializable] public class HealthResponse { public string status; public int store_count; public HealthModels models; }
