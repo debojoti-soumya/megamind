@@ -1,8 +1,12 @@
+import random
+
+import pyarrow as pa
 import pytest
 
 from megamind.models import MemoryToken, Pose
 from megamind.store.lancedb_store import LanceDBStore
 from megamind.store.memory_store import InMemoryStore
+from megamind.store.rrf import calibrated, fuse_hits, image_conf, rrf, weighted_rrf
 
 DIM = 8
 
@@ -195,3 +199,138 @@ async def test_vector_search_drops_orthogonal_vectors(store):
     hits = await store.vector_search(_vec(1), 10)
     assert [t.id for t, _ in hits] == ["tok0001"]
     assert await store.vector_search(_vec(5), 10) == []
+
+
+# ---------------------------------------------------------------- calibrated image fusion + float16 (port of PR #54)
+
+SIGLIP_CAL = (117.3, -12.9)
+
+
+def test_image_conf_and_weighted_rrf():
+    assert image_conf(0.15, *SIGLIP_CAL) > 0.9 and image_conf(0.05, *SIGLIP_CAL) < 0.01
+    assert image_conf(-1.0, 1e6, 0.0) == 0.0  # no overflow on very negative logits
+    assert calibrated(None) is None and calibrated(SIGLIP_CAL)(0.15) == image_conf(0.15, *SIGLIP_CAL)
+    assert weighted_rrf([(1.0, [("a", 0.0), ("b", 1.0)])])["a"] == 0.0
+    assert weighted_rrf([(2.0, ["a"])], c=60)["a"] == 2.0 / 61
+    assert weighted_rrf([(1.0, ["a", "b"]), (1.0, ["b"])]) == rrf([["a", "b"], ["b"]])
+
+
+def test_fuse_hits_defaults_are_plain_rrf():
+    toks = [_token(i) for i in range(4)]
+    rankings = [[(toks[0], 0.9), (toks[1], 0.5)], [(toks[2], 3.0), (toks[0], 1.0)], [(toks[3], 0.2), (toks[1], 0.1)]]
+    plain = [(h.id, h.score) for h in fuse_hits(rankings, 10)]
+    explicit = [(h.id, h.score) for h in fuse_hits(rankings, 10, weights=[1.0] * 3, multipliers=[None] * 3)]
+    assert plain == explicit
+    expected = rrf([[t.id for t, _ in r] for r in rankings])
+    assert dict(plain) == expected
+    with pytest.raises(ValueError):
+        fuse_hits(rankings, 10, weights=[1.0])
+
+
+def _unit_img(cos: float, dim: int = DIM) -> list[float]:
+    v = [0.0] * dim
+    v[0], v[1] = cos, (1 - cos * cos) ** 0.5
+    return v
+
+
+async def test_store_search_weak_image_does_not_outrank_text(store):
+    query_img = [1.0] + [0.0] * (DIM - 1)
+    sign = _token(0, caption="a sign on the wall", ocr="PROJECT FALCON")
+    sign.image_vec = _unit_img(0.0)
+    sign.text_vec = _vec(5)
+    photo = _token(1, caption="a cafe table with cups")
+    photo.image_vec = _unit_img(0.06)
+    photo.text_vec = _vec(6)
+    await store.add_many([sign, photo])
+    # uncalibrated: the image ranking (rank 0) ties the text hit, and the newer photo wins the tie
+    hits = await store.search(None, query_img, "falcon", k=2)
+    assert hits[0].id == "tok0001"
+    store.image_calibration = SIGLIP_CAL
+    hits = await store.search(None, query_img, "falcon", k=2)
+    assert hits[0].id == "tok0000"
+    # visual mode: one ranking, monotone multiplier -> same order
+    assert [h.id for h in await store.search(None, query_img, "", k=2, mode="visual")] == ["tok0001"]
+
+
+def _rand_unit(rnd: random.Random, dim: int) -> list[float]:
+    v = [rnd.gauss(0, 1) for _ in range(dim)]
+    n = sum(x * x for x in v) ** 0.5
+    return [x / n for x in v]
+
+
+_RAND_DIMS = {"text_dim": 64, "image_dim": 48}
+
+
+def _rand_tokens(n: int, text_dim: int = 64, image_dim: int = 48, seed: int = 7) -> list[MemoryToken]:
+    rnd = random.Random(seed)
+    return [
+        MemoryToken(
+            id=f"r{i:04d}",
+            device_id="d",
+            ts=1000.0 + i,
+            caption=f"random frame {i}",
+            thumb_path=f"/nonexistent/r{i}.jpg",
+            frame_hash=f"{i:016x}",
+            text_vec=_rand_unit(rnd, text_dim),
+            image_vec=_rand_unit(rnd, image_dim) if i % 4 else None,
+        )
+        for i in range(n)
+    ]
+
+
+async def test_float16_is_the_default_and_round_trips(tmp_path):
+    st = LanceDBStore(tmp_path / "ldb", **_RAND_DIMS)
+    toks = _rand_tokens(20)
+    await st.add_many(toks)
+    assert st.vector_dtype == "float16"
+    assert st._table.schema.field("text_vec").type.value_type == pa.float16()
+    for t in toks[::5]:
+        back = await st.get(t.id)
+        assert max(abs(a - b) for a, b in zip(back.text_vec, t.text_vec, strict=True)) < 1e-3
+        assert (back.image_vec is None) == (t.image_vec is None)
+
+
+async def test_float16_nearest_neighbours_match_float32(tmp_path):
+    toks = _rand_tokens(200)
+    f16 = LanceDBStore(tmp_path / "f16", vector_dtype="float16", vector_index_min_rows=10_000, **_RAND_DIMS)
+    f32 = LanceDBStore(tmp_path / "f32", vector_dtype="float32", vector_index_min_rows=10_000, **_RAND_DIMS)
+    await f16.add_many(toks)
+    await f32.add_many(toks)
+    for t in toks[::10]:  # every token is its own nearest neighbour after the float16 round trip
+        assert (await f16.vector_search(t.text_vec, 1))[0][0].id == t.id
+    rnd = random.Random(11)
+    for _ in range(20):
+        q = _rand_unit(rnd, 64)
+        assert (await f16.vector_search(q, 1))[0][0].id == (await f32.vector_search(q, 1))[0][0].id
+        qi = _rand_unit(rnd, 48)
+        a = await f16.vector_search(qi, 1, field="image_vec")
+        b = await f32.vector_search(qi, 1, field="image_vec")
+        assert [t.id for t, _ in a] == [t.id for t, _ in b]
+
+
+async def test_existing_float32_table_keeps_its_dtype(tmp_path):
+    path = tmp_path / "ldb"
+    old = LanceDBStore(path, vector_dtype="float32")
+    await old.add(_token(0))
+    reopened = LanceDBStore(path)  # default float16 must not migrate or break an existing table
+    assert reopened.vector_dtype == "float32"
+    await reopened.add(_token(1))
+    assert reopened._table.schema.field("text_vec").type.value_type == pa.float32()
+    assert (await reopened.get("tok0001")).text_vec == _vec(1)
+    assert await reopened.count() == 2
+
+
+async def test_ivf_index_builds_on_float16_nullable_columns(tmp_path):
+    st = LanceDBStore(tmp_path / "ldb", vector_index_min_rows=64, **_RAND_DIMS)
+    toks = _rand_tokens(120)  # every 4th token has no image vector (null)
+    await st.add_many(toks)
+    indexed = {idx.columns[0] for idx in st._table.list_indices()}
+    assert {"text_vec", "image_vec"} <= indexed
+    t = toks[5]
+    assert (await st.vector_search(t.image_vec, 1, field="image_vec"))[0][0].id == t.id
+    assert (await st.vector_search(t.text_vec, 1))[0][0].id == t.id
+
+
+def test_unknown_vector_dtype_is_rejected(tmp_path):
+    with pytest.raises(ValueError):
+        LanceDBStore(tmp_path / "ldb", vector_dtype="int8")

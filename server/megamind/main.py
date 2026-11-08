@@ -7,6 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from megamind.agent.claude_agent import ClaudeAgent
 from megamind.agent.reader import build_reader
@@ -28,8 +29,10 @@ from megamind.retrieval import build_retriever
 from megamind.store import build_store
 from megamind.store.consolidate import Consolidator, build_summarizer
 from megamind.store.embeddings import build_image_embedder, build_text_embedder
+from megamind.ui.router import router as ui_router
 
 logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 
 _LOCAL_DEPS = {"local": ("torch", "sentence_transformers"), "openclip": ("torch", "open_clip")}  # .[local-embeddings]
@@ -53,6 +56,16 @@ def active_provider(settings: Settings, configured: str, impl: object, active: s
     return f"mock ({configured} configured, {why})"
 
 
+def image_calibration(settings: Settings, image_embedder: object | None) -> tuple[float, float] | None:
+    """SigLIP (scale, bias) for calibrated image fusion, or None (toggle off, no embedder, or a CLIP model)."""
+    if image_embedder is None or not settings.search_calibrate_image:
+        return None
+    cal = getattr(image_embedder, "calibration", None)
+    if cal is not None:
+        log.info("image fusion calibrated: p = sigmoid(%.2f * cos %+.2f)", *cal)
+    return cal
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
@@ -67,6 +80,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.pending_hashes = {}
         st.text_embedder = build_text_embedder(settings)
         st.image_embedder = build_image_embedder(settings)
+        st.store.image_calibration = image_calibration(settings, st.image_embedder)
         st.worker = EnrichmentWorker(
             st.store,
             build_enricher(settings),
@@ -109,6 +123,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ingest_router, prefix="/v1")
     app.include_router(audio_router, prefix="/v1")
     app.include_router(agent_router, prefix="/v1")
+    app.include_router(ui_router)
+    # the browser panel may be served from a different origin (e.g. file:// or another laptop)
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     install_replay(app, settings)  # moment replay: frame tap + GET /v1/replay.mp4
 
     @app.get("/v1/health", response_model=HealthResponse)

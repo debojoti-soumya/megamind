@@ -116,6 +116,10 @@ so vague queries ("what did I do this morning") hit summaries. Episode tokens ar
 never appear in `FrameAccepted`; they surface through search/chat citations like any other token.
 `kind="transcript"` tokens come from `POST /audio`: `caption` holds the heard words, `thumb_path`/`frame_hash` are
 empty and `image_vec` is null; they are never episodized or used for frame dedupe.
+Storage note (no wire change): the LanceDB backend stores `text_vec`/`image_vec` as float16 in newly created
+tables (`LANCEDB_VECTOR_DTYPE`, default `float16`; existing float32 tables are kept as
+they are). Unit-norm vectors read back differ from what was written by < 1e-3 per component; nearest neighbours
+are unchanged.
 
 ## Internal: `recall_memory` tool (Claude -> server)
 ```
