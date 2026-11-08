@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     anthropic_api_key: str = ""
-    claude_model: str = "claude-sonnet-4-5"
+    claude_model: str = "claude-sonnet-4-6"  # claude-sonnet-4-5* retires 2026-11-30; override via CLAUDE_MODEL
     claude_timeout_s: float = 30.0
     claude_max_retries: int = 2
 
