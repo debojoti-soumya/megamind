@@ -936,14 +936,14 @@ class ClaudeAgent:
             tools.append(MAKE_3D_TOOL)
         return tools
 
+    def _tool_prompts(self) -> str:
+        return (COLLAGE_PROMPT if self.collage is not None else "") + (
+            MODEL3D_PROMPT if self.model3d is not None else ""
+        )
+
     def static_system_prompt(self) -> str:
-        prompt = render_static_system_prompt(self.settings.wearer_tz)
-        return prompt + COLLAGE_PROMPT if self.collage is not None else prompt
+        return render_static_system_prompt(self.settings.wearer_tz) + self._tool_prompts()
 
     def system_prompt(self, now: float | None = None) -> str:
-        prompt = render_system_prompt(now, self.settings.wearer_tz)
-        if self.collage is not None:
-            prompt += COLLAGE_PROMPT
-        if self.model3d is not None:
-            prompt += MODEL3D_PROMPT
+        prompt = render_system_prompt(now, self.settings.wearer_tz) + self._tool_prompts()
         return prompt
