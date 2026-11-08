@@ -44,6 +44,7 @@ namespace Megamind
         public Color recOffColor = new Color(0.45f, 0.48f, 0.52f);
         public Color errorTextColor = new Color(1f, 0.70f, 0.73f);
         public Color systemTextColor = new Color(0.62f, 0.67f, 0.74f);
+        public Color thumbFailedColor = new Color(0.30f, 0.16f, 0.18f); // thumbnail that failed to download
 
         private readonly Queue<GameObject> _messages = new Queue<GameObject>();
         private Text _draft;                // streaming answer bubble (POST /v1/chat/stream deltas), null when none
@@ -227,8 +228,13 @@ namespace Megamind
                 config.Authorize(req);
                 req.timeout = 10;
                 yield return req.SendWebRequest();
-                if (req.result == UnityWebRequest.Result.Success && target != null)
+                if (target == null) yield break;
+                if (req.result == UnityWebRequest.Result.Success)
+                {
                     target.texture = DownloadHandlerTexture.GetContent(req);
+                    target.color = Color.white; // the prefab's grey is only the loading placeholder: RawImage.color multiplies the texture
+                }
+                else target.color = thumbFailedColor;
             }
         }
 
