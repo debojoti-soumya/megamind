@@ -1,0 +1,411 @@
+{
+ "date": "2026-11-08",
+ "tz": "America/Los_Angeles",
+ "now": "19:40",
+ "device_id": "example-day",
+ "_comment": "Realistic example day (tools/make_example_day.py): CC photos + TTS dialogue. Same schema as agent_day.json; stream captions/OCR are ground truth for each shot, 'said' is its dialogue. questions[].modality: visual | speech (needs transcripts) | both | none (must decline).",
+ "stream": [
+  {
+   "id": "kitchen",
+   "time": "07:42",
+   "at": "07:42:10",
+   "dur_s": 14,
+   "episode": "home-am",
+   "caption": "Close-up of black coffee in a patterned retro mug on a table.",
+   "ocr": "",
+   "entities": [
+    "coffee",
+    "mug"
+   ],
+   "said": [
+    "Morning. First coffee of the day, I definitely need it."
+   ]
+  },
+  {
+   "id": "bedroom",
+   "time": "07:58",
+   "at": "07:58:30",
+   "dur_s": 20,
+   "episode": "home-am",
+   "caption": "Low view of a bunch of keys and a black leather wallet lying on a cream shag rug.",
+   "ocr": "",
+   "entities": [
+    "keys",
+    "wallet",
+    "rug"
+   ],
+   "said": [
+    "Okay, my keys and wallet are on the rug by the bed. Don't forget them."
+   ]
+  },
+  {
+   "id": "bus-stop",
+   "time": "08:31",
+   "at": "08:31:05",
+   "dur_s": 12,
+   "episode": "commute-am",
+   "caption": "Yellow bus stop pole with a timetable sign on a quiet suburban street.",
+   "ocr": "PICCADILLY / HAYMARKET\nTRANSLINK\n13 12 30",
+   "entities": [
+    "bus stop",
+    "timetable",
+    "sign"
+   ],
+   "said": []
+  },
+  {
+   "id": "bus-schedule",
+   "time": "08:31",
+   "at": "08:31:17",
+   "dur_s": 14,
+   "episode": "commute-am",
+   "caption": "Close-up of a bus timetable panel listing route 24 to Discovery Park.",
+   "ocr": "24 to Discovery Park\nvia Seattle Center, Elliott Ave W, Pier 91\nBus leaves 4th Ave S & S Jackson St at:\n402 to Lynnwood Transit Center",
+   "entities": [
+    "bus timetable",
+    "route 24"
+   ],
+   "said": [
+    "Looks like the twenty four to Discovery Park comes in a few minutes."
+   ]
+  },
+  {
+   "id": "office-intro",
+   "time": "09:12",
+   "at": "09:12:40",
+   "dur_s": 26,
+   "episode": "office-am",
+   "caption": "Meeting room: several people seated at a table with laptops open; a whiteboard on the back wall.",
+   "ocr": "",
+   "entities": [
+    "meeting room",
+    "people",
+    "laptop",
+    "whiteboard"
+   ],
+   "said": [
+    "Hi, you must be new here. I'm Priya Shah, I lead the design team.",
+    "Nice to meet you, Priya.",
+    "Grab a seat, we're about to go over the launch plan."
+   ]
+  },
+  {
+   "id": "whiteboard",
+   "time": "09:27",
+   "at": "09:27:15",
+   "dur_s": 24,
+   "episode": "office-am",
+   "caption": "Whiteboard project plan with rows of blue sticky notes, one row per week.",
+   "ocr": "WEEK 3: Design\nWEEK 4: Design\nWEEK 5: Design\nWEEK 6: Dev\nWEEK 7: Dev\nADMIN API\nInfrastructure Recs: Laravel + Backbone",
+   "entities": [
+    "whiteboard",
+    "sticky notes",
+    "project plan"
+   ],
+   "said": [
+    "So, week three is design, week four we build the admin A P I, and we ship the beta at the end of week seven."
+   ]
+  },
+  {
+   "id": "lunch-a",
+   "time": "12:36",
+   "at": "12:36:20",
+   "dur_s": 14,
+   "episode": "lunch",
+   "caption": "A bowl of ramen with noodles, a soft egg and toppings on a restaurant table.",
+   "ocr": "",
+   "entities": [
+    "ramen",
+    "bowl",
+    "egg",
+    "restaurant"
+   ],
+   "said": [
+    "I'll have the miso ramen with an extra egg, please.",
+    "Same for me. I'm Marcus, by the way, I'm on the data team."
+   ]
+  },
+  {
+   "id": "lunch-b",
+   "time": "12:36",
+   "at": "12:36:34",
+   "dur_s": 16,
+   "episode": "lunch",
+   "caption": "A second bowl of ramen across the table in a ramen restaurant.",
+   "ocr": "",
+   "entities": [
+    "ramen",
+    "bowl",
+    "restaurant"
+   ],
+   "said": [
+    "Good to meet you, Marcus."
+   ]
+  },
+  {
+   "id": "coffee",
+   "time": "14:18",
+   "at": "14:18:45",
+   "dur_s": 14,
+   "episode": "office-pm",
+   "caption": "A latte with leaf-shaped latte art in a cup on a saucer at a cafe.",
+   "ocr": "",
+   "entities": [
+    "latte",
+    "coffee",
+    "cup",
+    "cafe"
+   ],
+   "said": [
+    "Second coffee. A flat white this time."
+   ]
+  },
+  {
+   "id": "desk",
+   "time": "15:04",
+   "at": "15:04:10",
+   "dur_s": 22,
+   "episode": "office-pm",
+   "caption": "Office cubicle desk with a monitor, a laptop on a stand, keyboard, desk phone and a mug; keys and a black pouch at the front edge.",
+   "ocr": "",
+   "entities": [
+    "desk",
+    "monitor",
+    "laptop",
+    "desk phone",
+    "mug",
+    "keys"
+   ],
+   "said": [
+    "Back at my desk. I'm putting my wallet in the top drawer so I don't lose it."
+   ]
+  },
+  {
+   "id": "car-park",
+   "time": "17:52",
+   "at": "17:52:30",
+   "dur_s": 18,
+   "episode": "commute-pm",
+   "caption": "Multi-storey car park lift lobby with brick walls, a lift door and signs reading Level 3.",
+   "ocr": "Level 3",
+   "entities": [
+    "car park",
+    "lift",
+    "sign"
+   ],
+   "said": []
+  },
+  {
+   "id": "hallway",
+   "time": "18:41",
+   "at": "18:41:00",
+   "dur_s": 20,
+   "episode": "home-pm",
+   "caption": "Pocket contents laid out on a wooden table: car keys with a remote fob, a wallet, a watch, a phone, a notebook, a pen, glasses and a pocket knife.",
+   "ocr": "",
+   "entities": [
+    "keys",
+    "wallet",
+    "watch",
+    "phone",
+    "notebook",
+    "glasses",
+    "table"
+   ],
+   "said": [
+    "Home. Emptying my pockets onto the hallway table. Keys, phone, watch."
+   ]
+  },
+  {
+   "id": "evening",
+   "time": "19:35",
+   "at": "19:35:20",
+   "dur_s": 16,
+   "episode": "home-pm",
+   "caption": "Living room with a dark green sofa, an armchair, polished wooden floor and a small Christmas tree.",
+   "ocr": "",
+   "entities": [
+    "living room",
+    "sofa",
+    "armchair",
+    "christmas tree"
+   ],
+   "said": [
+    "Finally, time to relax."
+   ]
+  }
+ ],
+ "questions": [
+  {
+   "q": "Where did I leave my keys?",
+   "gold": [
+    "hallway"
+   ],
+   "expect": [
+    "hallway",
+    "hall table",
+    "wooden table"
+   ],
+   "modality": "both"
+  },
+  {
+   "q": "Where were my keys this morning?",
+   "gold": [
+    "bedroom"
+   ],
+   "expect": [
+    "rug",
+    "carpet",
+    "bedroom",
+    "floor"
+   ],
+   "modality": "both"
+  },
+  {
+   "q": "What's the name of the person who leads the design team?",
+   "gold": [
+    "office-intro"
+   ],
+   "expect": [
+    "Priya"
+   ],
+   "modality": "speech"
+  },
+  {
+   "q": "Who did I have lunch with?",
+   "gold": [
+    "lunch-a",
+    "lunch-b"
+   ],
+   "expect": [
+    "Marcus"
+   ],
+   "modality": "speech"
+  },
+  {
+   "q": "What did I eat for lunch?",
+   "gold": [
+    "lunch-a",
+    "lunch-b"
+   ],
+   "expect": [
+    "ramen"
+   ],
+   "modality": "both"
+  },
+  {
+   "q": "Which bus stop was I at this morning?",
+   "gold": [
+    "bus-stop"
+   ],
+   "expect": [
+    "Piccadilly",
+    "Haymarket"
+   ],
+   "modality": "visual"
+  },
+  {
+   "q": "Which bus was I waiting for?",
+   "gold": [
+    "bus-schedule"
+   ],
+   "expect": [
+    "24",
+    "Discovery Park"
+   ],
+   "modality": "both"
+  },
+  {
+   "q": "When are we shipping the beta?",
+   "gold": [
+    "whiteboard"
+   ],
+   "expect": [
+    "week 7",
+    "week seven",
+    "seventh week"
+   ],
+   "modality": "both"
+  },
+  {
+   "q": "What is week 3 for on the whiteboard plan?",
+   "gold": [
+    "whiteboard"
+   ],
+   "expect": [
+    "design"
+   ],
+   "modality": "visual"
+  },
+  {
+   "q": "How many coffees did I have today?",
+   "gold": [
+    "kitchen",
+    "coffee"
+   ],
+   "expect": [
+    "two",
+    "twice",
+    "2 coffee",
+    "2 cups"
+   ],
+   "modality": "both"
+  },
+  {
+   "q": "What did I drink this afternoon?",
+   "gold": [
+    "coffee"
+   ],
+   "expect": [
+    "flat white",
+    "latte"
+   ],
+   "modality": "both"
+  },
+  {
+   "q": "Where did I put my wallet at work?",
+   "gold": [
+    "desk"
+   ],
+   "expect": [
+    "drawer"
+   ],
+   "modality": "speech"
+  },
+  {
+   "q": "What level did I park on?",
+   "gold": [
+    "car-park"
+   ],
+   "expect": [
+    "level 3",
+    "level three",
+    "third"
+   ],
+   "modality": "visual"
+  },
+  {
+   "q": "What did I do after I got home this evening?",
+   "gold": [
+    "hallway",
+    "evening"
+   ],
+   "expect": [
+    "relax",
+    "sofa",
+    "couch",
+    "living room",
+    "pockets"
+   ],
+   "modality": "both"
+  },
+  {
+   "q": "Where did I put my passport?",
+   "gold": [],
+   "expect": [
+    "__not_found__"
+   ],
+   "modality": "none"
+  }
+ ]
+}
