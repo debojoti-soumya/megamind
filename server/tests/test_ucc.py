@@ -262,3 +262,36 @@ async def test_ucc_answer_wins_the_race():
     await UCCIndexer(client, store).sync_once()
     res = await retr.retrieve("where are my car keys", k=3)
     assert "ucc" in res.ranked[0].reasons and retr.stats == {"ucc": 1, "fallback": 0, "errors": 0}
+
+
+async def test_candidates_mode_reuses_the_racing_hybrid_run():
+    fake = FakeUCC()
+    store, client, hybrid, retr = await setup(fake, UCCConfig(candidates=4))
+    await UCCIndexer(client, store).sync_once()
+    calls: list[int] = []
+    inner = hybrid.retrieve
+
+    async def counting(*a, **kw):
+        calls.append(kw["k"])
+        return await inner(*a, **kw)
+
+    hybrid.retrieve = counting
+    res = await retr.retrieve("reading glasses", k=2)
+    assert res.ranked[0].token.id == "c" and "ucc" in res.ranked[0].reasons
+    assert calls == [4]  # one hybrid run (sized for the pool), not a second search inside _rank
+
+
+async def test_candidates_pool_survives_a_ucc_timeout_and_is_trimmed_to_k():
+    fake = FakeUCC()
+    store, client, hybrid, retr = await setup(fake, UCCConfig(candidates=4, timeout_s=0.1, cooldown_s=60))
+    await UCCIndexer(client, store).sync_once()
+    inner = hybrid.retrieve
+
+    async def slow(*a, **kw):
+        await asyncio.sleep(0.2)  # UCC times out while _rank is still waiting on the shared hybrid run
+        return await inner(*a, **kw)
+
+    hybrid.retrieve = slow
+    res = await retr.retrieve("where are my car keys", k=2)
+    assert res.tokens and len(res.tokens) <= 2
+    assert retr.stats == {"ucc": 0, "fallback": 1, "errors": 1}

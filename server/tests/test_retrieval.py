@@ -612,3 +612,53 @@ def test_build_retriever_reads_speech_link_setting():
 
     r, _ = build_retriever(Settings(speech_link_s=0, _env_file=None), InMemoryStore(), MockTextEmbedder())
     assert r.cfg.speech_link_s == 0
+
+
+# ---------------------------------------------------------------- purge invalidates retrieval caches (#111)
+
+
+async def test_purge_all_invalidates_the_ocr_cache_through_the_live_wrapper():
+    from types import SimpleNamespace
+
+    from megamind.ingest.worker import purge_all
+    from megamind.live import LiveRetriever
+
+    store = InMemoryStore()
+    base = NOW.timestamp() - 3600
+    await store.add(_tok("b", base, "a poster"))
+    await store.add(_tok("a", base + 60, "a router label", ocr_text="WIFI PASSWORD hunter2"))
+    hybrid = HybridRetriever(store, MockTextEmbedder(), tz="UTC")
+    ad = hybrid.adapter
+    assert [i for i, _ in await ad.ocr_search("wifi", 5)] == ["a"]
+
+    class Worker:
+        async def purge(self, device_id=None, *, since_ts=None):
+            return await store.purge(device_id, since_ts=since_ts)
+
+    state = SimpleNamespace(worker=Worker(), retriever=LiveRetriever(hybrid, live=None))
+    assert await purge_all(state, "dev", since_ts=base + 30) == 1
+    # a new frame inside the rebuild interval that the incremental refresh doesn't re-read (backfilled, older ts)
+    # restores the store count, so only the explicit invalidation keeps the purged OCR out of search
+    await store.add(_tok("c", base - 3600, "a hallway"))
+    assert await ad.ocr_search("wifi", 5) == []
+    assert "a" not in {t.token.id for t in (await hybrid.retrieve("wifi password", k=4, now=NOW)).tokens}
+
+
+async def test_degraded_query_vectors_are_not_cached():
+    class FlakyEmbedder(MockTextEmbedder):
+        degraded: str | None = "last error 503"
+        calls = 0
+
+        async def embed(self, text: str) -> list[float]:
+            FlakyEmbedder.calls += 1
+            return await super().embed(text)
+
+    store, _ = await _store()
+    emb = FlakyEmbedder()
+    r = HybridRetriever(store, emb, tz="UTC")
+    await r.retrieve("where are my keys", k=4, now=NOW)
+    assert FlakyEmbedder.calls == 1 and not r._qvecs  # served, but not kept
+    emb.degraded = None  # the hosted embedder recovered
+    await r.retrieve("where are my keys", k=4, now=NOW)
+    await r.retrieve("where are my keys", k=4, now=NOW)
+    assert FlakyEmbedder.calls == 2 and len(r._qvecs) == 1

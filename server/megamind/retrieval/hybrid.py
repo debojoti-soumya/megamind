@@ -228,12 +228,19 @@ class HybridRetriever(Retriever):
                 pass
         return bool(a.caption) and a.caption == b.caption and a.ocr_text == b.ocr_text
 
+    def invalidate_caches(self, device_id: str | None = None) -> None:
+        """Drop cached memory content after `DELETE /v1/memories` / a retention purge (`None` = every device)."""
+        self.adapter.invalidate(device_id)
+        self._cache = {i: t for i, t in self._cache.items() if device_id is not None and t.device_id != device_id}
+
     async def _embed_query(self, field: str, embed: Callable[[str], Awaitable[list[float]]], text: str) -> list[float]:
         key = (field, text)
         if (v := self._qvecs.get(key)) is not None:
             self._qvecs.move_to_end(key)
             return v
         v = await embed(text)
+        if getattr(getattr(embed, "__self__", None), "degraded", None):
+            return v  # a mock stand-in from a failing hosted embedder: don't keep serving it once the API is back
         self._qvecs[key] = v
         while len(self._qvecs) > self.qvec_cache_size:
             self._qvecs.popitem(last=False)
