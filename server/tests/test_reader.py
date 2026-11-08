@@ -60,7 +60,7 @@ def _completion(obj: dict | str, usage: dict | None = None) -> dict:
     return {
         "id": "chatcmpl-1",
         "object": "chat.completion",
-        "model": "Qwen/Qwen3.6-35B-A3B",
+        "model": "google/gemma-4-31B-it",
         "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
         "usage": usage or {"prompt_tokens": 1200, "completion_tokens": 60, "total_tokens": 1260},
     }
@@ -116,8 +116,10 @@ async def test_layout_is_chronological_interleaved_and_cited(tmp_path):
     req, body = s.requests[0], s.body()
     assert req.url.path == "/v1/chat/completions"
     assert req.headers["authorization"] == "Bearer sk-test"
-    assert body["model"] == "Qwen/Qwen3.6-35B-A3B" and body["temperature"] == 0
-    assert body["response_format"] == {"type": "json_object"}
+    assert body["model"] == "google/gemma-4-31B-it" and body["temperature"] == 0
+    assert body["response_format"]["type"] == "json_schema"
+    assert body["response_format"]["json_schema"]["schema"]["required"] == ["answer", "evidence", "confidence"]
+    assert req.headers["idempotency-key"].startswith("megamind-reader-")
     assert body["messages"][0]["role"] == "system"
     parts = body["messages"][1]["content"]
     texts = [p["text"] for p in parts if p["type"] == "text"]
@@ -224,16 +226,62 @@ async def test_timeout_degrades_to_captions(tmp_path):
 async def test_5xx_then_success_retries(tmp_path):
     toks = _tokens(tmp_path, 1)
     s = Scripted([503, _completion({"answer": "ok", "evidence": [{"id": "t00"}], "confidence": "medium"})])
-    out = await s.reader().read("q", toks)
+    out = await s.reader(_settings(reader_fallback_model="")).read("q", toks)
     assert not out.degraded and out.calls == 2 and out.evidence == "ok"
 
 
-async def test_400_retries_without_json_mode_then_gives_up(tmp_path):
+async def test_400_downgrades_json_mode_schema_object_off_then_gives_up(tmp_path):
     toks = _tokens(tmp_path, 1)
-    s = Scripted([400, 400])
+    s = Scripted([400, 400, 400])
     out = await s.reader().read("q", toks)
-    assert "response_format" in s.body(0) and "response_format" not in s.body(1)
-    assert out.degraded
+    assert s.body(0)["response_format"]["type"] == "json_schema"
+    assert s.body(1)["response_format"] == {"type": "json_object"}
+    assert "response_format" not in s.body(2)
+    assert out.degraded and out.calls == 3
+    keys = {r.headers["idempotency-key"] for r in s.requests}
+    assert len(keys) == 1  # same key across retries of one chunk
+
+
+async def test_429_honours_retry_after_then_succeeds(tmp_path, monkeypatch):
+    import megamind.agent.reader as mod
+
+    slept: list[float] = []
+
+    async def fake_sleep(x):
+        slept.append(x)
+
+    monkeypatch.setattr(mod.asyncio, "sleep", fake_sleep)
+    toks = _tokens(tmp_path, 1)
+
+    class S(Scripted):
+        def handler(self, request):
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return httpx.Response(429, headers={"Retry-After": "7"}, json={"error": "slow down"})
+            return httpx.Response(
+                200, json=_completion({"answer": "ok", "evidence": [{"id": "t00"}], "confidence": "high"})
+            )
+
+    s = S([])
+    out = await s.reader(_settings(reader_fallback_model="")).read("q", toks)
+    assert not out.degraded and out.calls == 2
+    assert slept == [2.0]  # capped so the voice answer still arrives
+
+
+async def test_503_switches_to_fallback_model(tmp_path):
+    toks = _tokens(tmp_path, 1)
+    s = Scripted([503, _completion({"answer": "ok", "evidence": [{"id": "t00"}], "confidence": "high"})])
+    out = await s.reader().read("q", toks)
+    assert not out.degraded and out.calls == 2 and out.usage["fallback_model"] == 1
+    assert s.body(0)["model"] == "google/gemma-4-31B-it"
+    assert s.body(1)["model"] == "nvidia/Gemma-4-31B-IT-NVFP4"
+
+
+async def test_5xx_on_both_models_degrades(tmp_path):
+    toks = _tokens(tmp_path, 1)
+    s = Scripted([503, 503, 500])
+    out = await s.reader().read("q", toks)
+    assert out.degraded and out.calls == 3  # primary, fallback, retry
 
 
 async def test_garbage_output_degrades(tmp_path):
@@ -253,7 +301,8 @@ async def test_extra_body_and_no_key_header(tmp_path):
     toks = _tokens(tmp_path, 1)
     settings = _settings(
         reader_api_key="none",
-        reader_json_mode=False,
+        reader_json_mode="off",
+        reader_completion_window="asap",
         reader_extra_body='{"chat_template_kwargs": {"enable_thinking": false}}',
     )
     s = Scripted([_completion({"answer": "ok", "evidence": [{"id": "t00"}], "confidence": "high"})])
@@ -261,6 +310,8 @@ async def test_extra_body_and_no_key_header(tmp_path):
     await VLMReader(settings, client=client).read("q", toks)
     body = s.body()
     assert body["chat_template_kwargs"] == {"enable_thinking": False} and "response_format" not in body
+    assert s.requests[0].headers["x-sail-completion-window"] == "asap"
+    assert "authorization" not in s.requests[0].headers
 
 
 def test_build_reader_selection():

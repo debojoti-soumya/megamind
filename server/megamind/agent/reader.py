@@ -29,6 +29,7 @@ import logging
 import math
 import re
 import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -60,6 +61,53 @@ Rules: cite only ids from the list, most relevant first, at most 4. Use "not_fou
 empty evidence list and answer "No matching memory." when nothing answers the question.
 "high" = the image clearly shows it; "medium" = caption/text says it but the image is
 ambiguous; "low" = a plausible but uncertain match."""
+
+
+READER_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "evidence": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}, "why": {"type": "string"}},
+                "required": ["id", "why"],
+                "additionalProperties": False,
+            },
+        },
+        "confidence": {"type": "string", "enum": list(_CONFIDENCES)},
+    },
+    "required": ["answer", "evidence", "confidence"],
+    "additionalProperties": False,
+}
+
+_JSON_MODES = ("schema", "object", "off")
+
+
+def response_format(mode: str) -> dict | None:
+    if mode == "schema":
+        return {
+            "type": "json_schema",
+            "json_schema": {"name": "reader_output", "strict": True, "schema": READER_JSON_SCHEMA},
+        }
+    if mode == "object":
+        return {"type": "json_object"}
+    return None
+
+
+def _downgrade(mode: str) -> str:
+    """schema -> object -> off; used when the endpoint rejects a response_format with HTTP 400."""
+    i = _JSON_MODES.index(mode) if mode in _JSON_MODES else len(_JSON_MODES) - 1
+    return _JSON_MODES[min(i + 1, len(_JSON_MODES) - 1)]
+
+
+def _retry_after_s(r: httpx.Response, default: float = 1.0, cap: float = 2.0) -> float:
+    try:
+        return min(cap, max(0.0, float(r.headers.get("retry-after", default))))
+    except ValueError:
+        return default
 
 
 @dataclass
@@ -222,17 +270,23 @@ class VLMReader(Reader):
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self.settings = settings
         self.model = settings.reader_model
+        self.fallback_model = settings.reader_fallback_model if settings.reader_fallback_model != self.model else ""
         self.max_images = max(1, settings.reader_max_images)
         self.thumb_max_px = settings.reader_thumb_max_px
         self.max_retries = settings.reader_max_retries
         self.fallback = CaptionOnlyReader()
         self.extra_body: dict[str, Any] = json.loads(settings.reader_extra_body) if settings.reader_extra_body else {}
+        self.json_mode = (
+            settings.reader_json_mode.lower() if settings.reader_json_mode.lower() in _JSON_MODES else "off"
+        )
         headers = {"Content-Type": "application/json"}
         if settings.reader_api_key and settings.reader_api_key != "none":
             headers["Authorization"] = f"Bearer {settings.reader_api_key}"
+        if settings.reader_completion_window:
+            headers["X-Sail-Completion-Window"] = settings.reader_completion_window
+        self.headers = headers
         self.client = client or httpx.AsyncClient(
             base_url=settings.reader_base_url.rstrip("/"),
-            headers=headers,
             timeout=httpx.Timeout(settings.reader_timeout_s, connect=5.0),
         )
 
@@ -270,16 +324,22 @@ class VLMReader(Reader):
             "temperature": 0,
             **self.extra_body,
         }
-        if self.settings.reader_json_mode:
-            body["response_format"] = {"type": "json_object"}
+        json_mode = self.json_mode
+        if fmt := response_format(json_mode):
+            body["response_format"] = fmt
+        # one key per chunk, reused on retries so a slow-but-successful first attempt is not billed twice
+        headers = {**self.headers, "Idempotency-Key": f"megamind-reader-{uuid.uuid4()}"}
         known = {t.id for t in tokens}
         calls = 0
+        downgrades = 0
         last_err: Exception | None = None
-        for attempt in range(self.max_retries + 1):
+        attempt = 0
+        used_fallback = False
+        while attempt <= self.max_retries:
             calls += 1
             t0 = time.perf_counter()
             try:
-                r = await self.client.post("/chat/completions", json=body)
+                r = await self.client.post("/chat/completions", json=body, headers=headers)
                 if r.status_code in (408, 409, 429) or r.status_code >= 500:
                     raise httpx.HTTPStatusError(f"reader HTTP {r.status_code}", request=r.request, response=r)
                 r.raise_for_status()
@@ -287,6 +347,8 @@ class VLMReader(Reader):
                 text = data["choices"][0]["message"]["content"] or ""
                 answer, conf, items = parse_reader_json(text, known)
                 usage = {k: int(v) for k, v in (data.get("usage") or {}).items() if isinstance(v, int | float)}
+                if used_fallback:
+                    usage["fallback_model"] = 1
                 return ReaderOutput(
                     evidence=answer,
                     confidence=conf,
@@ -298,14 +360,30 @@ class VLMReader(Reader):
                 )
             except httpx.HTTPStatusError as e:
                 last_err = e
-                if 400 <= e.response.status_code < 500 and e.response.status_code not in (408, 409, 429):
-                    if self.settings.reader_json_mode and "response_format" in body and attempt == 0:
-                        body.pop("response_format")  # endpoint rejects json mode: retry once without it
+                code = e.response.status_code
+                if 400 <= code < 500 and code not in (408, 409, 429):
+                    # endpoint rejects the request shape: most likely the response_format. Downgrade
+                    # schema -> object -> off (does not consume the retry budget), then give up.
+                    if json_mode != "off" and downgrades < len(_JSON_MODES) - 1:
+                        json_mode = _downgrade(json_mode)
+                        downgrades += 1
+                        body.pop("response_format", None)
+                        if fmt := response_format(json_mode):
+                            body["response_format"] = fmt
+                        log.warning("reader HTTP %d, retrying with json_mode=%s", code, json_mode)
                         continue
                     break
+                if code in (429, 503) and self.fallback_model and not used_fallback:
+                    # capacity problem on the primary pool: retry on the fallback model (different pool)
+                    used_fallback, body["model"] = True, self.fallback_model
+                    log.warning("reader HTTP %d on %s, retrying on %s", code, self.model, self.fallback_model)
+                    continue
+                if attempt < self.max_retries:
+                    await asyncio.sleep(_retry_after_s(e.response))
             except (httpx.TransportError, httpx.TimeoutException, KeyError, ValueError, json.JSONDecodeError) as e:
                 last_err = e
-            log.warning("reader attempt %d/%d failed: %s", attempt + 1, self.max_retries + 1, last_err)
+            attempt += 1
+            log.warning("reader attempt %d/%d failed: %s", attempt, self.max_retries + 1, last_err)
         log.warning("reader degraded to captions after %d call(s): %s", calls, last_err)
         fb = await self.fallback.read(query, tokens)
         fb.degraded, fb.calls = True, calls
