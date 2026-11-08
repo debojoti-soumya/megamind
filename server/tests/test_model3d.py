@@ -443,3 +443,14 @@ def test_gather_views_one_visit_inside_the_time_range():
     assert {t.id for t in got} == {t.id for t in day1}  # the other day's sighting is a different visit
     got = asyncio.run(gather_views(st, picks, cfg, t0=1030.0, t1=1060.0))
     assert [t.ts for t in got] == [1030.0, 1040.0, 1050.0, 1060.0]
+
+
+def test_clean_points_confidence_is_judged_inside_the_box():
+    from megamind.agent.multiview import clean_points
+
+    pts, conf, rgb = _scene()
+    obj = np.zeros(conf.shape, bool)
+    obj[:, conf.shape[1] // 2 :] = True
+    conf = np.where(obj, 0.2, 5.0).astype(np.float32)  # the table is far more confident than the object
+    q, c, _ = clean_points(pts, conf, rgb, obj)
+    assert len(q) > 0 and (c[:, 1] == 200).all()

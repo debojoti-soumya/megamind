@@ -80,10 +80,10 @@ def clean_points(
     (float32, y up, standing on y=0, centred in x/z) and colours. Raises ValueError when nothing is left."""
     rng = np.random.default_rng(seed)
     ok = np.isfinite(pts).all(-1) & np.isfinite(conf)
-    if ok.any():
-        ok &= conf >= np.percentile(conf[ok], conf_pct)
     if masks is not None:
         ok &= masks
+    if ok.any():  # against the object's own points: a confident background mustn't push them all out
+        ok &= conf >= np.percentile(conf[ok], conf_pct)
     p, c = pts[ok].astype(np.float64), rgb[ok]
     if len(p) < 500:
         raise ValueError("too few confident points of the object")
