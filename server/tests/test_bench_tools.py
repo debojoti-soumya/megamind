@@ -148,9 +148,14 @@ def test_calibration_toggle_hides_and_restores():
     assert r.image_embedder is emb and s.image_calibration == (10.0, -12.0)
 
 
-async def test_bench_runs_end_to_end_with_mock_embedders(tmp_path):
-    """Plumbing smoke test: tiny synthetic corpus, mock embedders, in-memory store, through HybridRetriever."""
+@pytest.mark.parametrize("backend", ["memory", "lancedb"])
+async def test_bench_runs_end_to_end_with_mock_embedders(tmp_path, backend):
+    """Plumbing smoke test: tiny synthetic corpus, mock embedders, through HybridRetriever. On LanceDB the float16
+    comparison table is built too (main's `vector_dtype`)."""
     from PIL import Image
+
+    if backend == "lancedb":
+        pytest.importorskip("lancedb")
 
     sub = _coco()
     rows = rb.flickr_rows([json.loads((FIX / "flickr_rows.json").read_text())])
@@ -173,13 +178,14 @@ async def test_bench_runs_end_to_end_with_mock_embedders(tmp_path):
         image=Calibrated(),
         out=out,
         configs=("keyless", "captioned"),
-        store_backend="memory",
+        store_backend=backend,
         max_questions=25,
         quiet=True,
     )
     assert json.loads(out.read_text())["config"]["signals"] == rep["config"]["signals"]
     assert {"bm25", "text_vec", "image_vec", "hybrid", "hybrid_nocal", "store_search"} <= set(rep["config"]["signals"])
     assert rep["config"]["image_calibration"] == (10.0, -12.0)
+    assert ("hybrid_fp16" in rep["config"]["signals"]) == (backend == "lancedb")
     for config in ("keyless", "captioned"):
         assert rep["retrieval"][config]["ALL"]["hybrid"]["n"] == 25
         assert rep["config"][f"corpus_tokens_{config}"] > 4
