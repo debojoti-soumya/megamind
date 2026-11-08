@@ -3,7 +3,8 @@
 Wiring (`install`) is additive: a frame tap on `POST /v1/frames`, the `GET /v1/replay.mp4` router,
 and a middleware that mirrors `DELETE /v1/memories` onto the buffer. `annotate_citations` fills the
 optional `replay_url` on chat citations. Windows older than the buffer fall back to the kept keyframes
-(`replay/keyframes.py`, read through `MediaStore` so cold AV1 frames work too).
+(`replay/keyframes.py`, read through `MediaStore` so cold AV1 frames work too). With PRIVACY_BLUR_FACES(_VLM)
+on, every source frame (buffered, hot JPEG or cold AV1) goes through the same face blur as stored thumbnails.
 Settings come from `REPLAY_*` env vars (see `.env.example`).
 """
 
@@ -18,10 +19,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from megamind.models import Citation
 from megamind.replay.buffer import BufferedFrame, ReplayBuffer
 from megamind.replay.keyframes import kept_tokens
-from megamind.replay.render import ReplayCache, find_ffmpeg, render_mp4
+from megamind.replay.render import BlurredFrames, ReplayCache, find_ffmpeg, render_mp4
 from megamind.replay.routes import parse_range, parse_ts, router
 
 __all__ = [
+    "BlurredFrames",
     "BufferedFrame",
     "ReplayBuffer",
     "ReplayCache",
@@ -53,6 +55,7 @@ class ReplaySettings(BaseSettings):
     out_fps: int = 10
     max_width: int = 960
     ffmpeg: str = ""  # explicit ffmpeg binary; default PATH, then imageio-ffmpeg
+    blur_cache_bytes: int = 64 << 20  # face-blurred frame copies kept for re-renders (PRIVACY_BLUR_FACES)
 
 
 def replay_url(device_id: str, t0: float, t1: float) -> str:
@@ -109,6 +112,8 @@ class _PurgeMirror:
         buf.purge(qs.get("device_id") or None, since_ts=since)
         if cache := getattr(self.state, "replay_cache", None):
             cache.clear()
+        if blurred := getattr(self.state, "replay_blur", None):
+            blurred.clear()
 
 
 def install(app: FastAPI, settings, replay_settings: ReplaySettings | None = None) -> None:
@@ -123,6 +128,7 @@ def install(app: FastAPI, settings, replay_settings: ReplaySettings | None = Non
         )
         cache_dir = cfg.cache_dir or Path(settings.thumb_dir).parent / "replay"
         st.replay_cache = ReplayCache(cache_dir, cfg.cache_max_files, cfg.max_concurrent_renders)
+        st.replay_blur = BlurredFrames(cfg.blur_cache_bytes)
         st.frame_taps = [*getattr(st, "frame_taps", []), st.replay.tap]
     app.include_router(router, prefix="/v1")
     app.add_middleware(_PurgeMirror, state=st)

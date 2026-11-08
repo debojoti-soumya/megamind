@@ -111,12 +111,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             merge_s=settings.speech_merge_s,
             max_token_s=settings.speech_max_token_s,
         )
+        st.face_blur = build_face_blur(settings)  # thumbnails (worker) and replay clips
         st.worker = EnrichmentWorker(
             st.store,
             build_enricher(settings, st.image_embedder),
             st.text_embedder,
             st.image_embedder,
-            face_blur=build_face_blur(settings),
+            face_blur=st.face_blur,
         )
         st.media = MediaStore(settings, st.store, lock=st.worker.add_lock)  # hot JPEG -> cold AV1 -> text
         st.worker.media = st.media

@@ -221,6 +221,9 @@ The server keeps raw frames for a sliding window per device (default 15 min, bou
   `PRIVACY_BLUR_FACES(_VLM)` is on (video is not blurred). Otherwise, or if cutting fails, the frame path above runs
   unchanged. With stored video, the default `to` is the newest footage of either kind (newest buffered frame or end
   of the newest stored clip).
+- `PRIVACY_BLUR_FACES(_VLM)` on: every frame in the clip (buffered, hot JPEG or cold AV1 keyframe) gets the same
+  bystander face blur as stored thumbnails before rendering (each frame is blurred once and reused across clips,
+  `REPLAY_BLUR_CACHE_BYTES`, 64 MiB), and stored video is never used.
 - 404 when neither buffered nor kept frames nor stored video exist in the window; 503 when ffmpeg is not available on
   the server.
 Rendered clips are cached; `DELETE /memories` also purges the matching buffered frames, stored video and the clip cache.
