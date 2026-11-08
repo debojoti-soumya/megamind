@@ -144,7 +144,7 @@ class HybridRetriever(Retriever):
             kw = await self.adapter.keyword_search(text, n, **flt)
             lists.append(("bm25", w.bm25, [i for i, _ in kw], None))
             if self.text_embedder is not None:
-                qv = await self.text_embedder.embed(text)
+                qv = await self.text_embedder.embed_query(text)
                 tv = await self.adapter.vector_search(qv, n, "text_vec", **flt)
                 lists.append(("text", w.text, [i for i, _ in tv], None))
             if w.ocr_bm25:
@@ -164,7 +164,7 @@ class HybridRetriever(Retriever):
             kw = await self.adapter.keyword_search(text, n, **flt)
             lists.append(("bm25", w.bm25, [i for i, _ in kw], None))
             if self.text_embedder is not None:
-                qv = await self.text_embedder.embed(text)
+                qv = await self.text_embedder.embed_query(text)
                 tv = await self.adapter.vector_search(qv, n, "text_vec", **flt)
                 lists.append(("text", w.text, [i for i, _ in tv], None))
 
