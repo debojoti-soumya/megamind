@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
 from ulid import ULID
 
+from megamind.devices import ChatDevice, resolve_chat_device
 from megamind.models import ChatRequest, ChatResponse, ChatStreamDelta, ChatStreamError, ChatStreamRetrieval
 from megamind.replay import annotate_citations
 
@@ -43,13 +44,14 @@ async def _chat_input(request: Request) -> tuple[str, str, str | None]:
     raise HTTPException(415, "use application/json or multipart/form-data")
 
 
-async def _finish(app, resp: ChatResponse, device_id: str | None) -> ChatResponse:
+async def _finish(app, resp: ChatResponse, dev: ChatDevice) -> ChatResponse:
     """Replay links + TTS, concurrently (independent: one reads `cited`, the other `answer`)."""
 
     async def tts() -> None:
         resp.audio_url = await app.tts.synthesize(resp.answer, str(ULID()))
 
-    await asyncio.gather(annotate_citations(app, resp.cited, device_id), tts())
+    await asyncio.gather(annotate_citations(app, resp.cited, dev.device_id), tts())
+    resp.device_id_used, resp.warning = dev.device_id, dev.warning
     return resp
 
 
@@ -57,8 +59,9 @@ async def _finish(app, resp: ChatResponse, device_id: str | None) -> ChatRespons
 async def chat(request: Request):
     app = request.app.state
     text, session_id, device_id = await _chat_input(request)
-    resp = await app.agent.chat(session_id, text, device_id)
-    return await _finish(app, resp, device_id)
+    dev = await resolve_chat_device(app, device_id)
+    resp = await app.agent.chat(session_id, text, dev.device_id)
+    return await _finish(app, resp, dev)
 
 
 def _sse(event: str, data: dict | BaseModel) -> bytes:
@@ -73,6 +76,8 @@ async def chat_stream(request: Request):
     `error`. Bad requests fail before the stream starts, with the same status codes as `POST /chat`."""
     app = request.app.state
     text, session_id, device_id = await _chat_input(request)
+    dev = await resolve_chat_device(app, device_id)
+    device_id = dev.device_id
     queue: asyncio.Queue[tuple[str, dict | BaseModel] | None] = asyncio.Queue()
 
     async def on_event(name: str, data: dict) -> None:
@@ -90,7 +95,7 @@ async def chat_stream(request: Request):
     async def run() -> None:
         try:
             resp, _ = await app.agent.chat_with_stats(session_id, text, device_id, on_event=on_event)
-            await queue.put(("final", await _finish(app, resp, device_id)))
+            await queue.put(("final", await _finish(app, resp, dev)))
         except Exception as e:  # noqa: BLE001 - the stream is already 200: report the failure in-band
             log.exception("chat stream failed")
             await queue.put(("error", ChatStreamError(detail=f"{type(e).__name__}: {e}")))

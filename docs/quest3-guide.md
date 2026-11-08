@@ -222,6 +222,22 @@ Meta XR Core SDK **85.0.0**, MR Utility Kit **85.0.0**, OpenXR 1.15.1 (`Packages
 `com.megamind.quest`, ARM64, IL2CPP, min SDK 32. Full details are in [`headset/README.md` → Build + sideload](../headset/README.md#build--sideload-step-by-step).
 None of this was run here, so all Unity steps are **(verify on device)**.
 
+**Shortcut: no Unity at all.** Download a prebuilt APK from GitHub (Actions → *headset-apk* → newest green run →
+*Artifacts*, or a `headset-v*` [Release](https://github.com/debojoti-soumya/megamind/releases); details and the
+one-time licence setup in [`headset/README.md` → Get the APK](../headset/README.md#get-the-apk-no-unity-needed)), then:
+```sh
+gh run download -R debojoti-soumya/megamind -n megamind.apk     # or unzip the artifact you downloaded
+adb devices                                                     # headset must show as "device" (2.1)
+adb uninstall com.megamind.quest                                # only if a build from another machine is installed
+adb install -r megamind.apk
+adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerGameActivity
+```
+Then point it at your server with `megamind.json` (section 5) and continue at step 7 below. The capture-only native
+app is `megamind-native.apk` (`adb install -r megamind-native.apk`, package `ai.megamind.quest`, see
+[`headset-android/README.md`](../headset-android/README.md)). No CI-built APK has been installed on a headset yet
+**(verify on device)**.
+
+
 1. **Unity Hub** → *Installs* → *Install Editor* → `6000.0.66f2`. Add the **Android Build Support** module, including **OpenJDK** and **Android SDK & NDK Tools** [U-android].
 2. Hub → *Add* → open the folder `headset/Megamind`. The first import downloads the Meta packages.
 3. *File → Build Profiles* (Unity 6) → **Android** → *Switch Platform* [D-unity-build].
@@ -241,10 +257,11 @@ None of this was run here, so all Unity steps are **(verify on device)**.
    ```
    The manifest declares `UnityPlayerGameActivity` (Unity 6 GameActivity entry point, `androidApplicationEntry: 2`).
    Older notes used `UnityPlayerActivity`, which does not match the manifest (verify on device).
-8. **Permission dialog (one per run of `MegamindPermissions`):** on first launch the app requests the passthrough-camera permission (`horizonos.permission.HEADSET_CAMERA`) and the microphone, in a single request through `OVRPermissionsRequester` [D-pca-unity]. Select **Allow**. The exact dialog wording was not verified (verify on device). The HUD then changes from `waiting for camera permission…` to `starting passthrough camera…` to `REC ...`.
+8. **Two permission prompts (one request by `MegamindPermissions`):** on first launch the app requests the passthrough-camera permission (`horizonos.permission.HEADSET_CAMERA`, for frames) and the microphone (`android.permission.RECORD_AUDIO`, for push-to-talk **and** ambient audio memory) in a single request through `OVRPermissionsRequester` [D-pca-unity]; Android asks for each permission separately, so expect **two prompts**, camera then microphone (verify on device: order and wording). Select **Allow** on both. The HUD then changes from `waiting for camera permission…` to `starting passthrough camera…` to `REC ...`, and its `mic:` line from `(waiting for mic permission)` to `(on -NN dB)`.
    - **If you hit Deny:** the app does not ask again in that session. Fix it either way:
      - Headset: *Settings → Apps → Megamind → Permissions* → allow Camera (verify on device, path from the headset README).
      - Laptop: `adb shell pm grant com.megamind.quest horizonos.permission.HEADSET_CAMERA`, then force-stop and relaunch (verify on device; runtime-permission behaviour per [D-pca-native]).
+     - Microphone denied: same, with *Microphone* / `android.permission.RECORD_AUDIO` (verify on device). Without it push-to-talk and ambient audio are both off; frames still work.
 9. **OS requirement:** the Passthrough Camera API needs **Quest 3/3S on Horizon OS v74+** [D-pca]. Check the version under Navigator → *Quick controls* → *Settings* → *General* → *Software update*, which shows the current version and offers an update when one is available [M-update]. On an old OS the HUD shows `Passthrough Camera API unsupported (Quest 3 + v74 required)`.
 
 ---
@@ -267,6 +284,8 @@ Pick the URL using [2.3](#23-quest--server-the-network-path). Then use **one** o
   The app then sends `Authorization: Bearer <token>` on uploads, chat, health, thumbnails, audio and purge. A 401 in
   logcat means the token is missing or wrong (verify on device). The token can also be baked into
   `MegamindConfig.asset` → `Api Token`, but don't commit a real one.
+  Ambient audio uses the same URL and `deviceId`. To switch it off without rebuilding, add `"ambientAudio":"off"`
+  to the same JSON (`"on"` turns it back on; absent = `CaptureSettings.ambientAudio`, default on) and restart the app.
 - **In-app settings panel** (PR #2 chat UI path): writes PlayerPrefs, which override both options above. If a pushed `megamind.json` seems ignored, the panel's PlayerPrefs value is winning. Clear the app data with `adb shell pm clear com.megamind.quest` to reset it. This also resets the permissions.
 
 Confirm the result: logcat prints `[Megamind] capture: server=<url> device=<id> fps=1 url-source=<source>`, and the HUD's last line shows the same.
@@ -282,7 +301,7 @@ adb logcat -c                                  # clear old logs
 adb logcat -s Unity | grep -i "\[megamind\]"   # -s filters by tag; grep filters the message
 adb logcat > session.log                       # full log for crashes; search for "backtrace:"
 ```
-On the server, watch the uvicorn output for `POST /v1/frames ... 200`.
+On the server, watch the uvicorn output for `POST /v1/frames ... 200` and (ambient audio, every ~15 s while someone talks) `POST /v1/audio ... 200`.
 
 | # | Step | Success looks like | Failure looks like → go to |
 |---|---|---|---|
@@ -290,13 +309,15 @@ On the server, watch the uvicorn output for `POST /v1/frames ... 200`.
 | 1 | `adb devices` | `<serial>  device` | 2.1 table |
 | 2 | Server health from the laptop and the Quest Browser | `{"status":"ok","store_count":N,...}` | 2.3 |
 | 3 | Install + launch | App is under *Unknown Sources*. The REC dot and HUD appear | 7: "not in library", "App not installed" |
-| 4 | Permission | One dialog. Log: `[Megamind] permissions: camera=False mic=False (requested 2)` then `[Megamind] permission granted: ...`. Relaunches show `camera=True` | Two dialogs → see headset README troubleshooting. HUD stuck on `waiting for camera permission…` → 4.8 |
+| 4 | Permissions (verify on device) | Two prompts: camera, then microphone. Log: `[Megamind] permissions: camera=False mic=False (requested 2)` then `[Megamind] permission granted: ...` for each. Relaunches show `camera=True mic=True` and no prompt | Two *camera* dialogs → see headset README troubleshooting. HUD stuck on `waiting for camera permission…` or `mic: … (waiting for mic permission)` → 4.8 |
 | 5 | Config | `[Megamind] capture: server=http://... device=quest3-1 fps=1 url-source=...` with the URL you expect | Wrong URL → 5 |
 | 6 | Camera | `[Megamind] camera: os=... device=... requested=1280x960 supported=[...]` then **`[Megamind] camera playing: 1280x960 maxFps=30`**. HUD: `REC 1 fps  1280x960` | `Passthrough Camera API unsupported...` → OS < v74. `no PassthroughCameraAccess in scene` → re-run *1. Create Capture Scene*. If `supported=[...]` lacks `1280x960`, pick one from the list for `CaptureSettings.cameraResolution` |
 | 7 | Upload | HUD `sent` and `accepted` rise about once per second. `last ok` with a latency in ms and the size in KB | `last net` + `NET ERR: ...` and the log line `[Megamind] frame upload failed (Nx): ... url=...` → 2.7 |
 | 8 | Server filter | Some `last duplicate` / `too_soon` while still is normal (the filter keeps roughly 10–30% at 1 fps) | Mostly `dark`/`blurry` → 7 |
 | 9 | Pause | A/X → `capture PAUSED (press A/X)`. Press again to resume | — |
 | 10 | Image check | Open a stored thumbnail (`/v1/thumbs/{id}.jpg`, see [api.md](api.md)). Colours should be right, upright, not mirrored | Blue skin → reboot the headset [D-pca] |
+| 11 | Ambient audio (verify on device) | Log `[Megamind] ambient audio: mic started 16000 Hz x1, 15 s chunks`. Talk near the headset: HUD `mic: chunks sent N  accepted M  (on -NN dB)` rises about every 15 s; in silence only `silent N` rises (chunks below −50 dBFS are not sent). Hold the trigger: state shows `push-to-talk`, then back to `on`. A/X: `paused` | `waiting for mic permission` → 4.8. `ERR …` → same network checks as step 7 (2.7). Only `silent` rises while talking → 7 |
+| 12 | "What did I hear?" (verify on device) | After ~30 s of talking, hold the trigger and ask *"what did I hear?"*. The answer cites a speech memory (`Speech heard nearby: "…"`; with mock STT the words are `[mock transcript]`, real words need `AUDIO_STT_PROVIDER=openai` or `faster-whisper` on the server). Laptop check: `curl 'http://<server>:8000/v1/memories/recent?kind=transcript&k=5'` | `not_found` / only frames → no `POST /v1/audio 200` yet (step 11), or a different `deviceId` than the chat uses |
 
 Expected camera numbers: the app requests **1280×960** with a max of **30 fps** from the camera (`CaptureSettings.cs`).
 It then samples and uploads only **1 frame/s**, as a JPEG downscaled to a width of 960 px at quality 75. 1280×960 is
@@ -316,6 +337,7 @@ one of the resolutions Meta documents for PCA [D-pca-unity]. Meta documents abou
 | **Headset falls asleep or the app restarts when removed** | The proximity sensor suspends apps when the headset is off a head. Disable it in MVDH [D-mvdh], or keep the headset on. The commonly used adb broadcast `adb shell am broadcast -a com.oculus.vrpowermanager.prox_close` is **not** in the Meta docs checked here (verify on device). Power/sleep timeout settings are in the headset's *Settings* (exact path not verified). `SensorLockActivity` in logcat means it was idle: put it on, press power once, then relaunch. |
 | **Overheating / throttling** | Stop casting and recording, and take it off the charger and out of direct sun. Let it cool before continuing. This advice is general and not from a Meta doc. |
 | **Frames rejected (`accepted` flat, `last <reason>`)** | Reasons come from `server/megamind/ingest/filter.py` ([api.md](api.md)). `dark` means more light. `blurry` means move your head slower; the camera auto-exposes slowly after start. `duplicate` / `too_soon` are expected when the scene is static, so walk around. `budget` means the per-device kept-frames cap was hit (`filter_max_per_min`). `client:motion` / `client:backlog` / `client:backoff` (server unreachable, retrying with exponential backoff up to 30 s) are skipped on the headset and never sent. |
+| **HUD `mic:` shows only `silent N` while people talk** | Every 15 s chunk was quieter than `CaptureSettings.audioSilenceDb` (−50 dBFS): mic muted by the system (headset off-head) or speech too far away. Lower the gate (e.g. −60, or −120 to send everything) and rebuild (verify on device). |
 | **Colours wrong (blue skin)** | Reboot the headset. This is a known issue on v74 after a camera app's first install [D-pca]. |
 | **Wipe memories** | `curl -X DELETE http://<server>:8000/v1/memories` wipes **all** devices. Add `?device_id=quest3-1` to wipe one device, or `&since=<ts>` to wipe from a time onwards ([api.md](api.md)). |
 

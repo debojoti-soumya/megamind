@@ -137,8 +137,18 @@ Response:
   "audio_url": "/v1/audio/01J....wav",
   "cited": [ { "id": "...", "ts": 1731000000.1, "caption": "...", "thumb_url": "/v1/thumbs/....jpg",
                "replay_url": "/v1/replay.mp4?device_id=quest3-abc&from=1731000000.100&to=1731000010.100" } ],
-  "tool_calls": [ { "name": "recall_memory", "args": { "query": "keys", "k": 12 }, "confidence": "high" } ] }
+  "tool_calls": [ { "name": "recall_memory", "args": { "query": "keys", "k": 12 }, "confidence": "high" } ],
+  "device_id_used": "quest3-abc", "warning": null }
 ```
+`device_id` (optional) limits the search to that device's memories; omitted/null = all devices.
+`device_id_used` is the device that was actually searched (`null` = all devices). `warning` is `null` normally;
+when the request's `device_id` has **no** memory tokens while other devices do, it says so instead of the answer
+silently being "no memory", e.g. `"device 'browser-x' has no memories; active devices: quest3-1"` (up to 5
+devices, most recent first, see `GET /devices`). Clients should show it.
+`CHAT_DEFAULT_DEVICE=latest` (server env, default off; a demo convenience for "type a question on the laptop
+while the headset streams"): in that same case the turn searches the most recently active device instead, and
+reports it: `"device_id_used": "quest3-1"`, `"warning": "device 'browser-x' has no memories; answered from
+'quest3-1' instead"`. A device that has memories is never redirected.
 `replay_url` is optional and `null` when the server holds neither buffered frames, kept keyframes with pixels nor
 stored real video (`POST /video`) around the citation (pixels aged out, replay disabled, or a different device). It covers `ts - 5 s .. ts + 5 s`.
 `cited[].thumb_url` is `""` when the cited token has no image (heard speech, or a frame whose pixels aged out,
@@ -170,9 +180,25 @@ data: {"text": "On the kitchen counter"}
 event: final
 data: {"transcript": "where did I leave my keys?", "answer": "On the kitchen counter ...", "audio_url": null, "cited": [...], "tool_calls": [...]}
 ```
+`device_id_used` / `warning` arrive only in `final` (same rules as `POST /chat`).
 Clients can swap it in for `POST /chat` and fall back to `POST /chat` on 404/405 (older servers). The model
 requests are identical to `POST /chat` apart from streaming, so answers are the same. With `RECALL_FIRST` a
 standalone question's `retrieval` arrives before Claude is called at all.
+
+## `GET /devices`
+Every device that has stored memory tokens, most recently active first (by `last_ts`). Use it to pick the
+`device_id` for `POST /chat` (the browser panel and `tools/ask.py` do).
+```json
+{ "devices": [ { "device_id": "quest3-1", "count": 1500, "last_ts": 1731000300.0,
+                 "last_frame_ts": 1731000300.0, "last_audio_ts": 1731000290.0 },
+               { "device_id": "browser-ab12c", "count": 4, "last_ts": 1730990000.0,
+                 "last_frame_ts": 1730990000.0, "last_audio_ts": null } ] }
+```
+`count` covers every token kind (frames, transcripts, episode summaries). `last_frame_ts` is the newest
+`kind="frame"` token and `last_audio_ts` the newest `kind="transcript"` token (heard speech: `POST /audio` or
+`FrameMeta.transcript`; a merged transcript token keeps its start `ts`); `null` when the device has none. Only
+stored (enriched) tokens count: frames still in the enrichment queue or only in the replay buffer do not.
+`{ "devices": [] }` on an empty store.
 
 ## `GET /replay.mp4?device_id=...&from=...&to=...`
 Moment replay: an H.264 mp4 of **every** frame received from the device in `[from, to]` (not just the

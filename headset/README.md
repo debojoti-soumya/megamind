@@ -13,7 +13,8 @@ project: open it in Unity Hub, let the packages resolve, run one menu item, buil
 > world-locked panel in passthrough, B/Y re-anchor, right-trigger push-to-talk → `/v1/chat` →
 > transcript bubble + reply with 3 cited thumbnails. Not yet exercised on device: hand-pinch PTT,
 > the settings sub-panel buttons (controller-ray UI), TTS playback (mock TTS returns no audio),
-> and real STT/TTS (needs API keys on the server).
+> and real STT/TTS (needs API keys on the server). Ambient audio memory (`AmbientAudioRecorder`, below) was added
+> after this playtest and has **not** run on a headset yet (verify on device).
 
 New to Quest? Start with the **[Quest 3 guide](../docs/quest3-guide.md)**: headset basics, every physical
 connection (USB/adb, wireless adb, Wi-Fi/Tailscale to the server, casting, power), a test runbook, and a
@@ -37,6 +38,66 @@ Android manifest were copied from Meta's official
 and renamed. The camera is read through MRUK's `Meta.XR.PassthroughCameraAccess`
 component (the current official path; the older `WebCamTextureManager` sample is deprecated).
 
+## Get the APK (no Unity needed)
+[`.github/workflows/headset-apk.yml`](../.github/workflows/headset-apk.yml) builds two APKs on every push to `main`
+that touches `headset/**` or `headset-android/**`, and on demand (Actions → **headset-apk** → *Run workflow*):
+
+| Artifact | App | Package / launch activity | Needs |
+|---|---|---|---|
+| `megamind.apk` | this Unity app (capture + AR chat panel) | `com.megamind.quest` / `com.unity3d.player.UnityPlayerGameActivity` | Unity licence secrets (below) |
+| `megamind-native.apk` | [`headset-android/`](../headset-android/README.md) capture-only app | `ai.megamind.quest` / `ai.megamind.quest.MainActivity` | nothing |
+
+**Download:** GitHub → *Actions* → *headset-apk* → newest green run on `main` → *Artifacts* (zipped; unzip to get the
+`.apk`), or with the CLI: `gh run download -R debojoti-soumya/megamind -n megamind.apk` (artifacts expire after 90 days).
+**Releases:** pushing a tag `headset-vX.Y` (e.g. `git tag headset-v0.1 && git push origin headset-v0.1`) also attaches
+both APKs to a [GitHub Release](https://github.com/debojoti-soumya/megamind/releases); if the Unity job fails for that
+tag the release gets only `megamind-native.apk` and says so in its notes.
+Install with `adb install -r megamind.apk` ([Quest 3 guide §4](../docs/quest3-guide.md#4-getting-megamind-on-the-headset)).
+
+Notes on the prebuilt Unity APK:
+- It is built from the **committed** scene/assets/player settings (`Assets/Megamind/Scenes/Megamind.unity`,
+  `ProjectSettings/ProjectSettings.asset`: IL2CPP, ARM64, min/target SDK 32, ASTC), via the same entry point as
+  *Megamind → 3. Build APK*. If you change the scene via the menu items, commit the result or CI will not see it.
+- Its baked-in server URL is whatever `MegamindConfig.asset` holds (`http://100.64.0.1:8000`); point it at your server
+  without rebuilding with `megamind.json` or the settings panel (see *Pointing the app at a different server* below).
+- CI signs with a throwaway debug key, so installing it over a build from another machine/run fails with
+  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`: `adb uninstall com.megamind.quest` first (this clears the app's PlayerPrefs).
+- Nobody has installed a CI-built APK on a headset yet **(verify on device)**.
+
+### One-time setup: Unity licence secrets (repo admin)
+The Unity job uses [game-ci/unity-builder](https://game.ci/docs/github/builder) (Docker image
+`unityci/editor:ubuntu-6000.0.66f2-android-3`), which must activate a Unity licence. Without these secrets the Unity
+job's first step reports `Repository secret … is not set`: on a push to `main` as a **warning** (the build is skipped
+and the job stays green, so `main` is not red), on *Run workflow* / `headset-v*` tags as an **error** (job fails).
+Until the secrets exist, **the native job (`megamind-native.apk`, also run on PRs touching `headset-android/`) is the
+only path guaranteed to go green and produce an APK**; a green Unity job on `main` does not mean `megamind.apk` was
+built, so check the run's *Artifacts* (or its warning). Add them under
+GitHub → repo → *Settings* → *Secrets and variables* → *Actions* → *New repository secret*
+([game-ci activation docs](https://game.ci/docs/github/activation)):
+
+| Licence | Secrets |
+|---|---|
+| **Personal (free)** | `UNITY_LICENSE` = full contents of the `.ulf` file, `UNITY_EMAIL`, `UNITY_PASSWORD` (the Unity account that owns the licence) |
+| **Plus / Pro** | `UNITY_SERIAL` (`XX-XXXX-XXXX-XXXX-XXXX-XXXX`, from [id.unity.com → Subscriptions](https://id.unity.com/en/subscriptions)), `UNITY_EMAIL`, `UNITY_PASSWORD` |
+
+Getting the Personal `.ulf` (needs **Unity Hub only**, not the Editor; any OS works, the licence is not tied to a
+platform or Unity version):
+1. Install [Unity Hub](https://unity.com/download) and sign in with the account you will put in `UNITY_EMAIL`.
+2. Hub → *Preferences* (Settings) → *Licenses* → **Add** → **Get a free personal license**. Click *Add* even if a
+   licence is already listed, otherwise the `.ulf` file may not be written.
+3. Copy the file into the `UNITY_LICENSE` secret:
+   - Windows `C:\ProgramData\Unity\Unity_lic.ulf`
+   - macOS `/Library/Application Support/Unity/Unity_lic.ulf`
+   - Linux `~/.local/share/unity3d/Unity/Unity_lic.ulf`
+   e.g. `gh secret set UNITY_LICENSE -R debojoti-soumya/megamind < "/Library/Application Support/Unity/Unity_lic.ulf"`.
+   If Hub offers no way to produce a `.ulf`, see the game-ci activation docs (they track Hub UI changes).
+
+Then re-run the workflow (Actions → headset-apk → *Run workflow*). The first run downloads the ~7 GB editor image and
+imports the Meta packages (rough estimate 30–60 min, not measured); the `Library/` cache makes later runs faster.
+How CI gets around the Linux editor's Meta XR Core 85 compile bug: it embeds the registry copy of
+`com.meta.xr.sdk.core` (version from `Packages/manifest.json`, checksum-verified) in `Packages/` and runs
+`headset/tools/patch-metaxr-linux.sh` on it before Unity starts; nothing is committed.
+
 ## Build + sideload, step by step
 1. **Install Unity 6000.0.66f2** via Unity Hub with the *Android Build Support* module
    **including OpenJDK, Android SDK & NDK Tools**. (Hub → Installs → Install Editor → 6000.0.66f2.)
@@ -51,7 +112,7 @@ component (the current official path; the older `WebCamTextureManager` sample is
    generates `Assets/Megamind/Scenes/Megamind.unity` containing
    `OVRCameraRig` (+ `OVRManager` with passthrough enabled, `OVRPassthroughLayer`),
    a `PassthroughCameraAccess` component (left camera, 1280×960), and a `Megamind`
-   object with `MegamindPermissions`, `FrameUploader`, `CaptureHud`, and sets it as the
+   object with `MegamindPermissions`, `FrameUploader`, `CaptureHud`, `AmbientAudioRecorder`, and sets it as the
    only scene in Build Settings. It also creates `Assets/Megamind/MegamindConfig.asset`
    (server URL / device id) and `Assets/Megamind/CaptureSettings.asset` (fps, resolution, JPEG).
    Run **Megamind → Check Project** — every line should be `OK`.
@@ -74,15 +135,18 @@ component (the current official path; the older `WebCamTextureManager` sample is
    ```
    First IL2CPP build is ~10 min; incremental builds ~2 min.
 10. **On the headset**, the app appears under *Library → Unknown Sources → Megamind*.
-    On first launch it asks for **Camera** (this is the `HEADSET_CAMERA` permission —
-    allow) and **Microphone**. The capture HUD then shows `camera starting…` →
-    `capturing 1280x960 → 960px JPEG` and `sent N / accepted M (reason)` updating once per second.
+    On first launch it shows **two permission prompts**, one after the other: **Camera** (the `HEADSET_CAMERA`
+    permission, for frames — allow) and **Microphone** (`RECORD_AUDIO`, for push-to-talk *and* ambient audio
+    memory — allow) (verify on device: order/wording). The capture HUD then shows `camera starting…` →
+    `capturing 1280x960 → 960px JPEG` and `sent N / accepted M (reason)` updating once per second, plus
+    `mic: chunks sent N  accepted M  (on -NN dB)` once per 15 s audio chunk (verify on device).
 11. **Watch logs** from the laptop:
     ```sh
     adb logcat -s Unity:I | grep -i megamind
     ```
     Expected lines: `[Megamind] permissions: camera=True`, `[Megamind] capture: server=…`,
-    `[Megamind] camera playing: 1280x960 maxFps=30`, and on the server `POST /v1/frames … 200`.
+    `[Megamind] camera playing: 1280x960 maxFps=30`, `[Megamind] ambient audio: mic started 16000 Hz x1, 15 s chunks`,
+    and on the server `POST /v1/frames … 200` / `POST /v1/audio … 200`.
 
 ### Headless build (CI / a box without a display)
 Each `Megamind` menu item is a static method, so the whole flow runs from a shell (`U=~/Unity/Hub/Editor/6000.0.66f2/Editor/Unity`):
@@ -95,6 +159,7 @@ for m in MegamindSceneBuilder.CreateScene MegamindChatPanelBuilder.Build \
 done
 ```
 `Builds/megamind.apk` is the output. The first run also downloads/imports the Meta packages (several minutes).
+CI does the same with only `BuildApk` (the scene and player settings are committed); see *Get the APK* above.
 
 ### Pointing the app at a different server without rebuilding
 The URL is resolved in this order: PlayerPrefs (`megamind.serverBaseUrl`, written by the
@@ -141,14 +206,49 @@ Optional keys: `captureFps` (default 1).
    the app is backgrounded or unfocused (headset off, system menu open), nothing is captured and the camera
    stream is stopped (`stopCameraWhenPaused`); it restarts on resume.
 
+## Ambient audio memory (stream 1)
+So *"what did I hear?"* / *"who did I talk to?"* work from the Unity app (until now only the native
+`headset-android/` app uploaded audio). `AmbientAudioRecorder` (on the `Megamind` object) records the default
+microphone with Unity's `Microphone` API and uploads it to `POST /v1/audio` (`docs/api.md`) with the **same server
+URL and device id as frames** (`CaptureSettings.ServerBaseUrl/DeviceId`: settings panel → `megamind.json` →
+`MegamindConfig.asset`):
+- **Format** = the native app's, so the server path is identical: 16 kHz mono PCM16 little-endian in a 44-byte
+  RIFF/WAVE header, **15 s chunks** (`audioChunkSeconds`; docs/api.md recommends ~15–30 s — fewer STT calls, more context per transcript; the native app defaults to 5 s), `meta` = `{"device_id":…,"ts_start":…}` (+ head
+  `pose` when available), file name `yyyyMMdd_HHmmss_SSS.wav` (`AudioChunkCodec.cs`). `ts_start` is the Unix wall
+  clock of the chunk's first sample, the clock `FrameUploader` stamps frames with, re-derived from
+  `Microphone.GetPosition` every 100 ms so it does not drift.
+- **Silence gate:** a chunk whose loudest 100 ms window is below `audioSilenceDb` (−50 dBFS) is dropped on the
+  headset (no Whisper cost; Horizon also feeds digital silence while the headset is off-head). HUD `silent N`.
+- **Uploads:** one at a time, oldest first (consecutive chunks merge into one speech token on the server); up to
+  `audioMaxQueuedChunks` (8 × 15 s = 2 min) kept in memory while the server is unreachable; network error / 429 / 5xx
+  back off like frames (`backoffBaseSeconds` doubling to `backoffMaxSeconds`, ±20% jitter); a chunk is dropped
+  after `audioMaxAttempts` 429/5xx answers or any other 4xx.
+- **Pauses** (partial chunk ≥ 1 s is flushed, the mic is released): A/X capture pause (one button stops all
+  recording), app backgrounded/unfocused (same `OnApplicationPause`/`OnApplicationFocus` hooks as
+  `FrameUploader`), and **while push-to-talk records**: `ChatClient` calls `AmbientAudioRecorder.PushToTalkStarting()`
+  just before its `Microphone.Start` and `PushToTalkEnded()` after `Microphone.End`, so the two never fight over
+  the device. Push-to-talk questions therefore are not also stored as ambient speech.
+- **Toggle:** `CaptureSettings.ambientAudio` (default **on**) in `Assets/Megamind/CaptureSettings.asset`, or without
+  rebuilding: add `"ambientAudio":"off"` (or `"on"`) to `megamind.json` and restart the app. Off = the mic is
+  only used for push-to-talk.
+- **HUD:** `mic: chunks sent N  accepted M  (state)` where state is `on -NN dB` (last chunk level), `paused`,
+  `push-to-talk`, `waiting for mic permission`, `no microphone` or `off`; plus `silent N` / `queued N` / `ERR …`.
+
+Test without a headset: `server/tests/test_quest_unity_audio.py` replays the exact bytes (mock STT). On the
+headset (verify on device): start the server with mock providers, launch, talk near the headset for ~30 s (a chunk is stored ~15 s after it starts), watch
+the HUD `mic:` counters and `POST /v1/audio 200` in the server log, then hold the trigger and ask *"what did I
+hear?"* — the answer cites `Speech heard nearby: "[mock transcript]"` (real words with `AUDIO_STT_PROVIDER=openai`
+or `faster-whisper` on the server, see `server/.env.example`). `curl 'http://<server>:8000/v1/memories/recent?kind=transcript&k=5'`
+lists the stored speech tokens.
+
 Permissions: `Assets/Plugins/Android/AndroidManifest.xml` declares
 `horizonos.permission.HEADSET_CAMERA`, `android.permission.CAMERA`,
 `android.permission.RECORD_AUDIO`, `android.permission.INTERNET`, and
 `android:usesCleartextTraffic="true"` (research digest #0). There is exactly **one** runtime
 permission flow: `MegamindPermissions` calls `OVRPermissionsRequester.Request` once (camera +
-mic), the same mechanism as Meta's sample `RequestPermissionsOnce`. `PassthroughCameraAccess`
-only checks `HEADSET_CAMERA`, so `android.permission.CAMERA` is never requested at runtime and
-only one dialog appears. The scene builder clears OVRManager's *Permission Requests On
+mic), the same mechanism as Meta's sample `RequestPermissionsOnce`; Android shows that as **two prompts**, camera
+then microphone. `PassthroughCameraAccess` only checks `HEADSET_CAMERA`, so `android.permission.CAMERA` is never
+requested at runtime and only one *camera* dialog appears. The scene builder clears OVRManager's *Permission Requests On
 Startup* so nothing else asks, and *Meta > Tools > Update AndroidManifest.xml* must not be
 allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 
@@ -156,12 +256,14 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | File | Stream | Purpose |
 |---|---|---|
 | `MegamindConfig.cs` | 3 | ScriptableObject with server URL / device id (stream 3 owns it) |
-| `CaptureSettings.cs` | 1 | ScriptableObject: fps, camera resolution, JPEG width/quality, backpressure; `megamind.json` adb override for the server URL and `apiToken` ([api.md#auth](../docs/api.md#auth)) |
+| `CaptureSettings.cs` | 1 | ScriptableObject: fps, camera resolution, JPEG width/quality, backpressure, `ambientAudio` toggle + chunk/gate/queue; `megamind.json` adb override for the server URL (and `ambientAudio`, `apiToken`: [api.md#auth](../docs/api.md#auth)) |
 | `Dto.cs` | shared | C# mirrors of `docs/api.md` payloads |
-| `MegamindPermissions.cs` | 1 | requests `HEADSET_CAMERA` + mic at start, exposes `CameraGranted` |
+| `MegamindPermissions.cs` | 1 | requests `HEADSET_CAMERA` + mic at start, exposes `CameraGranted` / `MicrophoneGranted` |
 | `FrameUploader.cs` | 1 | 1 fps sample of `PassthroughCameraAccess.GetTexture()` → JPEG → `POST /v1/frames` with pose meta |
-| `CaptureHud.cs` | 1 | world-locked capture status HUD + recording indicator, A/X pause |
-| `ChatClient.cs` | 3 | push-to-talk (trigger or index pinch) → 16 kHz WAV → `POST /v1/chat` → play audio; barge-in, latency |
+| `AmbientAudioRecorder.cs` | 1 | ambient mic → 15 s 16 kHz mono PCM16 WAV chunks → `POST /v1/audio`; silence gate, backoff, pauses for push-to-talk / A/X / background |
+| `AudioChunkCodec.cs` | 1 | pure C# WAV + meta encoding (native-app layout) and the RMS level for the silence gate |
+| `CaptureHud.cs` | 1 | world-locked capture status HUD (+ `mic:` line) + recording indicator, A/X pause |
+| `ChatClient.cs` | 3 | push-to-talk (trigger or index pinch) → 16 kHz WAV → `POST /v1/chat` → play audio; barge-in, latency; tells `AmbientAudioRecorder` to release the mic while recording |
 | `ChatPanel.cs` | 3 | transcript bubbles, cited thumbnails, confidence/latency line, status HUD (`/v1/health` poll) |
 | `PanelAnchor.cs` | 3 | places the canvas `panelDistance` m ahead on first use; hold B/Y 0.5 s to re-anchor |
 | `SettingsPanel.cs` | 3 | runtime server URL / device id, new session, purge memory |
@@ -198,12 +300,13 @@ Nothing in this project has run on a headset yet. Hour-0, in this order:
    `[Megamind] camera: os=... supported=[...]` (resolutions the OS offers) and
    `[Megamind] camera playing: 1280x960 maxFps=30`.
 3. Verify and report:
-   - **Permission:** exactly one camera dialog on first launch; HUD leaves `waiting for camera permission` after Allow. (If two dialogs appear, `android.permission.CAMERA` in the manifest is the suspect — delete that line and tell us.)
+   - **Permission:** two prompts on first launch — one camera dialog, then one microphone dialog; HUD leaves `waiting for camera permission` / `mic: … (waiting for mic permission)` after Allow. (If two *camera* dialogs appear, `android.permission.CAMERA` in the manifest is the suspect — delete that line and tell us.) (verify on device)
    - **Camera:** HUD shows `1280x960`, frames ~1/s; if `supported=[...]` lacks 1280x960, pick one from the list in `CaptureSettings.cameraResolution`.
    - **Upload:** HUD `sent/accepted` climbs and `server:ok` / `server:duplicate` reasons appear; server log shows `POST /v1/frames 200`.
    - **Pose/ts:** server-side `meta.pose.yaw` changes when you turn your head; `ts` is within ~1 s of the server clock.
    - **Perf:** no visible hitch each second (readback and JPEG encode run on consecutive frames); note `enc` ms on the HUD.
    - **Image:** open a stored thumbnail: colours correct (skin not blue — reboot if so), upright, not mirrored.
+   - **Ambient audio (verify on device):** HUD `mic: chunks sent/accepted` climbs every ~15 s while people talk and `silent N` climbs in a quiet room; server log `POST /v1/audio 200`; the `mic:` state shows `push-to-talk` while you hold the trigger and goes back to `on` after the reply; A/X shows `paused`; push-to-talk replies still work. Then ask *"what did I hear?"*.
 4. Demo day: reboot the headset in the morning (RGB-flip bug), disable auto-sleep (Settings → General → Power), keep the HUD visible as a self-test.
 
 ## Troubleshooting
@@ -216,6 +319,9 @@ Nothing in this project has run on a headset yet. Hour-0, in this order:
 | Hub says the editor version is missing | Install exactly 6000.0.66f2, or open with another 6000.0.x (≥ 38f1) and accept the upgrade; do not use 2022.3 (MRUK 85 needs Unity 6). |
 | Package Manager errors resolving `com.meta.xr.*` | Check internet / proxy; Window → Package Manager → refresh. Meta packages come from the Unity registry, no scoped registry needed. |
 | Compile errors mentioning `PassthroughCameraAccess` | MRUK must be 81+ (we pin 85). Project Settings → Meta XR → make sure "Passthrough Camera Access" is enabled (it is in `OculusProjectConfig.asset`). |
+| HUD `mic: … (waiting for mic permission)` | The microphone prompt was denied. Settings → Apps → Megamind → Permissions → Microphone → Allow, or `adb shell pm grant com.megamind.quest android.permission.RECORD_AUDIO`; push-to-talk needs it too. |
+| HUD `mic:` only climbs `silent N`, never `sent` | Every chunk is below `CaptureSettings.audioSilenceDb` (−50 dBFS): mic muted (headset off-head, system mute) or a very quiet room. Lower it (e.g. −60) or set −120 to upload everything. |
+| HUD `mic: … ERR 0 …` while frames upload fine | `/v1/audio` transcribes synchronously; a slow STT provider can exceed `audioUploadTimeoutSeconds` (60 s). Check the server log for the `/v1/audio` request. |
 | HUD stuck at `waiting for camera permission` | The permission dialog was dismissed. Settings → Apps → Megamind → Permissions → Camera → Allow, or `adb shell pm grant com.megamind.quest horizonos.permission.HEADSET_CAMERA` (and `android.permission.CAMERA`). |
 | HUD `camera starting…` forever / `camera not supported` | Headset must be Quest 3/3S on Horizon OS v74+ (Quick controls → Settings → General → Software update). Passthrough Camera API does **not** work in the XR Simulator or on Quest 2/Pro; only on device (or Horizon Link 2.1+). |
 | Black image / 0×0 resolution in HUD | Passthrough disabled: `OVRManager.isInsightPassthroughEnabled` must be on (scene builder sets it); re-run *Megamind → Check Project*. |

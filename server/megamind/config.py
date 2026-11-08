@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # question, so the tool round re-reads tools + system + history. Never changes answers; off (default) = the
     # request bodies are exactly as before
     claude_prompt_cache: bool = False
+    # demo convenience: "latest" = a chat whose device_id has no memories searches the most recently active device
+    # instead (reported as device_id_used + warning); "" (default) = search the requested device and only warn
+    chat_default_device: Literal["", "latest"] = ""
     reader_extra_body: str = ""  # JSON merged into the request, e.g. {"chat_template_kwargs":{"enable_thinking":false}}
     enrich_provider: str = "auto"  # auto (vlm iff an enrich/reader key is set, else local if installed, else mock)
     enrich_base_url: str = ""  # "" -> reader_base_url (and the reader's extra body / completion window)

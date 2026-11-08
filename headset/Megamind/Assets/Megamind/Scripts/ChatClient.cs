@@ -63,6 +63,7 @@ namespace Megamind
                 return;
             }
             if (speaker != null && speaker.isPlaying) speaker.Stop(); // barge-in
+            AmbientAudioRecorder.PushToTalkStarting(); // ambient audio memory releases the shared mic
             _recording = Microphone.Start(null, false, config.maxRecordSeconds, config.micSampleRate);
             _recordingActive = true;
             _recordStart = Time.unscaledTime;
@@ -74,6 +75,7 @@ namespace Megamind
             if (!_recordingActive) return;
             Microphone.End(null);
             _recordingActive = false;
+            AmbientAudioRecorder.PushToTalkEnded();
             panel?.SetListening(false);
         }
 
@@ -82,6 +84,7 @@ namespace Megamind
             int pos = Microphone.GetPosition(null);
             Microphone.End(null);
             _recordingActive = false;
+            AmbientAudioRecorder.PushToTalkEnded();
             panel?.SetListening(false);
             if (_recording == null || pos <= 0 || Time.unscaledTime - _recordStart < minRecordSeconds) yield break;
 
