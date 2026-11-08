@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
 import math
 from datetime import datetime
+from typing import get_args
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from PIL import Image
 from ulid import ULID
 
 from megamind.ingest.audio import transcript_sink
 from megamind.ingest.worker import purge_all
 from megamind.models import FrameAccepted, FrameMeta, MemoryToken, PurgeResponse, SearchMode, SearchResponse
+from megamind.store.media import run_aging
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -126,7 +129,78 @@ async def purge_memories(request: Request, device_id: str | None = None, since: 
 
 @router.get("/thumbs/{token_id}.jpg")
 async def get_thumb(request: Request, token_id: str):
-    p = request.app.state.settings.thumb_dir / f"{token_id}.jpg"
-    if not p.exists():
+    """Any tier: hot JPEG, cold frame decoded from its AV1 chunk; 404 for text-tier / image-less tokens."""
+    app = request.app.state
+    p = app.settings.thumb_dir / f"{token_id}.jpg"
+    if p.is_file():  # hot frames, episode thumbnails, frames still in the enrichment queue: no store lookup
+        return FileResponse(p, media_type="image/jpeg")
+    media = getattr(app, "media", None)
+    token = await app.store.get(token_id) if media is not None else None
+    data = await media.read(token) if token is not None else None  # cold: decoded from its AV1 chunk
+    if data is None:
         raise HTTPException(404)
-    return FileResponse(p, media_type="image/jpeg")
+    return Response(data, media_type="image/jpeg")
+
+
+@router.post("/admin/age")
+async def age_media(request: Request, hot_older_than_s: float | None = None, cold_older_than_s: float | None = None):
+    """Run one media aging pass now. Defaults: HOT_RETENTION_H / COLD_RETENTION_DAYS."""
+    for name, v in (("hot_older_than_s", hot_older_than_s), ("cold_older_than_s", cold_older_than_s)):
+        if v is not None and not (math.isfinite(v) and v >= 0):
+            raise HTTPException(400, f"{name}: expected a finite number >= 0")
+    return await run_aging(request.app.state, hot_s=hot_older_than_s, cold_s=cold_older_than_s)
+
+
+_REJECT_REASONS = set(get_args(get_args(FrameAccepted.model_fields["reason"].annotation)[0]))
+_PROJECTION_DAYS = 100
+_WEARING_H_PER_DAY = 16
+
+
+@router.get("/stats")
+async def stats(request: Request):
+    """Storage and ingest counters: frame tiers, filter decisions, queue depth, disk use, a 100-day projection."""
+    app = request.app.state
+    s = app.settings
+    media = app.media
+    tiers = await app.store.tier_counts()
+    n_frames = sum(tiers.values())
+    disk = await asyncio.to_thread(media.disk_bytes)  # walks thumbs/, chunks/ and the index: off the loop
+    encoder = await media.probe_encoder()
+    counts = dict(app.keyframe_filter.counts)
+    kept = sum(v for k, v in counts.items() if k not in _REJECT_REASONS)
+    seen = sum(counts.values())
+    hot_pf = disk["hot_jpeg"] / tiers["hot"] if tiers["hot"] else None
+    cold_pf = disk["cold_chunks"] / tiers["cold"] if tiers["cold"] else None
+    n_rows = await app.store.count()
+    index_pf = disk["index"] / n_rows if n_rows and disk["index"] else None
+    proj = None
+    if (hot_pf is not None or cold_pf is not None) and s.filter_max_per_min > 0:
+        # at the frame budget, HOT_RETENTION_H as JPEG, the rest as AV1; whichever tier is not measured yet is
+        # assumed to be 8x the other (JPEG vs AV1, PR #54's measurement)
+        per_day = s.filter_max_per_min * 60 * _WEARING_H_PER_DAY
+        hot_days = min(_PROJECTION_DAYS, s.hot_retention_h / 24)
+        cold_days = min(_PROJECTION_DAYS, s.cold_retention_days) - hot_days
+        hpf = hot_pf if hot_pf is not None else cold_pf * 8
+        cpf = cold_pf if cold_pf is not None else hpf / 8
+        proj = per_day * (hot_days * hpf + max(0.0, cold_days) * cpf + _PROJECTION_DAYS * (index_pf or 0.0))
+    worker = app.worker
+    return {
+        "tokens": n_rows,
+        "frames": n_frames,
+        "tiers": tiers,
+        "filter": {"seen": seen, "kept": kept, "keep_rate": kept / seen if seen else None, "by_reason": counts},
+        "worker_queue": worker.queue.qsize(),
+        "disk_bytes": disk,
+        "bytes_per_frame": {
+            "hot": round(hot_pf) if hot_pf is not None else None,
+            "cold": round(cold_pf) if cold_pf is not None else None,
+            "index": round(index_pf) if index_pf is not None else None,
+        },
+        "projected_100d_gb_at_budget": round(proj / 1e9, 2) if proj is not None else None,
+        "media": {
+            "encoder": (encoder or [None, None])[1],
+            "hot_retention_h": s.hot_retention_h,
+            "cold_retention_days": s.cold_retention_days,
+            "cold_decodes": media.decodes,
+        },
+    }

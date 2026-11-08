@@ -291,7 +291,7 @@ class UCCIndexer:
 
 @dataclass
 class UCCConfig:
-    timeout_s: float = 4.0  # whole UCC leg of one retrieve(); past it the hybrid answers
+    timeout_s: float = 2.0  # whole UCC leg of one retrieve(); the hybrid runs in parallel and answers past it
     cooldown_s: float = 60.0  # after an error, skip UCC for this long
     min_p: float = 0.2  # facet p(yes) below this is not a hit
     candidates: int = 0  # >0: rerank only the hybrid's top-N (cheaper); 0: facet over the whole window
@@ -335,18 +335,24 @@ class UCCRetriever(Retriever):
     ) -> RetrievalResult:
         now = now or datetime.now(UTC)
         args = dict(k=k, mode=mode, time_from=time_from, time_to=time_to, device_id=device_id, now=now)
-        if time.monotonic() >= self._down_until:
-            try:
-                res = await asyncio.wait_for(self._ucc(query, **args), self.cfg.timeout_s)
-                if res is not None:
-                    self.stats["ucc"] += 1
-                    return res
-            except Exception as e:  # timeouts, HTTP errors, malformed answers: never fail the tool call
-                self.stats["errors"] += 1
-                self._down_until = time.monotonic() + self.cfg.cooldown_s
-                log.warning("ucc retrieve failed (%s: %s); hybrid fallback", type(e).__name__, e)
+        if time.monotonic() < self._down_until:
+            self.stats["fallback"] += 1
+            return await self.fallback.retrieve(query, **args)
+        # race: the hybrid runs alongside UCC, so a UCC miss/error/timeout answers at once instead of starting it then
+        hybrid = asyncio.create_task(self.fallback.retrieve(query, **args))
+        hybrid.add_done_callback(lambda t: t.cancelled() or t.exception())  # never "exception was never retrieved"
+        try:
+            res = await asyncio.wait_for(self._ucc(query, **args), self.cfg.timeout_s)
+            if res is not None:
+                self.stats["ucc"] += 1
+                hybrid.cancel()
+                return res
+        except Exception as e:  # timeouts, HTTP errors, malformed answers: never fail the tool call
+            self.stats["errors"] += 1
+            self._down_until = time.monotonic() + self.cfg.cooldown_s
+            log.warning("ucc retrieve failed (%s: %s); hybrid fallback", type(e).__name__, e)
         self.stats["fallback"] += 1
-        return await self.fallback.retrieve(query, **args)
+        return await hybrid
 
     async def _ucc(
         self,
