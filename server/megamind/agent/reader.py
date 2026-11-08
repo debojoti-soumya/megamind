@@ -31,6 +31,7 @@ import re
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -104,6 +105,7 @@ def _downgrade(mode: str) -> str:
     return _JSON_MODES[min(i + 1, len(_JSON_MODES) - 1)]
 
 
+_IMAGE_LOAD_SHARE = 0.35  # of reader_deadline_s spent at most loading images via image_loader (cold decodes)
 _MIN_ATTEMPT_S = 1.0  # don't start an attempt with less budget left than the fastest observed call
 
 
@@ -209,30 +211,43 @@ def token_header(t: MemoryToken, first_ts: float, now: float, zone: ZoneInfo | N
     return line
 
 
+def encode_jpeg(data: bytes, max_px: int) -> str:
+    """Base64 JPEG data URI, downscaled so the longest side is <= max_px. Raises OSError/ValueError."""
+    with Image.open(io.BytesIO(data)) as im:
+        if max(im.size) > max_px:
+            im = im.convert("RGB")
+            im.thumbnail((max_px, max_px))
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=85)
+            data = buf.getvalue()
+    return "data:image/jpeg;base64," + base64.b64encode(data).decode()
+
+
 def encode_thumb(path: str, max_px: int) -> str | None:
-    """Base64 JPEG data URI, downscaled so the longest side is <= max_px; None if unreadable."""
+    """`encode_jpeg` of the file at `path`; None if unreadable."""
     try:
         p = Path(path)
         if not path or not p.is_file():
             return None
-        data = p.read_bytes()
-        with Image.open(io.BytesIO(data)) as im:
-            if max(im.size) > max_px:
-                im = im.convert("RGB")
-                im.thumbnail((max_px, max_px))
-                buf = io.BytesIO()
-                im.save(buf, format="JPEG", quality=85)
-                data = buf.getvalue()
+        return encode_jpeg(p.read_bytes(), max_px)
     except (OSError, ValueError) as e:
         log.warning("thumb %s unreadable: %s", path, e)
         return None
-    return "data:image/jpeg;base64," + base64.b64encode(data).decode()
+
+
+ImageLoader = Callable[[MemoryToken], Awaitable[bytes | None]]
 
 
 def build_user_content(
-    query: str, tokens: list[MemoryToken], now: float, thumb_max_px: int, zone: ZoneInfo | None = None
+    query: str,
+    tokens: list[MemoryToken],
+    now: float,
+    thumb_max_px: int,
+    zone: ZoneInfo | None = None,
+    images: dict[str, str | None] | None = None,
 ) -> list[dict]:
-    """Interleaved text/image parts, chronological. Image count == number of readable thumbs."""
+    """Interleaved text/image parts, chronological. Image count == number of readable thumbs.
+    `images` (token id -> data URI) replaces reading `thumb_path` when given (cold-tier frames)."""
     ordered = sorted(tokens, key=lambda t: t.ts)
     first_ts = ordered[0].ts if ordered else now
     parts: list[dict] = [
@@ -240,7 +255,7 @@ def build_user_content(
     ]
     for t in ordered:
         parts.append({"type": "text", "text": token_header(t, first_ts, now, zone)})
-        uri = encode_thumb(t.thumb_path, thumb_max_px)
+        uri = images.get(t.id) if images is not None else encode_thumb(t.thumb_path, thumb_max_px)
         if uri:
             parts.append({"type": "image_url", "image_url": {"url": uri, "detail": "low"}})
         else:
@@ -312,8 +327,11 @@ def merge_outputs(outs: list[ReaderOutput]) -> ReaderOutput:
 class VLMReader(Reader):
     """OpenAI-compatible chat.completions reader with image inputs (Qwen3.6 on Sail by default)."""
 
-    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self, settings: Settings, client: httpx.AsyncClient | None = None, image_loader: ImageLoader | None = None
+    ) -> None:
         self.settings = settings
+        self.image_loader = image_loader  # e.g. MediaStore.read, so cold-tier frames reach the VLM
         self.model = settings.reader_model
         self.fallback_model = settings.reader_fallback_model if settings.reader_fallback_model != self.model else ""
         self.max_images = max(1, settings.reader_max_images)
@@ -345,7 +363,10 @@ class VLMReader(Reader):
         t0 = time.perf_counter()
         now = time.time() if now is None else now
         chunks = chunk_chronological(tokens, self.max_images)
-        outs = await asyncio.gather(*(self._read_chunk(query, c, now) for c in chunks))
+        images = await self._load_images(tokens) if self.image_loader is not None else None
+        outs = await asyncio.gather(
+            *(self._read_chunk(query, c, now, images, started=t0 if images is not None else None) for c in chunks)
+        )
         out = merge_outputs(list(outs)) if len(outs) > 1 else outs[0]
         out.latency_ms = (time.perf_counter() - t0) * 1000
         log.info(
@@ -362,7 +383,43 @@ class VLMReader(Reader):
         )
         return out
 
-    async def _read_chunk(self, query: str, tokens: list[MemoryToken], now: float) -> ReaderOutput:
+    async def _load_images(self, tokens: list[MemoryToken]) -> dict[str, str | None]:
+        """Data URIs via `image_loader`, concurrently, within part of the deadline (cold decodes are the
+        slow case); whatever is not ready by then is sent as "(image unavailable)"."""
+        assert self.image_loader is not None
+        loader = self.image_loader
+
+        async def one(t: MemoryToken) -> tuple[str, str | None]:
+            try:
+                data = await loader(t)
+                return t.id, await asyncio.to_thread(encode_jpeg, data, self.thumb_max_px) if data else None
+            except (OSError, ValueError) as e:
+                log.warning("image for %s unreadable: %s", t.id, e)
+                return t.id, None
+
+        tasks = [asyncio.create_task(one(t)) for t in tokens]
+        done, pending = await asyncio.wait(tasks, timeout=max(0.5, self.deadline_s * _IMAGE_LOAD_SHARE))
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+            log.warning("reader: %d/%d images not loaded within the budget", len(pending), len(tokens))
+        out: dict[str, str | None] = {t.id: None for t in tokens}
+        for task in done:
+            if not task.cancelled() and task.exception() is None:
+                tid, uri = task.result()
+                out[tid] = uri
+        return out
+
+    async def _read_chunk(
+        self,
+        query: str,
+        tokens: list[MemoryToken],
+        now: float,
+        images: dict[str, str | None] | None = None,
+        *,
+        started: float | None = None,
+    ) -> ReaderOutput:
         """Primary model first; if it hasn't answered after `hedge_s` (healthy calls take ~3.1 s, hung ones
         never do) or fails fast, the fallback model runs too and the first good JSON wins. Everything
         shares one wall-clock deadline, after which the chunk degrades to captions-only."""
@@ -370,7 +427,10 @@ class VLMReader(Reader):
             "model": self.model,
             "messages": [
                 {"role": "system", "content": READER_SYSTEM_PROMPT},
-                {"role": "user", "content": build_user_content(query, tokens, now, self.thumb_max_px, self.zone)},
+                {
+                    "role": "user",
+                    "content": build_user_content(query, tokens, now, self.thumb_max_px, self.zone, images),
+                },
             ],
             "max_tokens": self.settings.reader_max_tokens,
             "temperature": 0,
@@ -380,7 +440,7 @@ class VLMReader(Reader):
         # one key per (chunk, model), reused on retries so a slow-but-successful attempt is not billed twice
         key = f"megamind-reader-{uuid.uuid4()}"
         t_start = time.perf_counter()
-        deadline = t_start + self.deadline_s
+        deadline = (t_start if started is None else started) + self.deadline_s  # image loading counts against it
         hedge_at = t_start + self.hedge_s if self.fallback_model and self.hedge_s > 0 else None
 
         def launch(model: str, suffix: str, handoff: bool) -> asyncio.Task[ReaderOutput | None]:
@@ -511,11 +571,11 @@ class VLMReader(Reader):
         return None
 
 
-def build_reader(settings: Settings) -> Reader:
+def build_reader(settings: Settings, image_loader: ImageLoader | None = None) -> Reader:
     provider = settings.reader_provider.lower()
     if provider == "mock":
         return CaptionOnlyReader()
     has_key = bool(settings.reader_api_key) and settings.reader_api_key != "none"
     if provider == "vlm" or (provider == "auto" and has_key):
-        return VLMReader(settings)
+        return VLMReader(settings, image_loader=image_loader)
     return CaptionOnlyReader()
