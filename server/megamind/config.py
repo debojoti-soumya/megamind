@@ -40,7 +40,12 @@ class Settings(BaseSettings):
     # READER_SMALL_PX=0 = captions only beyond the full ones. Every hit's caption/OCR is always in the evidence.
     reader_full_images: int = 6
     reader_small_px: int = 512
-    reader_max_tokens: int = 300
+    # cap on the reader's one-line JSON reply, not a target: bare ULID ids (~20 tokens each, <= 3) plus a one-sentence
+    # answer is ~60-100 tokens, a 3-clause day summary ~170. A cut reply fails to parse -> retry, then captions-only
+    reader_max_tokens: int = 256
+    # VLMReader image payload: 0 (default) = every image at READER_THUMB_MAX_PX, as before; > 0 = only the best
+    # READER_FULL_IMAGES hits at full size, the tail (temporal context) at this long side, like the Claude path above
+    reader_vlm_small_px: int = 0
     reader_json_mode: str = "schema"  # schema (json_schema) | object (json_object) | off; downgraded on HTTP 400
     reader_completion_window: str = ""  # Sail: asap | balanced; sent as X-Sail-Completion-Window when set
     reader_skip_on_ocr: bool = True  # Claude path: skip the VLM when every query keyword is in a top hit's OCR
@@ -48,10 +53,11 @@ class Settings(BaseSettings):
     recall_first: bool = (
         True  # standalone recall questions: the prefetch is Claude's first tool result (no picking call)
     )
-    # opt-in prompt caching within a turn that starts with Claude's tool-picking call: a cache breakpoint on the
-    # question, so the tool round re-reads tools + system + history. Never changes answers; off (default) = the
-    # request bodies are exactly as before
-    claude_prompt_cache: bool = False
+    # prompt caching (default on): a clock-free system prompt cached with the tools, the clock sent with the
+    # question, and breakpoints on the prior history and the latest tool result, so every call reads back what the
+    # previous call / turn wrote (history is the bulk of the input). Never changes answers; off = the request
+    # bodies exactly as before caching (clock in the system prompt, plain string question, no cache_control)
+    claude_prompt_cache: bool = True
     # "right now" questions (megamind.live.is_now_question) with live frames buffered: skip embedding + retrieval
     # and hand Claude only the newest live frames + speech as its first tool result (it can still re-query)
     now_fast_path: bool = True

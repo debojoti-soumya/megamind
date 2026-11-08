@@ -88,6 +88,8 @@ class Scripted:
             nxt = self.responses.pop(0)
         if isinstance(nxt, Exception):
             raise nxt
+        if isinstance(nxt, httpx.Response):
+            return nxt
         if isinstance(nxt, int):
             return httpx.Response(nxt, json={"error": {"message": "nope"}})
         return httpx.Response(200, json=nxt)
@@ -253,6 +255,7 @@ async def test_400_downgrades_json_mode_schema_object_off_then_gives_up(tmp_path
     assert s.body(1)["response_format"] == {"type": "json_object"}
     assert "response_format" not in s.body(2)
     assert out.degraded and out.calls == 3
+    assert all(s.body(i)["temperature"] == 0 for i in range(3))  # a 400 not about temperature keeps it
     keys = {r.headers["idempotency-key"] for r in s.requests}
     assert len(keys) == 1  # same key across retries of one chunk
 
@@ -579,3 +582,87 @@ async def test_claude_vision_reader_returns_images_best_first(tmp_path):
     assert out.confidence == "medium" and out.cited_ids == ["v0", "v1", "v2"] and "EXIT" in out.evidence
     empty = await reader.read("x", [])
     assert empty.confidence == "not_found" and not empty.images
+
+
+# --- terse output schema (lat2): bare-id evidence, small max_tokens, temperature retry ---
+
+
+def _img_size(uri: str) -> tuple[int, int]:
+    with Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))) as im:
+        return im.size
+
+
+def test_parse_reader_json_accepts_bare_ids_and_legacy_objects():
+    known = {"t01", "t02", "t03"}
+    raw = '{"answer":"Locker 42, about 55 min ago.","evidence":["t02","zzz","t02","t01"],"confidence":"high"}'
+    answer, conf, items = parse_reader_json(raw, known)
+    assert answer.startswith("Locker 42") and conf == "high"
+    assert [i.id for i in items] == ["t02", "t01"]  # unknown id dropped, duplicate collapsed, order kept
+    assert all(i.why == "" for i in items)
+    mixed = '{"answer":"x","evidence":[{"id":"t03","why":"sign"},"t01"],"confidence":"medium"}'
+    _, _, items = parse_reader_json(mixed, known)
+    assert [(i.id, i.why) for i in items] == [("t03", "sign"), ("t01", "")]  # old objects and bare ids may mix
+    with pytest.raises(ValueError):  # max_tokens cut the reply mid-string: the caller retries, then degrades
+        parse_reader_json('{"answer":"Locker 42, seen at 10:0', known)
+
+
+def test_terse_prompt_schema_and_token_cap_agree():
+    from megamind.agent.reader import READER_JSON_SCHEMA, READER_SYSTEM_PROMPT
+
+    ev = READER_JSON_SCHEMA["properties"]["evidence"]
+    assert ev["items"] == {"type": "string"} and ev["maxItems"] == 3
+    assert '"evidence":["<token id>"]' in READER_SYSTEM_PROMPT and "at most 3" in READER_SYSTEM_PROMPT
+    assert "when it was seen" in READER_SYSTEM_PROMPT and "three short" in READER_SYSTEM_PROMPT  # summaries keep detail
+    assert '"No matching memory." with evidence []' in READER_SYSTEM_PROMPT
+    assert max(len(line) for line in READER_SYSTEM_PROMPT.splitlines()) <= 120
+    # 3 ULID ids (~60 tokens) + a 3-clause summary (~120) must never truncate: truncated JSON = lost citations
+    assert Settings(_env_file=None).reader_max_tokens >= 256
+
+
+async def test_400_about_temperature_retries_once_without_it(tmp_path):
+    toks = _tokens(tmp_path, 1)
+    rejected = httpx.Response(400, json={"error": {"message": "Temperature is not supported by this model"}})
+    s = Scripted([rejected, _completion({"answer": "ok", "evidence": ["t00"], "confidence": "high"})])
+    settings = _settings(reader_max_retries=0, reader_fallback_model="", reader_json_mode="off")
+    reader = s.reader(settings)
+    out = await reader.read("q", toks)
+    assert not out.degraded and out.evidence == "ok" and out.cited_ids == ["t00"] and out.calls == 2
+    assert s.body(0)["temperature"] == 0 and "temperature" not in s.body(1)  # retried once, without it
+    assert s.body(0)["model"] == s.body(1)["model"]  # same model, retry budget (0 here) not consumed
+    assert "response_format" not in s.body(0) and "response_format" not in s.body(1)  # json_mode untouched
+    assert len({r.headers["idempotency-key"] for r in s.requests}) == 1
+    assert s.body(1)["max_tokens"] == settings.reader_max_tokens
+    # the rejection is remembered: the next call sends no temperature and pays no extra round trip
+    s.responses.append(_completion({"answer": "ok2", "evidence": ["t00"], "confidence": "high"}))
+    assert (await reader.read("q", toks)).calls == 1 and "temperature" not in s.body(2)
+
+
+async def test_truncated_reply_degrades_to_captions(tmp_path):
+    toks = _tokens(tmp_path, 2)
+    cut = _completion('{"answer":"Locker 42, seen at 10:0')
+    cut["choices"][0]["finish_reason"] = "length"
+    s = Scripted([cut])
+    out = await s.reader(_settings(reader_max_retries=0, reader_fallback_model="")).read("q", toks)
+    assert out.degraded and out.calls == 1 and out.cited_ids == ["t00", "t01"]
+    assert "[t00]" in out.evidence and "LOCKER 42" in out.evidence  # every hit's caption/OCR still reaches Claude
+
+
+async def test_vlm_small_px_shrinks_only_the_tail_images(tmp_path):
+    toks = _tokens(tmp_path, 3)  # 1280x720 thumbs
+    ranked = [toks[2], toks[0], toks[1]]  # best first, temporal context last
+    assert VLMReader(_settings()).image_sizes(ranked) is None  # default: every image at thumb_max_px, as before
+    s = Scripted([_completion({"answer": "ok", "evidence": ["t02"], "confidence": "high"})])
+    settings = _settings(reader_thumb_max_px=960, reader_full_images=1, reader_vlm_small_px=256)
+    await s.reader(settings).read("q", ranked, now=NOW)
+    content = s.body()["messages"][1]["content"]
+    sizes = {
+        content[i - 1]["text"][1:4]: _img_size(p["image_url"]["url"])
+        for i, p in enumerate(content)
+        if p["type"] == "image_url"
+    }
+    assert sizes["t02"][0] == 960 and sizes["t00"][0] == 256 and sizes["t01"][0] == 256
+    assert [h[1:4] for h in (p["text"] for p in content if p["type"] == "text") if h.startswith("[t")] == [
+        "t00",
+        "t01",
+        "t02",
+    ]  # layout still chronological

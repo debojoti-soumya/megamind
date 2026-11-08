@@ -325,3 +325,18 @@ def test_build_hier_recall_calls_fail_fast_and_notes_stay_patient():
         SimpleNamespace(**vars(s), hier_timeout_s=3, hier_call_timeout_s=1, hier_retries=1), None, None, "k"
     )
     assert (tight.cfg.timeout_s, tight.llm.retries, tight.llm._client.timeout.read) == (3.0, 1, 1.0)
+
+
+async def test_block_ids_count_from_time_from():
+    store = InMemoryStore()
+    await store.add_many([tok(f"t{i}", T0 + 600 * i + 30, f"scene {i}") for i in range(12)])
+    llm = FakeLLM(stage1={"blocks": ["B0"]}, stage2={"ids": ["t7"]})
+    mem = HierMemory(store, llm, tz="UTC")
+    await mem.build(T0 + 600 * 12 + 3600)
+    base = FixedRetriever([await store.get("t11")])
+    r = HierRetriever(store, base, mem, llm, config=HierConfig(vec_blocks=0), auto_build=False)
+    now = datetime.fromtimestamp(T0 + 600 * 12 + 3600, UTC)
+    res = await r.retrieve("scene", k=2, time_from=T0 + 600 * 7, now=now)
+    assert r.last_trace["blocks"][0] == T0 + 600 * 7  # the B0 the prompt showed: the first block in range, not T0
+    assert res.ranked[0].token.id == "t7"
+    assert "[B0] " + mem._fmt(T0 + 600 * 7) in llm.calls[-2]
