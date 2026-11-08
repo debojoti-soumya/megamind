@@ -129,7 +129,8 @@ async def test_single_tool_call_with_claude_cites(recall):
     first, second = script.requests
     assert first["model"] == "claude-sonnet-4-6"
     assert first["tools"][0]["name"] == "recall_memory"
-    assert "Current time (UTC)" in first["system"]
+    assert "in UTC that is" in first["system"] and "America/Los_Angeles" in first["system"]
+    assert "Pass short keywords as query" in first["system"]
     assert first["messages"] == [{"role": "user", "content": "where did I leave my keys?"}]
     assert second["messages"][1]["role"] == "assistant"
     assert second["messages"][1]["content"][0]["type"] == "tool_use"
@@ -138,7 +139,7 @@ async def test_single_tool_call_with_claude_cites(recall):
     payload = json.loads(tr["content"])
     assert payload["confidence"] == "low"
     assert payload["cited"][0]["id"] == "t_keys"
-    assert "ago" in payload["cited"][0]["when"]
+    assert "ago" in payload["cited"][0]["when"] and payload["cited"][0]["time_local"]
 
 
 async def test_multi_call_widens_window_and_history_is_kept(recall):
@@ -256,3 +257,13 @@ def test_claude_model_default_is_not_the_retiring_sonnet_4_5_and_is_overridable(
     assert Settings(_env_file=None).claude_model == "claude-sonnet-4-6"
     monkeypatch.setenv("CLAUDE_MODEL", "claude-sonnet-5-5")
     assert Settings(_env_file=None).claude_model == "claude-sonnet-5-5"
+
+
+def test_render_system_prompt_local_time_and_bad_tz():
+    from megamind.agent.claude_agent import render_system_prompt
+
+    p = render_system_prompt(NOW, "America/Los_Angeles")
+    assert "Thursday 2024-11-07 09:20:00 PST" in p and "2024-11-07T17:20:00+00:00" in p
+    assert "2024-11-07T08:00:00-08:00" in p  # example ISO with offset
+    p = render_system_prompt(NOW, "Not/AZone")
+    assert "(UTC)" in p

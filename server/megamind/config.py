@@ -14,7 +14,17 @@ class Settings(BaseSettings):
 
     reader_base_url: str = "http://localhost:8001/v1"
     reader_api_key: str = "none"
-    reader_model: str = "Qwen/Qwen3.6-35B-A3B"
+    reader_model: str = "google/gemma-4-31B-it"  # Qwen3.6-35B-A3B is flex-only on Sail (research/reports/04)
+    reader_fallback_model: str = "nvidia/Gemma-4-31B-IT-NVFP4"  # tried once when the primary 429/503s; "" disables
+    reader_provider: str = "auto"  # auto (vlm iff READER_API_KEY set) | vlm | mock
+    reader_timeout_s: float = 8.0
+    reader_max_retries: int = 1
+    reader_max_images: int = 12  # per call (Sail cap 20; report 04 says <=12 for latency); more -> chunk + merge
+    reader_thumb_max_px: int = 512
+    reader_max_tokens: int = 300
+    reader_json_mode: str = "schema"  # schema (json_schema) | object (json_object) | off; downgraded on HTTP 400
+    reader_completion_window: str = ""  # Sail: asap | balanced; sent as X-Sail-Completion-Window when set
+    reader_extra_body: str = ""  # JSON merged into the request, e.g. {"chat_template_kwargs":{"enable_thinking":false}}
     enrich_base_url: str = ""
     enrich_model: str = ""
 

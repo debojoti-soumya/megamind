@@ -26,7 +26,7 @@ class FakeReader(Reader):
     def __init__(self) -> None:
         self.calls: list[tuple[str, list[MemoryToken]]] = []
 
-    async def read(self, query: str, tokens: list[MemoryToken]) -> ReaderOutput:
+    async def read(self, query: str, tokens: list[MemoryToken], *, now: float | None = None) -> ReaderOutput:
         self.calls.append((query, tokens))
         return ReaderOutput(evidence=f"saw {tokens[0].id}", confidence="high", cited_ids=[tokens[0].id, "bogus"])
 
@@ -152,3 +152,21 @@ async def test_no_match_returns_not_found_without_calling_reader():
 
 def test_tool_schema_unchanged():
     assert RECALL_MEMORY_TOOL["input_schema"]["properties"]["mode"]["enum"] == ["semantic", "visual", "hybrid"]
+
+
+async def test_now_reaches_the_retriever_planner():
+    """A pinned `now` (eval / replay) must drive relative-time planning, not the wall clock."""
+
+    class SpyRetriever(HybridRetriever):
+        seen: list = []
+
+        async def retrieve(self, query, **kw):
+            self.seen.append(kw.get("now"))
+            return await super().retrieve(query, **kw)
+
+    store = InMemoryStore()
+    emb = MockTextEmbedder()
+    tool = RecallMemory(store, emb, None, FakeReader(), retriever=SpyRetriever(store, emb))
+    await tool("lunch", now=1_800_000_000.0)
+    await tool("lunch")
+    assert SpyRetriever.seen == [datetime.fromtimestamp(1_800_000_000.0, UTC), None]
