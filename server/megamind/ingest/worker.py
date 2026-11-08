@@ -46,6 +46,12 @@ class EnrichmentWorker:
         self._inflight: dict[str, MemoryToken] = {}  # dequeued, not yet stored
         self._discarded: set[str] = set()  # in-flight ids a purge cancelled
         self._add_lock = asyncio.Lock()  # store.add vs purge: nothing lands after a purge returns
+        self.media: Any = None  # store.media.MediaStore, set by the app: purges rewrite AV1 chunks
+
+    @property
+    def add_lock(self) -> asyncio.Lock:
+        """Held around store writes and purges; media aging takes it around its token rewrites."""
+        return self._add_lock
 
     async def start(self) -> None:
         self._tasks = [asyncio.create_task(self._run()) for _ in range(self._concurrency)]
@@ -88,9 +94,12 @@ class EnrichmentWorker:
     async def purge(
         self, device_id: str | None = None, *, since_ts: float | None = None, delete_thumbs: bool = True
     ) -> int:
-        """`store.purge` that also discards queued / in-flight frames in the same window."""
+        """`store.purge` that also discards queued / in-flight frames in the same window, and removes the
+        purged frames' pixels from cold AV1 chunks (keeping the other frames of those chunks)."""
         async with self._add_lock:
             n = self.discard(device_id, since_ts)
+            if self.media is not None and delete_thumbs:
+                await self.media.purge_window(device_id, since_ts)
             return n + await self.store.purge(device_id, since_ts=since_ts, delete_thumbs=delete_thumbs)
 
     async def _run(self) -> None:

@@ -2,6 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -70,6 +71,13 @@ class Settings(BaseSettings):
     search_calibrate_image: bool = True  # scale image hits by SigLIP sigmoid(scale*cos+bias) in RRF (no-op for CLIP)
     thumb_dir: Path = Path("./data/thumbs")
     audio_dir: Path = Path("./data/audio")
+    # tiered media (store/media.py): hot JPEG -> cold AV1 chunk per episode -> text only
+    chunk_dir: Path | None = None  # AV1 chunks; default <thumb_dir>/../chunks
+    hot_retention_h: float = 72.0  # frames older than this are re-encoded into AV1 chunks
+    cold_retention_days: float = 100.0  # then their pixels are dropped (text, OCR and vectors are kept)
+    cold_width: int = 960  # chunk frame width (px, never upscaled)
+    cold_crf: int = 50
+    media_age_interval_s: float = 3600.0  # background aging pass; 0 = off (POST /v1/admin/age still works)
     privacy_blur_faces: bool = False  # blur bystander faces in stored thumbnails (needs the privacy extra)
     privacy_blur_faces_vlm: bool = False  # also blur before the caption VLM / image embedder; implies the above
 
@@ -111,6 +119,11 @@ class Settings(BaseSettings):
     speech_merge_s: float = 10.0  # speech starting <= this long after the device's last transcript token joins it
     speech_max_token_s: float = 60.0  # ... unless the merged token would span longer than this
     speech_link_s: float = 15.0  # retrieval: pair a transcript hit with the nearest frame within +-N s (0 = off)
+
+    @field_validator("chunk_dir", mode="before")
+    @classmethod
+    def _blank_path_is_unset(cls, v: object) -> object:
+        return None if isinstance(v, str) and not v.strip() else v  # CHUNK_DIR= in .env -> default
 
     def provider_key(self, provider: str) -> str | None:
         """The API key `provider` authenticates with ("" if unset), or None for keyless/unknown providers."""

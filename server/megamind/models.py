@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 Confidence = Literal["high", "medium", "low", "not_found"]
 SearchMode = Literal["semantic", "visual", "hybrid"]
 TokenKind = Literal["frame", "episode", "transcript"]
+Tier = Literal["hot", "cold", "text"]  # where a frame's pixels live: JPEG / AV1 chunk / none (text + vectors only)
 
 
 class Pose(BaseModel):
@@ -60,11 +61,23 @@ class MemoryToken(BaseModel):
     frame_hash: str
     episode_id: str | None = None
     kind: TokenKind = "frame"
+    tier: Tier = "hot"
+    chunk_id: str | None = None  # tier="cold": the AV1 chunk holding this frame ...
+    chunk_offset: int | None = None  # ... and its frame index inside it
+
+    @property
+    def has_image(self) -> bool:
+        """False for tokens without pixels: kind="transcript", or frames aged to tier="text"."""
+        if self.kind == "transcript" or self.tier == "text":
+            return False
+        if self.tier == "cold":
+            return bool(self.chunk_id) and self.chunk_offset is not None
+        return bool(self.thumb_path)
 
     @property
     def thumb_url(self) -> str:
-        """Empty for tokens without an image (kind="transcript")."""
-        return f"/v1/thumbs/{self.id}.jpg" if self.thumb_path else ""
+        """`/v1/thumbs/{id}.jpg` on the hot and cold tiers; empty when the token has no image."""
+        return f"/v1/thumbs/{self.id}.jpg" if self.has_image else ""
 
 
 class MemoryHit(BaseModel):
