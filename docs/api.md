@@ -229,7 +229,8 @@ through the camera pose it had at `ts` and depth-raycasts it into the room to po
 `ObjectMarkers`; an edge-of-view arrow points toward X when it is out of view); `/ui` outlines the box on the
 thumbnail. With the `locate-refine` extra installed (`LOCATE_REFINE=auto|owlv2|none`), an OWLv2 detector redraws the
 box in the chosen frame from the model's label, so `box` is much tighter; the vision model still decides whether and
-where X is. Best effort: no key, a timeout (`LOCATE_TIMEOUT_S`), "not visible" or a low confidence
+where X is, and with `LOCATE_REFINE_VERIFY` (default on) no OWLv2 match inside the model's box drops the
+marker. Best effort: no key, a timeout (`LOCATE_TIMEOUT_S`), "not visible" or a low confidence
 (`LOCATE_MIN_CONFIDENCE`) gives `[]` and the turn still answers; a refiner failure keeps the model's box. Opt out
 with `LOCATE_ENABLED=false`.
 

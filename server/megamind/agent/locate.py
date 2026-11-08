@@ -53,7 +53,8 @@ class LocateSettings(BaseSettings):
     refine: str = "auto"  # auto (OWLv2 if torch + transformers are installed) | owlv2 | none
     refine_model: str = "google/owlv2-base-patch16-ensemble"
     refine_timeout_s: float = 8.0  # on top of timeout_s; ~0.1 s on a GPU, ~4-7 s on 8 CPU cores
-    refine_min_score: float = 0.1  # detector score below which the LLM's box is kept
+    refine_min_score: float = 0.08  # OWLv2 detections below this are ignored
+    refine_verify: bool = True  # no detection overlapping the LLM's box -> no marker (the LLM was wrong)
 
 
 _WHERE_RE = re.compile(
@@ -272,8 +273,9 @@ class Locator:
         log.info("locate[%s]: %r -> %s (%.0f ms)", self.provider, question, out, (time.perf_counter() - t0) * 1000)
         return _to_marker(out, shown, self.cfg.min_confidence), shown, jpegs
 
-    async def _refine(self, m: Marker, shown, jpegs: list[bytes]) -> Marker:
-        """Redraw `m.box` with the detector in the same frame; any failure keeps the LLM's box."""
+    async def _refine(self, m: Marker, shown, jpegs: list[bytes]) -> Marker | None:
+        """Redraw `m.box` with the detector in the same frame; a detector failure keeps the LLM's box. With
+        `refine_verify`, no detection overlapping the LLM's box means the LLM was wrong (None: no marker)."""
         idx = next(i for i, s in enumerate(shown) if s[0].id == m.token_id)
         _, _, w, h = shown[idx]
         hint = (m.box[0] * w, m.box[1] * h, m.box[2] * w, m.box[3] * h)
@@ -286,10 +288,12 @@ class Locator:
         except Exception as e:  # noqa: BLE001
             log.warning("box refine failed (%s: %s); keeping the LLM's box", type(e).__name__, e)
             return m
+        if self.cfg.refine_verify:
+            cands = [c for c in cands if _iou(c[0], hint) > 0]
         box = pick_box(cands, hint, self.cfg.refine_min_score)
         log.info("refine %r: %s -> %s (%.0f ms)", m.label, m.box, box, (time.perf_counter() - t0) * 1000)
         if box is None:
-            return m
+            return None if self.cfg.refine_verify else m
         x0, y0, x1, y1 = (min(max(v / d, 0.0), 1.0) for v, d in zip(box, (w, h, w, h)))
         if x1 - x0 <= 0 or y1 - y0 <= 0:
             return m

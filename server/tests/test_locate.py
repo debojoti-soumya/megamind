@@ -279,10 +279,16 @@ async def test_refiner_redraws_the_box_with_the_llm_label():
     assert m.box == [0.1, 0.1, 0.3, 0.3] and (m.x, m.y) == (0.2, 0.2) and m.label == "pen"
 
 
-@pytest.mark.parametrize("result", [RuntimeError("boom"), [], [((32, 24, 96, 72), 0.01)]])
-async def test_refiner_failure_or_no_detection_keeps_llm_box(result):
-    (m,) = await _locate_with(FakeRefiner(result))
+async def test_refiner_error_keeps_llm_box():
+    (m,) = await _locate_with(FakeRefiner(RuntimeError("boom")))
     assert m.box == [0.0, 0.0, 0.5, 0.5]
+
+
+@pytest.mark.parametrize("result", [[], [((32, 24, 96, 72), 0.01)], [((200, 150, 300, 230), 0.9)]])
+async def test_no_detection_in_llm_box_drops_marker_unless_verify_off(result):
+    assert await _locate_with(FakeRefiner(result)) == []
+    (m,) = await _locate_with(FakeRefiner(result), refine_verify=False)
+    assert m.box[2] > 0.5 if result and result[0][1] > 0.5 else m.box == [0.0, 0.0, 0.5, 0.5]
 
 
 def test_build_refiner_none_and_missing_deps(monkeypatch):
