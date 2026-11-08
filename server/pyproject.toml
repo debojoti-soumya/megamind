@@ -38,6 +38,7 @@ include = ["megamind*"]
 
 [tool.setuptools.package-data]
 megamind = ["ui/*.html"]
+"megamind.xr" = ["static/*"]  # Memory Theater page (GET /xr)
 
 [tool.ruff]
 line-length = 120

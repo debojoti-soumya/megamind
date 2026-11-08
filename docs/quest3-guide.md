@@ -315,6 +315,34 @@ one of the resolutions Meta documents for PCA [D-pca-unity]. Meta documents abou
 
 ---
 
+## 8. Memory Theater (/xr) in the Quest browser
+
+A WebXR view of your memories that needs no Unity build: open `/xr` on the server in the Quest browser. A large
+screen replays the cited moment (`replay_url`, or the cited thumbnail when no replay is buffered), the answer sits on
+a panel to the left, suggested questions are buttons on the right, and the newest memories form an arc of cards
+below (cited ones glow). Point with a controller and pull the trigger, or pinch with hand tracking, to select. Tap
+the screen to pause, resume or replay. On a laptop the same page is an inline 3D preview: drag to look, click to
+select, type in the bar to ask.
+
+**Immersive mode needs a secure context** (the browser only exposes WebXR on `https://` or `localhost`). Plain
+`http://<laptop-ip>:8000/xr` loads the inline preview but has no *Enter passthrough* button. Options:
+
+| Option | How | Notes |
+|---|---|---|
+| USB (simplest) | `adb reverse tcp:8000 tcp:8000`, then open `http://localhost:8000/xr` in the Quest browser | Port-forwards the headset's localhost to the laptop (see 2.1). Redo after reconnecting the cable. |
+| Tailscale serve | open `https://<machine>.<tailnet>.ts.net/xr` (option D in 2.3) | Real HTTPS, tailnet only. |
+| Public HTTPS tunnel | Funnel / ngrok URL + `/xr` (option E in 2.3) | **No auth on the API**: anyone with the URL can read or wipe memories. |
+
+Then press **Enter passthrough** (`immersive-ar`; falls back to **Enter VR** / `immersive-vr` where AR is
+unsupported) and allow the permission prompt. *Exit* or the Meta button leaves immersive mode.
+
+- `?device=quest3-1` scopes cards, chat and replays to one device; `?session=<id>` keeps one chat session across reloads.
+- Replays only exist for the last `REPLAY_WINDOW_S` (15 min) of frames; older moments show the still thumbnail.
+- The page loads three.js from `cdn.jsdelivr.net`, so the headset needs internet (or the page shows "Failed to start").
+- It works alongside the Unity app: the app captures frames, the browser page browses them.
+
+---
+
 ## Sources
 
 Meta developer docs (all accessed while writing this guide):
