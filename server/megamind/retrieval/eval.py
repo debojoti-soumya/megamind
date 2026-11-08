@@ -12,8 +12,12 @@ reader would see (`handoff_recall`). The CLI lives in `server/tools/eval_retriev
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
+import random
+import statistics
+import time as _time
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from pathlib import Path
@@ -37,6 +41,12 @@ class EvalCase:
     time_to: float | None = None
     mode: str = "hybrid"
     k: int | None = None
+    qtype: str = "generic"
+    groups: list[list[str]] = field(default_factory=list)  # gold groups (any id of a group counts); [] = one per id
+
+    def __post_init__(self) -> None:
+        if not self.groups:
+            self.groups = [[g] for g in self.gold]
 
 
 @dataclass
@@ -53,18 +63,26 @@ class CaseResult:
     ranked_ids: list[str]  # best-first, non-context
     handoff_ids: list[str]  # everything the reader would see
     first_rank: int | None  # 1-based rank of the first gold id, None if missed
+    latency_ms: float = 0.0
+    cost: dict[str, float] = field(default_factory=dict)  # calls / llm_calls / ucc_queries / usd for this question
+    failed: bool = False  # the paid backend errored or timed out and the hybrid answered
+    hybrid_only: bool = False  # routed / gated to the hybrid by design (no paid call)
 
     @property
     def rr(self) -> float:
         return 0.0 if self.first_rank is None else 1.0 / self.first_rank
 
+    def _hit(self, ids: list[str]) -> float:
+        got = set(ids)
+        return sum(1 for g in self.case.groups if got & set(g)) / len(self.case.groups)
+
     def recall_at(self, n: int) -> float:
-        got = set(self.ranked_ids[:n]) & set(self.case.gold)
-        return len(got) / len(self.case.gold)
+        """Share of gold groups with a member in the top n (= share of gold ids for singleton groups)."""
+        return self._hit(self.ranked_ids[:n])
 
     @property
     def handoff_recall(self) -> float:
-        return len(set(self.handoff_ids) & set(self.case.gold)) / len(self.case.gold)
+        return self._hit(self.handoff_ids)
 
 
 @dataclass
@@ -92,13 +110,39 @@ class Report:
     def misses(self) -> list[CaseResult]:
         return [r for r in self.results if r.first_rank is None or r.first_rank > 1]
 
+    def by_type(self) -> dict[str, Report]:
+        out: dict[str, Report] = {}
+        for r in self.results:
+            out.setdefault(r.case.qtype, Report(ks=self.ks)).results.append(r)
+        return out
+
+    def ops(self) -> dict[str, float]:
+        """Latency percentiles, mean paid calls / $ per question and failure counts."""
+        lat = sorted(r.latency_ms for r in self.results) or [0.0]
+        n = max(1, len(self.results))
+
+        def pct(p: float) -> float:
+            return lat[min(len(lat) - 1, round(p * (len(lat) - 1)))]
+
+        mean = lambda key: sum(r.cost.get(key, 0.0) for r in self.results) / n  # noqa: E731
+        return {
+            "p50_ms": round(statistics.median(lat)),
+            "p95_ms": round(pct(0.95)),
+            "calls_per_q": round(mean("calls"), 2),
+            "llm_calls_per_q": round(mean("llm_calls"), 2),
+            "ucc_per_q": round(mean("ucc_queries"), 2),
+            "usd_per_q": round(mean("usd"), 5),
+            "failures": sum(r.failed for r in self.results),
+            "hybrid_only": sum(r.hybrid_only for r in self.results),
+        }
+
 
 # --------------------------------------------------------------------------- dataset
 
 
 def _local(d: date, hhmm: str, tz: ZoneInfo) -> datetime:
-    h, m = hhmm.split(":")
-    return datetime.combine(d, time(int(h), int(m)), tzinfo=tz)
+    h, m, *sec = hhmm.split(":")
+    return datetime.combine(d, time(int(h), int(m), int(sec[0]) if sec else 0), tzinfo=tz)
 
 
 def load_dataset(path: Path | str = DEFAULT_DATASET) -> Dataset:
@@ -116,8 +160,9 @@ def load_dataset(path: Path | str = DEFAULT_DATASET) -> Dataset:
                 caption=e["caption"],
                 ocr_text=e.get("ocr", ""),
                 entities=e.get("entities", []),
-                thumb_path=f"/nonexistent/{e['id']}.jpg",
-                frame_hash=f"{abs(hash(e['id'])) % (1 << 64):016x}",
+                kind=e.get("kind", "frame"),
+                thumb_path="" if e.get("kind") == "transcript" else f"/nonexistent/{e['id']}.jpg",
+                frame_hash="" if e.get("kind") == "transcript" else e.get("hash") or _id_hash(e["id"]),
                 episode_id=e.get("episode"),
             )
         )
@@ -125,10 +170,13 @@ def load_dataset(path: Path | str = DEFAULT_DATASET) -> Dataset:
     for q in raw["questions"]:
         if not q.get("gold"):  # must-decline questions (agent_day.json schema) have nothing to retrieve
             continue
+        groups = [list(g) if isinstance(g, list) else [g] for g in q["gold"]]
         cases.append(
             EvalCase(
                 q=q["q"],
-                gold=list(q["gold"]),
+                gold=[i for g in groups for i in g],
+                groups=groups,
+                qtype=q.get("type", "generic"),
                 time_from=_local(d, q["time_from"], tz).timestamp() if q.get("time_from") else None,
                 time_to=_local(d, q["time_to"], tz).timestamp() if q.get("time_to") else None,
                 mode=q.get("mode") or "hybrid",
@@ -138,16 +186,40 @@ def load_dataset(path: Path | str = DEFAULT_DATASET) -> Dataset:
     return Dataset(tokens=tokens, cases=cases, now=now, tz=tz)
 
 
+def _id_hash(token_id: str) -> str:
+    return hashlib.sha256(token_id.encode()).hexdigest()[:16]
+
+
+def blank_captions(tokens: list[MemoryToken], frac: float, *, seed: int = 0) -> list[MemoryToken]:
+    """A poor enricher: `frac` of the frame captions (seeded pick) come back empty; OCR / entities stay."""
+    frames = [t.id for t in tokens if t.kind == "frame" and t.caption]
+    drop = set(random.Random(seed).sample(frames, round(frac * len(frames)))) if frac > 0 else set()
+    return [t.model_copy(update={"caption": ""}) if t.id in drop else t for t in tokens]
+
+
+def tokens_digest(tokens: list[MemoryToken]) -> str:
+    """Content hash of a token list (names the UCC corpus / hier note cache of a dataset variant)."""
+    raw = json.dumps([[t.id, t.ts, t.kind, t.caption, t.ocr_text, t.entities] for t in tokens])
+    return hashlib.sha256(raw.encode()).hexdigest()[:10]
+
+
 async def build_store(
     tokens: list[MemoryToken],
     text_embedder: TextEmbedder | None = None,
     image_embedder: ImageEmbedder | None = None,
 ) -> InMemoryStore:
-    """In-memory store with text vectors from `text_embedder` (mock by default; real one when keys exist)."""
+    """In-memory store with text vectors from `text_embedder` (mock by default; real one when keys exist).
+    Embedders with `embed_many` get batches of 256 (one paid call per batch instead of per token)."""
     emb = text_embedder or MockTextEmbedder()
     store = InMemoryStore()
-    for t in tokens:
-        t = t.model_copy(update={"text_vec": await emb.embed(f"{t.caption} {t.ocr_text}")})
+    texts = [f"{t.caption} {t.ocr_text}" for t in tokens]
+    many = getattr(emb, "embed_many", None)
+    if many is not None:
+        vecs = [v for i in range(0, len(texts), 256) for v in await many(texts[i : i + 256])]
+    else:
+        vecs = [await emb.embed(x) for x in texts]
+    for t, vec in zip(tokens, vecs, strict=True):
+        t = t.model_copy(update={"text_vec": vec})
         if image_embedder is not None:
             # no real frames in the synthetic set: embed the caption through the text tower as a stand-in
             t = t.model_copy(update={"image_vec": await image_embedder.embed_text(t.caption)})
@@ -158,16 +230,43 @@ async def build_store(
 # --------------------------------------------------------------------------- evaluation
 
 
-async def evaluate(retriever: Retriever, ds: Dataset, *, k: int = 8, ks: tuple[int, ...] = (1, 3, 5)) -> Report:
+async def evaluate(
+    retriever: Retriever, ds: Dataset, *, k: int = 8, ks: tuple[int, ...] = (1, 3, 5), meter=None
+) -> Report:
+    """One question at a time (so latency and the `meter`'s per-question call / $ deltas are attributable).
+    Failures / hybrid-only answers come from the backend's `stats` ("errors"; UCC "fallback", hier "gated")."""
     rep = Report(ks=ks)
+    stats = getattr(retriever, "stats", None)
     for c in ds.cases:
+        before = dict(stats) if stats is not None else {}
+        tally = meter.all.copy() if meter is not None else None
+        t0 = _time.perf_counter()
         res = await retriever.retrieve(
             c.q, k=c.k or k, mode=c.mode, time_from=c.time_from, time_to=c.time_to, now=ds.now
         )
+        latency = 1000 * (_time.perf_counter() - t0)
         ranked = [r.token.id for r in res.ranked if not r.is_context]
         handoff = [r.token.id for r in res.tokens]
         first = next((i + 1 for i, tid in enumerate(ranked) if tid in c.gold), None)
-        rep.results.append(CaseResult(case=c, ranked_ids=ranked, handoff_ids=handoff, first_rank=first))
+        delta = {key: stats[key] - before.get(key, 0) for key in stats} if stats is not None else {}
+        cost = {}
+        if tally is not None:
+            d = meter.all.minus(tally)
+            cost = {"calls": d.calls, "llm_calls": d.llm_calls, "ucc_queries": d.ucc_queries, "usd": d.usd}
+        rep.results.append(
+            CaseResult(
+                case=c,
+                ranked_ids=ranked,
+                handoff_ids=handoff,
+                first_rank=first,
+                latency_ms=latency,
+                cost=cost,
+                failed=delta.get("errors", 0) > 0,
+                hybrid_only=(delta.get("fallback", 0) > 0 and not delta.get("errors", 0))
+                or delta.get("gated", 0) > 0
+                or delta.get("hybrid", 0) > 0,
+            )
+        )
     return rep
 
 

@@ -210,3 +210,118 @@ async def test_large_note_backlog_builds_in_background_not_inline():
     await store.add_many([tok("c2", T0 + 1400, "hallway, a coat")])
     await r.retrieve("coat", k=1, now=datetime.fromtimestamp(T0 + 1900, UTC))
     assert f"block:{T0 + 1200:.0f}" in mem.notes  # a small backlog is written inline
+
+
+async def test_gate_margin_skips_the_llm_when_the_hybrid_is_confident():
+    from megamind.retrieval.hier import top_margin
+
+    store = await _store()
+    base = FixedRetriever([await store.get("a1"), await store.get("b1")])  # scores 1.0, 0.5 -> margin 0.5
+    assert top_margin(await base.retrieve("keys")) == pytest.approx(0.5)
+    llm = FakeLLM(stage2={"ids": ["b1"]})
+    now = datetime.fromtimestamp(T0 + 1250, UTC)
+    gated = HierRetriever(store, base, HierMemory(store, llm, tz="UTC"), llm, config=HierConfig(gate_margin=0.4))
+    res = await gated.retrieve("keys", k=1, now=now)
+    assert [x.token.id for x in res.ranked] == ["a1"] and gated.stats == {"llm": 0, "gated": 1, "errors": 0}
+    assert not any("Rank the token ids" in c for c in llm.calls)
+    open_ = HierRetriever(store, base, HierMemory(store, llm, tz="UTC"), llm, config=HierConfig(gate_margin=0.6))
+    await open_.retrieve("keys", k=1, now=now)
+    assert open_.stats["gated"] == 0
+
+
+async def test_llm_failure_is_counted():
+    store = await _store()
+    base = FixedRetriever([await store.get("a1")])
+    r = HierRetriever(store, base, HierMemory(store, FakeLLM(fail=True), tz="UTC"))
+    await r.retrieve("keys", k=1, now=datetime.fromtimestamp(T0 + 1250, UTC))
+    assert r.stats["errors"] == 1
+
+
+def test_build_hier_splits_pick_and_rank_models_and_passes_reasoning_effort():
+    from megamind.retrieval.hier import build_hier
+
+    s = SimpleNamespace(
+        hier_model="gpt-5.4-nano",
+        hier_rank_model="gpt-4.1",
+        hier_reasoning_effort="none",
+        hier_base_pool=60,
+        hier_cache_path="",
+        wearer_tz="UTC",
+    )
+    r = build_hier(s, InMemoryStore(), FixedRetriever([]), "k")
+    assert (r.llm.model, r.rank_llm.model, r.cfg.base_pool) == ("gpt-5.4-nano", "gpt-4.1", 60)
+    assert r.llm._body("s", "u", 10)["reasoning_effort"] == "none"
+    assert "reasoning_effort" not in r.rank_llm._body("s", "u", 10)
+    same = build_hier(
+        SimpleNamespace(hier_model="gpt-4.1", hier_cache_path=""), InMemoryStore(), FixedRetriever([]), "k"
+    )
+    assert same.rank_llm is same.llm and same.llm._body("s", "u", 10)["temperature"] == 0
+
+
+async def test_stage2_uses_the_rank_model():
+    store = await _store()
+    base = FixedRetriever([await store.get("a1"), await store.get("b1")])
+    pick, rank = FakeLLM(stage1={"blocks": ["B1"]}), FakeLLM(stage2={"ids": ["b1"]})
+    r = HierRetriever(store, base, HierMemory(store, pick, tz="UTC"), pick, rank_llm=rank)
+    res = await r.retrieve("keys", k=1, now=datetime.fromtimestamp(T0 + 1250, UTC))
+    assert [x.token.id for x in res.ranked] == ["b1"]
+    assert any("Pick up to" in c for c in pick.calls) and not any("Rank the token ids" in c for c in pick.calls)
+    assert any("Rank the token ids" in c for c in rank.calls)
+
+
+async def _hier_over(llm, timeout_s: float):
+    store = await _store()
+    base = FixedRetriever([await store.get("a1"), await store.get("b1")])
+    memory = HierMemory(store, FakeLLM(), tz="UTC")
+    return HierRetriever(store, base, memory, llm, config=HierConfig(timeout_s=timeout_s))
+
+
+async def test_hung_llm_server_falls_back_to_hybrid_within_timeout():
+    import asyncio
+    import time
+
+    held = []
+
+    async def never_answer(reader, writer):
+        held.append(writer)  # accept, read the request, never respond
+        await reader.read(65536)
+
+    server = await asyncio.start_server(never_answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    llm = ChatJSON("k", "gpt-4.1-mini", base_url=f"http://127.0.0.1:{port}/v1", timeout_s=60, retries=2)
+    r = await _hier_over(llm, timeout_s=0.3)
+    t0 = time.perf_counter()
+    res = await r.retrieve("keys", k=1, now=datetime.fromtimestamp(T0 + 1250, UTC))
+    assert time.perf_counter() - t0 < 2.0
+    assert [x.token.id for x in res.ranked] == ["a1"] and held
+    assert r.stats["errors"] == 1 and "took > 0.3 s" in r.last_trace["error"]
+    await llm.aclose()
+    for w in held:
+        w.close()
+    server.close()
+
+
+async def test_llm_500s_fall_back_to_hybrid_within_timeout():
+    import time
+
+    llm = ChatJSON("k", "gpt-4.1-mini", transport=httpx.MockTransport(lambda req: httpx.Response(500)), retries=2)
+    r = await _hier_over(llm, timeout_s=0.3)
+    t0 = time.perf_counter()
+    res = await r.retrieve("keys", k=1, now=datetime.fromtimestamp(T0 + 1250, UTC))
+    assert time.perf_counter() - t0 < 2.0 and [x.token.id for x in res.ranked] == ["a1"] and r.stats["errors"] == 1
+    await llm.aclose()
+
+
+def test_build_hier_recall_calls_fail_fast_and_notes_stay_patient():
+    from megamind.retrieval.hier import build_hier
+
+    s = SimpleNamespace(hier_cache_path="", wearer_tz="UTC")
+    r = build_hier(s, None, None, "sk-test")
+    assert r.cfg.timeout_s == 8.0
+    assert (r.llm.retries, r.llm._client.timeout.read) == (2, 4.0)
+    assert (r.rank_llm.retries, r.rank_llm._client.timeout.read) == (2, 4.0)
+    assert (r.memory.llm.retries, r.memory.llm._client.timeout.read) == (6, 120.0)
+    tight = build_hier(
+        SimpleNamespace(**vars(s), hier_timeout_s=3, hier_call_timeout_s=1, hier_retries=1), None, None, "k"
+    )
+    assert (tight.cfg.timeout_s, tight.llm.retries, tight.llm._client.timeout.read) == (3.0, 1, 1.0)

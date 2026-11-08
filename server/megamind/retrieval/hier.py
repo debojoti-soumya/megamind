@@ -55,7 +55,11 @@ class HierConfig:
     moment_s: float = 60.0  # picks this close to a better one rank after the distinct moments
     vec_pool: int = 300  # nearest tokens aggregated per block for the vector block ranking
     vec_blocks: int = 4  # top vector-ranked blocks always added to the LLM's picks
+    timeout_s: float = 8.0  # wall bound on the LLM stages of one recall (notes + pick + rank); then -> hybrid
     inline_build_max: int = 3  # a query writes at most this many missing block notes itself; more -> background
+    # cheap gating: skip the LLM when the hybrid's top hit leads the runner-up by >= this relative margin
+    # ((s1 - s2) / s1 of the non-context scores); 0 = always ask the LLM
+    gate_margin: float = 0.0
 
 
 class ChatJSON:
@@ -71,9 +75,11 @@ class ChatJSON:
         concurrency: int = 8,
         retries: int = 6,
         transport: httpx.AsyncBaseTransport | None = None,
+        reasoning_effort: str = "low",
     ) -> None:
         self.model = model
         self.retries = retries
+        self.reasoning_effort = reasoning_effort
         self._sem = asyncio.Semaphore(concurrency)
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -90,7 +96,7 @@ class ChatJSON:
             "max_completion_tokens": max_tokens,
         }
         if self.model.startswith(("gpt-5", "o1", "o3", "o4")):
-            body["reasoning_effort"] = "low"
+            body["reasoning_effort"] = self.reasoning_effort
             body["max_completion_tokens"] = max_tokens + 4000
         else:
             body["temperature"] = 0
@@ -380,14 +386,17 @@ class HierRetriever(Retriever):
         *,
         config: HierConfig | None = None,
         auto_build: bool = True,
+        rank_llm: ChatJSON | None = None,
     ) -> None:
         self.store = store
         self.base = base
         self.memory = memory
-        self.llm = llm or memory.llm
+        self.llm = llm or memory.llm  # stage 1 (block pick); also stage 2 unless `rank_llm` is set
+        self.rank_llm = rank_llm or self.llm
         self.cfg = config or memory.cfg
         self.auto_build = auto_build
         self.last_trace: dict[str, Any] = {}
+        self.stats = {"llm": 0, "gated": 0, "errors": 0}
         self._bg: asyncio.Task | None = None
 
     async def _ensure_notes(self, until: float, device_id: str | None) -> None:
@@ -432,13 +441,22 @@ class HierRetriever(Retriever):
         )
         if mode not in ("hybrid", None) or not query.strip():
             return _truncate(base, k)
+        if self.cfg.gate_margin > 0 and top_margin(base) >= self.cfg.gate_margin:
+            self.stats["gated"] += 1
+            self.last_trace = {"gated": round(top_margin(base), 3)}
+            return _truncate(base, k)
         t0 = time.perf_counter()
         try:
-            picked = await self._llm_rank(query, base, k, time_from, time_to, device_id, now)
-        except (RuntimeError, httpx.HTTPError, ValueError, KeyError) as e:
+            stages = self._llm_rank(query, base, k, time_from, time_to, device_id, now)
+            picked = await asyncio.wait_for(stages, self.cfg.timeout_s or None)
+        except (TimeoutError, RuntimeError, httpx.HTTPError, ValueError, KeyError) as e:
+            if isinstance(e, TimeoutError):
+                e = TimeoutError(f"LLM stages took > {self.cfg.timeout_s:g} s")
             log.warning("hier recall fell back to hybrid: %s", e)
             self.last_trace = {"error": str(e)}
+            self.stats["errors"] += 1
             return _truncate(base, k)
+        self.stats["llm"] += 1
         self.last_trace["llm_ms"] = round(1000 * (time.perf_counter() - t0))
         tokens = _interleave(_spread(picked, self.cfg.moment_s), base.ranked, k)
         return RetrievalResult(plan=base.plan, tokens=tokens, widened=base.widened, anchor_ts=base.anchor_ts)
@@ -501,7 +519,7 @@ class HierRetriever(Retriever):
             return []
         lines = window_lines(sorted(toks.values(), key=lambda t: t.ts), self.memory.tz, self.cfg)
         shown = {ln[1 : ln.index("]")] for ln in lines}
-        out2 = await self.llm(
+        out2 = await self.rank_llm(
             SEARCH_SYSTEM,
             STAGE2_PROMPT.format(now=now_s, question=query, lines="\n".join(lines), k=k),
             max_tokens=400,
@@ -543,6 +561,14 @@ class HierRetriever(Retriever):
                 per.setdefault(i, []).append(score[t.id])
         top3 = {i: sum(sorted(v)[-3:]) / 3 for i, v in per.items()}
         return sorted(top3, key=lambda i: -top3[i])[: self.cfg.hint_windows]
+
+
+def top_margin(res: RetrievalResult) -> float:
+    """Relative lead of the best non-context hit over the runner-up, (s1 - s2) / s1; 0 with no hits."""
+    s = sorted((r.score for r in res.tokens if not r.is_context), reverse=True)
+    if not s or s[0] <= 0:
+        return 0.0
+    return 1.0 if len(s) == 1 else (s[0] - s[1]) / s[0]
 
 
 def _spread(picked: list[RetrievedToken], moment_s: float) -> list[RetrievedToken]:
@@ -594,14 +620,38 @@ def _truncate(res: RetrievalResult, k: int) -> RetrievalResult:
     )
 
 
-def build_hier(settings, store: MemoryStore, base: Retriever, api_key: str) -> HierRetriever:
+def build_hier(
+    settings,
+    store: MemoryStore,
+    base: Retriever,
+    api_key: str,
+    *,
+    cache_path: Path | str | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> HierRetriever:
+    """`cache_path` / `transport` override the settings (the eval harness keeps its notes out of data/)."""
     url = getattr(settings, "hier_base_url", "https://api.openai.com/v1")
-    note_llm = ChatJSON(api_key, getattr(settings, "hier_note_model", "gpt-4.1-mini"), base_url=url, concurrency=16)
-    rank_llm = ChatJSON(api_key, getattr(settings, "hier_model", "gpt-4.1"), base_url=url)
+    effort = getattr(settings, "hier_reasoning_effort", "low") or "low"
+    kw = dict(base_url=url, transport=transport, reasoning_effort=effort)
+    note_llm = ChatJSON(api_key, getattr(settings, "hier_note_model", "gpt-4.1-mini"), concurrency=16, **kw)
+    pick_model = getattr(settings, "hier_model", "gpt-4.1-mini")
+    rank_model = getattr(settings, "hier_rank_model", "gpt-4.1") or pick_model
+    # recall-time calls fail fast (the stage is also bounded by timeout_s); note writing keeps the patient defaults
+    fast = dict(kw, timeout_s=float(getattr(settings, "hier_call_timeout_s", 4.0) or 4.0))
+    fast["retries"] = max(1, int(getattr(settings, "hier_retries", 2) or 2))
+    pick_llm = ChatJSON(api_key, pick_model, **fast)
+    rank_llm = pick_llm if rank_model == pick_model else ChatJSON(api_key, rank_model, **fast)
+    cfg = HierConfig(
+        timeout_s=float(getattr(settings, "hier_timeout_s", 8.0)),
+        gate_margin=float(getattr(settings, "hier_gate_margin", 0.0) or 0.0),
+        base_pool=int(getattr(settings, "hier_base_pool", 30) or 30),
+        hint_windows=int(getattr(settings, "hier_hint_windows", 10) or 10),
+    )
     memory = HierMemory(
         store,
         note_llm,
-        cache_path=getattr(settings, "hier_cache_path", "") or None,
+        cache_path=cache_path or getattr(settings, "hier_cache_path", "") or None,
         tz=getattr(settings, "wearer_tz", None),
+        config=cfg,
     )
-    return HierRetriever(store, base, memory, rank_llm)
+    return HierRetriever(store, base, memory, pick_llm, rank_llm=rank_llm)
