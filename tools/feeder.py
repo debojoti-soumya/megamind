@@ -4,6 +4,11 @@
     python tools/feeder.py --server http://localhost:8000 --source 0 --fps 1
     python tools/feeder.py --server http://localhost:8000 --source walk.mp4 --fps 1 --realtime
     python tools/feeder.py --server http://localhost:8000 --source walk.mp4 --fps 1 --audio   # + speech -> /v1/audio
+    python tools/feeder.py --source walk.mp4 --start 1767600000 --srt walk.srt   # clock time + subtitles
+
+--start EPOCH stamps a video file's first frame with that unix time (implies --realtime). --srt FILE sends each
+subtitle cue once, as FrameMeta.transcript on the first sampled frame at/after the cue's start (cue times are
+relative to the video). Servers without FrameMeta.transcript ignore the field.
 
 Requires: pip install opencv-python-headless httpx  (and ffmpeg on PATH for --audio)
 """
@@ -12,6 +17,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -19,8 +25,43 @@ import time
 import wave
 from pathlib import Path
 
-import cv2
 import httpx
+
+Cue = tuple[float, float, str]  # (start_s, end_s, text) relative to the video
+
+
+def _secs(t: str) -> float:
+    h, m, s = t.strip().replace(",", ".").split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+_CUE_RE = re.compile(r"(\d+:\d+:\d+[,.]\d+)\s*-->\s*(\d+:\d+:\d+[,.]\d+)[^\n]*\n(.*)", re.S)
+
+
+def parse_srt(text: str) -> list[tuple[float, float, list[str]]]:
+    """SRT text -> [(start_s, end_s, [non-empty text lines])], in file order. Malformed blocks are skipped."""
+    out = []
+    for block in re.split(r"\n\s*\n", text.replace("\r\n", "\n").strip()):
+        m = _CUE_RE.search(block)
+        if m:
+            lines = [ln.strip() for ln in m[3].splitlines() if ln.strip()]
+            if lines:
+                out.append((_secs(m[1]), _secs(m[2]), lines))
+    return out
+
+
+def load_srt(path: str | Path) -> list[Cue]:
+    cues = parse_srt(Path(path).read_text(encoding="utf-8", errors="ignore"))
+    return sorted((a, b, " ".join(" ".join(lines).split())) for a, b, lines in cues)
+
+
+def due_cues(cues: list[Cue], offset_s: float) -> tuple[str | None, list[Cue]]:
+    """Cues starting at or before `offset_s` (video seconds) -> (their text joined, the cues still pending).
+    Each cue goes out exactly once: on the first sampled frame at/after its start."""
+    due = [c for c in cues if c[0] <= offset_s]
+    if not due:
+        return None, cues
+    return " ".join(c[2] for c in due), [c for c in cues if c[0] > offset_s]
 
 
 def extract_audio(path: str, rate: int = 16000) -> bytes | None:
@@ -99,20 +140,33 @@ def main() -> None:
         help="video files: also send the audio track to /v1/audio (needs ffmpeg; implies --realtime timestamps)",
     )
     ap.add_argument("--audio-chunk", type=float, default=15.0, help="seconds of audio per /v1/audio request")
+    ap.add_argument(
+        "--start", type=float, default=None, help="video files: unix ts of the first frame (implies --realtime)"
+    )
+    ap.add_argument("--srt", default=None, help="video files: subtitles sent once per cue as FrameMeta.transcript")
     args = ap.parse_args()
+
+    import cv2  # tools extra; imported here so the helpers above stay importable without it
 
     src: int | str = int(args.source) if args.source.isdigit() else args.source
     if args.audio:
         if not isinstance(src, str):
             raise SystemExit("--audio needs a video file as --source (webcam audio is not supported)")
         args.realtime = True  # frames and audio must share the video timeline
+    if (args.start is not None or args.srt) and not isinstance(src, str):
+        raise SystemExit("--start/--srt need a video file as --source")
+    if args.start is not None:
+        args.realtime = True
     cap = cv2.VideoCapture(src)
     if not cap.isOpened():
         raise SystemExit(f"cannot open source {args.source}")
     video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     step = max(1, int(round(video_fps / args.fps))) if isinstance(src, str) else 1
     period = 1.0 / args.fps
-    start = time.time()
+    start = time.time() if args.start is None else args.start
+    cues = load_srt(args.srt) if args.srt else []
+    if cues and args.audio:
+        print("note: --srt and --audio both send speech; the server will store it twice")
     sent = accepted = 0
     idx = 0
 
@@ -134,7 +188,11 @@ def main() -> None:
             if not ok:
                 continue
             ts = start + idx / video_fps if (args.realtime and isinstance(src, str)) else time.time()
-            meta = {"device_id": args.device_id, "ts": ts}
+            meta: dict = {"device_id": args.device_id, "ts": ts}
+            if cues:
+                said, cues = due_cues(cues, idx / video_fps)
+                if said:
+                    meta["transcript"] = said
             try:
                 r = http.post(
                     "/v1/frames",
