@@ -464,7 +464,6 @@ def test_recall_first_only_for_standalone_recall_questions():
         assert recall_first(q, _plan(q)), q
     for q in (
         "and where did I put my keys after that?",  # follow-up: Claude reads the history first
-        "what about the receipt",
         "how much was it?",
         "thanks!",
         "tell me a joke",

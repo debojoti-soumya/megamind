@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from dataclasses import dataclass
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
@@ -11,16 +12,33 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
 from ulid import ULID
 
+from megamind.agent.speech import StreamingSpeaker
 from megamind.devices import ChatDevice, resolve_chat_device
-from megamind.models import ChatRequest, ChatResponse, ChatStreamDelta, ChatStreamError, ChatStreamRetrieval
+from megamind.models import (
+    ChatRequest,
+    ChatResponse,
+    ChatStreamAudio,
+    ChatStreamDelta,
+    ChatStreamError,
+    ChatStreamRetrieval,
+    ChatStreamTranscript,
+)
 from megamind.replay import annotate_citations
 
 log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _chat_input(request: Request) -> tuple[str, str, str | None]:
-    """(text, session_id, device_id) from a JSON or multipart chat request; HTTP errors as documented."""
+@dataclass
+class ChatInput:
+    text: str
+    session_id: str
+    device_id: str | None
+    voice: bool = False  # multipart: `text` is the speech-to-text transcript
+
+
+async def _chat_input(request: Request) -> ChatInput:
+    """The question from a JSON or multipart chat request (voice is transcribed here); HTTP errors as documented."""
     app = request.app.state
     ctype = request.headers.get("content-type", "")
     if ctype.startswith("application/json"):
@@ -31,7 +49,7 @@ async def _chat_input(request: Request) -> tuple[str, str, str | None]:
             raise HTTPException(422, jsonable_encoder(detail)) from None
         if not body.text:
             raise HTTPException(400, "text is required for JSON requests")
-        return body.text, body.session_id, body.device_id
+        return ChatInput(body.text, body.session_id, body.device_id)
     if ctype.startswith("multipart/form-data"):
         form = await request.form()
         session_id = str(form.get("session_id") or "default")
@@ -40,15 +58,20 @@ async def _chat_input(request: Request) -> tuple[str, str, str | None]:
         audio = form.get("audio")
         if audio is None or not hasattr(audio, "read"):
             raise HTTPException(400, "audio file is required for multipart requests")
-        return await app.stt.transcribe(await audio.read()), session_id, device_id
+        text = await app.stt.transcribe(await audio.read())
+        return ChatInput(text, session_id, device_id, voice=True)
     raise HTTPException(415, "use application/json or multipart/form-data")
 
 
-async def _finish(app, resp: ChatResponse, dev: ChatDevice) -> ChatResponse:
-    """Replay links + TTS, concurrently (independent: one reads `cited`, the other `answer`)."""
+async def _finish(app, resp: ChatResponse, dev: ChatDevice, speaker: StreamingSpeaker | None = None) -> ChatResponse:
+    """Replay links + TTS, concurrently (independent: one reads `cited`, the other `answer`). With a `speaker`
+    (streamed turn, TTS_STREAM) most sentences are already rendered: this speaks the tail and joins the clips."""
 
     async def tts() -> None:
-        resp.audio_url = await app.tts.synthesize(resp.answer, str(ULID()))
+        if speaker is not None:
+            resp.audio_url = await speaker.finish(resp.answer)
+        else:
+            resp.audio_url = await app.tts.synthesize(resp.answer, str(ULID()))
 
     await asyncio.gather(annotate_citations(app, resp.cited, dev.device_id), tts())
     resp.device_id_used, resp.warning = dev.device_id, dev.warning
@@ -58,9 +81,9 @@ async def _finish(app, resp: ChatResponse, dev: ChatDevice) -> ChatResponse:
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: Request):
     app = request.app.state
-    text, session_id, device_id = await _chat_input(request)
-    dev = await resolve_chat_device(app, device_id)
-    resp = await app.agent.chat(session_id, text, dev.device_id)
+    inp = await _chat_input(request)
+    dev = await resolve_chat_device(app, inp.device_id)
+    resp = await app.agent.chat(inp.session_id, inp.text, dev.device_id)
     return await _finish(app, resp, dev)
 
 
@@ -71,33 +94,65 @@ def _sse(event: str, data: dict | BaseModel) -> bytes:
 
 @router.post("/chat/stream")
 async def chat_stream(request: Request):
-    """Same turn as `POST /chat`, as Server-Sent Events: `retrieval` (candidate citations, once per tool result),
-    `delta` (answer text), `reset` (drop the streamed text), then `final` (exactly the `POST /chat` body) or
-    `error`. Bad requests fail before the stream starts, with the same status codes as `POST /chat`."""
+    """Same turn as `POST /chat`, as Server-Sent Events: `transcript` (voice questions, right after speech-to-text),
+    `retrieval` (candidate citations, once per tool result), `delta` (answer text), `reset` (drop the streamed
+    text), `audio` (TTS of one sentence, in order, while the rest is still being written; `TTS_STREAM`), then
+    `final` (exactly the `POST /chat` body) or `error`. Bad requests fail before the stream starts, with the same
+    status codes as `POST /chat`."""
     app = request.app.state
-    text, session_id, device_id = await _chat_input(request)
-    dev = await resolve_chat_device(app, device_id)
+    settings = app.settings
+    inp = await _chat_input(request)
+    dev = await resolve_chat_device(app, inp.device_id)
     device_id = dev.device_id
     queue: asyncio.Queue[tuple[str, dict | BaseModel] | None] = asyncio.Queue()
 
-    async def on_event(name: str, data: dict) -> None:
+    if inp.voice:  # show what was heard at once (and lets a client spot a voice command and hang up)
+        queue.put_nowait(("transcript", ChatStreamTranscript(text=inp.text)))
+
+    async def put(name: str, data: dict) -> None:
         await queue.put((name, data))  # never blocks the turn: replay links are added on the sending side
+
+    speaker = StreamingSpeaker(app.tts, app.settings.audio_dir, put) if app.settings.tts_stream else None
+
+    async def on_event(name: str, data: dict) -> None:
+        if speaker is not None:
+            if name == "delta":
+                await speaker.feed(data["text"])
+            elif name == "reset":
+                await speaker.reset()
+        await put(name, data)
+
+    async def annotate_candidates(cands: list) -> None:
+        """replay_url lookups for the `retrieval` event, bounded so answer text queued behind it is not held up."""
+        task = asyncio.ensure_future(annotate_citations(app, cands, device_id))
+        budget = settings.stream_replay_budget_s
+        done, _ = await asyncio.wait([task], timeout=budget if budget > 0 else None)
+        if not done:  # links found so far stay (in place); the rest are null here and present in `final`
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        else:
+            task.result()
 
     async def encode(name: str, data: dict | BaseModel) -> bytes:
         if name == "retrieval":
             cands = list(data["candidates"])
-            await annotate_citations(app, cands, device_id)
+            await annotate_candidates(cands)
             data = ChatStreamRetrieval(confidence=data["confidence"], candidates=cands)
         elif name == "delta":
             data = ChatStreamDelta(**data)
+        elif name == "audio":
+            data = ChatStreamAudio(**data)
         return _sse(name, data)
 
     async def run() -> None:
         try:
-            resp, _ = await app.agent.chat_with_stats(session_id, text, device_id, on_event=on_event)
-            await queue.put(("final", await _finish(app, resp, dev)))
+            resp, _ = await app.agent.chat_with_stats(inp.session_id, inp.text, device_id, on_event=on_event)
+            await queue.put(("final", await _finish(app, resp, dev, speaker)))
         except Exception as e:  # noqa: BLE001 - the stream is already 200: report the failure in-band
             log.exception("chat stream failed")
+            if speaker is not None:
+                await speaker.cancel()
             await queue.put(("error", ChatStreamError(detail=f"{type(e).__name__}: {e}")))
         finally:
             await queue.put(None)
@@ -118,6 +173,8 @@ async def chat_stream(request: Request):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+            if speaker is not None:
+                await speaker.cancel()
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     return StreamingResponse(events(), media_type="text/event-stream", headers=headers)
