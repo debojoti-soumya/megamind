@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import math
 import re
 from collections.abc import Sequence
 from pathlib import Path
+
+import numpy as np
 
 from megamind.models import MemoryHit, MemoryToken, SearchMode
 from megamind.store.base import MemoryStore, Scored, VectorField
@@ -15,11 +16,40 @@ from megamind.store.rrf import MIN_SCORE, calibrated, fuse_hits
 _WORD = re.compile(r"[a-z0-9]+")
 
 
-def _cosine(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a)) or 1.0
-    nb = math.sqrt(sum(x * x for x in b)) or 1.0
-    return dot / (na * nb)
+def _unit(v: list[float]) -> np.ndarray:
+    a = np.asarray(v, dtype=np.float64)
+    return a / (float(np.linalg.norm(a)) or 1.0)
+
+
+class _UnitMatrix:
+    """Unit-normalised vectors of one (field, dim), one row per token id. Rows are filled on add and
+    refreshed at query time when a token's vector list was replaced (identity check), so a query is
+    one mat-vec instead of a Python dot product per token."""
+
+    def __init__(self, dim: int) -> None:
+        self.dim = dim
+        self.mat = np.empty((0, dim))
+        self.n = 0
+        self.rows: dict[str, int] = {}
+        self.src: list[list[float] | None] = []
+
+    def row(self, token_id: str, v: list[float]) -> int:
+        r = self.rows.get(token_id)
+        if r is None:
+            if self.n == len(self.mat):
+                grown = np.empty((max(64, 2 * len(self.mat)), self.dim))
+                grown[: self.n] = self.mat[: self.n]
+                self.mat = grown
+            r, self.n = self.n, self.n + 1
+            self.rows[token_id] = r
+            self.src.append(None)
+        if self.src[r] is not v:
+            self.mat[r] = _unit(v)
+            self.src[r] = v
+        return r
+
+    def scores(self, q: list[float]) -> np.ndarray:
+        return self.mat[: self.n] @ _unit(q)
 
 
 def _keyword_score(query: str, text: str) -> float:
@@ -38,15 +68,23 @@ class InMemoryStore(MemoryStore):
     def __init__(self, *, episodes: EpisodeTracker | None = None) -> None:
         self._tokens: dict[str, MemoryToken] = {}
         self.episodes = episodes
+        self._mats: dict[tuple[str, int], _UnitMatrix] = {}
+
+    def _index_vectors(self, t: MemoryToken) -> None:
+        for field in ("text_vec", "image_vec"):
+            if v := getattr(t, field):
+                self._mats.setdefault((field, len(v)), _UnitMatrix(len(v))).row(t.id, v)
 
     async def add(self, token: MemoryToken) -> None:
         await self._episodize([token])
         self._tokens[token.id] = token
+        self._index_vectors(token)
 
     async def add_many(self, tokens: Sequence[MemoryToken]) -> None:
         await self._episodize(tokens)
         for t in tokens:
             self._tokens[t.id] = t
+            self._index_vectors(t)
 
     async def rewrite_many(self, tokens: Sequence[MemoryToken]) -> None:
         for t in tokens:
@@ -108,14 +146,24 @@ class InMemoryStore(MemoryStore):
     ) -> list[Scored]:
         if field not in ("text_vec", "image_vec"):
             raise ValueError(f"unknown vector field {field!r}")
-        scored = [
-            (t, _cosine(vec, v))
+        # tokens, not (token, vec) tuples: 12k GC-tracked tuples per query trigger full collections
+        pool = [
+            t
             for t in self._pool(
                 time_from=time_from, time_to=time_to, device_id=device_id, kinds=kinds, enriched_only=True
             )
             if (v := getattr(t, field)) is not None and len(v) == len(vec)
         ]
-        scored = [(t, s) for t, s in scored if s > MIN_SCORE]
+        if not pool:
+            return []
+        mat = self._mats.setdefault((field, len(vec)), _UnitMatrix(len(vec)))
+        rows = [mat.row(t.id, getattr(t, field)) for t in pool]  # before scoring: picks up replaced vectors
+        sims = mat.scores(vec)[rows]
+        keep = np.flatnonzero(sims > MIN_SCORE)
+        if 0 < k < len(keep):  # only scores >= the k-th best can make the cut; ties keep the ts tiebreak
+            kth = np.partition(sims[keep], len(keep) - k)[len(keep) - k]
+            keep = keep[sims[keep] >= kth]
+        scored = [(pool[i], float(sims[i])) for i in keep.tolist()]
         scored.sort(key=lambda ts: (ts[1], ts[0].ts), reverse=True)
         return scored[:k]
 
@@ -201,4 +249,6 @@ class InMemoryStore(MemoryStore):
                 p = Path(t.thumb_path)
                 if p.is_file():
                     p.unlink(missing_ok=True)
+        if victims:
+            self._mats.clear()  # rebuilt lazily by the next vector query
         return len(victims)
