@@ -10,6 +10,12 @@ namespace Megamind
 
     [Serializable] public class FrameAccepted { public string frame_id; public bool accepted; public string reason; }
 
+    // POST /v1/audio (ambient speech). ts_start = unix seconds of the chunk's first sample.
+    [Serializable] public class AudioMeta { public string device_id; public double ts_start; public Pose pose; }
+
+    [Serializable] public class AudioAccepted { public string audio_id; public double duration_s; public string transcript; public List<string> token_ids = new List<string>(); }
+
+    // thumb_url is "" for tokens without an image (kind="transcript", heard speech): skip the thumbnail.
     [Serializable] public class Citation { public string id; public double ts; public string caption; public string thumb_url; public string replay_url; }
 
     [Serializable] public class ToolCallRecord { public string name; public string confidence; }

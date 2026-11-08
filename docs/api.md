@@ -30,14 +30,34 @@ Response `202 Accepted`:
 frame was dropped by the filter (`blurry` = motion blur / out of focus, `budget` = per-minute cap). Enrichment (caption/embedding) is asynchronous; a token appears
 in search a few seconds later.
 
+## `POST /audio`  (headset / feeder -> server)
+Ambient speech around the wearer, so "who did I talk to?" and "what did she say about Tuesday?" work.
+`multipart/form-data`
+- `audio`: a chunk of 16-bit PCM WAV (any rate, mono preferred; 8–16 kHz headset mics are fine) or any
+  ffmpeg-decodable audio (needs ffmpeg on the server). Send chunks of ~15–30 s; max 25 MB and 600 s.
+- `meta`: JSON string; `ts_start` is the Unix time (seconds, float) of the chunk's first sample
+  ```json
+  { "device_id": "quest3-abc", "ts_start": 1731000000.0,
+    "pose": { "x": 0.0, "y": 1.6, "z": 0.0, "yaw": 90.0 } }
+  ```
+The server transcribes with timestamps (synchronously) and stores each ≤ ~15 s window of speech as a
+`kind="transcript"` memory token (`ts` = `ts_start` + window offset, `caption` = `Speech heard nearby: "<words>"`,
+no thumbnail). Response `200 OK`:
+```json
+{ "audio_id": "01J...", "duration_s": 15.0, "transcript": "hi I'm Priya ...", "token_ids": ["01J..."] }
+```
+Silence → `token_ids: []`. Bad `meta` (incl. non-finite `ts_start`) / empty body → 400; > 25 MB or > 600 s → 413;
+undecodable audio → 415; STT provider error → 502.
+
 ## `GET /memories`  (debug search)
 Query: `q` (str), `from`/`to` (ISO-8601, optional; unparseable → 400), `k` (int, default 12),
 `mode` (`semantic|visual|hybrid`, default `hybrid`), `device_id` (optional).
 ```json
 { "results": [ { "id": "...", "ts": 1731000000.1, "caption": "...", "ocr_text": "...",
                  "entities": ["keys","kitchen counter"], "thumb_url": "/v1/thumbs/....jpg",
-                 "score": 0.83 } ] }
+                 "score": 0.83, "kind": "frame" } ] }
 ```
+`kind` is the token kind (see *Memory token*); `thumb_url` is `""` for tokens without an image (`kind="transcript"`).
 
 ## `GET /thumbs/{id}.jpg`
 Keyframe thumbnail (JPEG).
@@ -58,6 +78,7 @@ Response:
 ```
 `replay_url` is optional and `null` when the server holds no buffered frames around the citation
 (older than the replay window, replay disabled, or a different device). It covers `ts - 5 s .. ts + 5 s`.
+`cited[].thumb_url` is `""` when the cited token has no image (heard speech): show the caption, skip the thumbnail.
 
 ## `GET /replay.mp4?device_id=...&from=...&to=...`
 Moment replay: an H.264 mp4 of **every** frame received from the device in `[from, to]` (not just the
@@ -86,13 +107,15 @@ Returns `{ "deleted": 1234 }`. Offline equivalent: `python -m megamind.store.pur
 ```
 id, device_id, ts, caption, ocr_text, entities[], pose{x,y,z,yaw}|null,
 text_vec[1024], image_vec[768], thumb_path, frame_hash, episode_id|null,
-kind: "frame" | "episode"
+kind: "frame" | "episode" | "transcript"
 ```
 `kind` is `"frame"` for captured keyframes (default). The store groups consecutive frames into
 `episode_id`s (time gap + visual change) and a consolidation job writes one `kind="episode"` token
 per closed episode whose `caption` is a summary of that episode and whose `ts` is the episode start,
 so vague queries ("what did I do this morning") hit summaries. Episode tokens are server-internal and
 never appear in `FrameAccepted`; they surface through search/chat citations like any other token.
+`kind="transcript"` tokens come from `POST /audio`: `caption` holds the heard words, `thumb_path`/`frame_hash` are
+empty and `image_vec` is null; they are never episodized or used for frame dedupe.
 
 ## Internal: `recall_memory` tool (Claude -> server)
 ```

@@ -14,9 +14,11 @@ from megamind.agent.stt import build_stt
 from megamind.agent.tools import RecallMemory
 from megamind.agent.tts import build_tts
 from megamind.config import Settings, get_settings
+from megamind.ingest.audio import router as audio_router
 from megamind.ingest.enrich import build_enricher, build_image_embedder, build_text_embedder
 from megamind.ingest.filter import KeyframeFilter
 from megamind.ingest.router import router as ingest_router
+from megamind.ingest.transcribe import build_audio_stt
 from megamind.ingest.worker import EnrichmentWorker
 from megamind.models import HealthResponse
 from megamind.replay import install as install_replay
@@ -62,6 +64,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.agent = ClaudeAgent(settings, st.recall)
         st.stt = build_stt(settings)
         st.tts = build_tts(settings)
+        st.audio_stt = build_audio_stt(settings, st.stt)
         st.consolidator = Consolidator(
             st.store,
             build_summarizer(settings),
@@ -86,6 +89,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Megamind", version="0.1.0", lifespan=lifespan)
     app.include_router(ingest_router, prefix="/v1")
+    app.include_router(audio_router, prefix="/v1")
     app.include_router(agent_router, prefix="/v1")
     install_replay(app, settings)  # moment replay: frame tap + GET /v1/replay.mp4
 
