@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Literal
 
-from megamind.models import MemoryHit, MemoryToken, SearchMode
+from megamind.models import DeviceInfo, MemoryHit, MemoryToken, SearchMode
 from megamind.store.episodes import EpisodeTracker
 from megamind.store.rrf import Calibration, Scored
 
@@ -155,6 +155,11 @@ class MemoryStore(ABC):
         toks = await self.range(time_from, time_to, limit=10**9, device_id=device_id, kinds=kinds)
         return [t for t in toks if (tier is None or t.tier == tier) and (chunk_id is None or t.chunk_id == chunk_id)]
 
+    async def devices(self) -> list[DeviceInfo]:
+        """Every device with stored tokens, most recently active (`last_ts`) first. Optional; the default scans
+        `list_tokens(vectors=False)`."""
+        return device_infos((t.device_id, t.kind, t.ts) for t in await self.list_tokens(vectors=False))
+
     async def tier_counts(self, kinds: Sequence[str] | None = ("frame",)) -> dict[str, int]:
         """{"hot": n, "cold": n, "text": n} over `kinds`. Optional; the default scans `list_tokens`."""
         out = {"hot": 0, "cold": 0, "text": 0}
@@ -167,3 +172,18 @@ class MemoryStore(ABC):
         self, device_id: str | None = None, *, since_ts: float | None = None, delete_thumbs: bool = True
     ) -> int:
         """Delete tokens (optionally one device / only those with ts >= since_ts) and their thumbnails."""
+
+
+def device_infos(rows: Iterable[tuple[str, str, float]], counts: dict[tuple[str, str], int] | None = None):
+    """Fold (device_id, kind, ts) rows into `DeviceInfo`s, newest first. With `counts`, each row is already the
+    max ts of its (device, kind) group and `counts` holds the group sizes."""
+    acc: dict[str, DeviceInfo] = {}
+    for dev, kind, ts in rows:
+        d = acc.get(dev) or acc.setdefault(dev, DeviceInfo(device_id=dev, count=0, last_ts=ts))
+        d.count += counts[(dev, kind)] if counts is not None else 1
+        d.last_ts = max(d.last_ts, ts)
+        if kind == "frame":
+            d.last_frame_ts = ts if d.last_frame_ts is None else max(d.last_frame_ts, ts)
+        elif kind == "transcript":
+            d.last_audio_ts = ts if d.last_audio_ts is None else max(d.last_audio_ts, ts)
+    return sorted(acc.values(), key=lambda d: (d.last_ts, d.device_id), reverse=True)

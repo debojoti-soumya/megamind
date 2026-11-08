@@ -31,8 +31,8 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from lancedb.index import FTS
 
-from megamind.models import MemoryHit, MemoryToken, Pose, SearchMode
-from megamind.store.base import MemoryStore, Scored, VectorField
+from megamind.models import DeviceInfo, MemoryHit, MemoryToken, Pose, SearchMode
+from megamind.store.base import MemoryStore, Scored, VectorField, device_infos
 from megamind.store.episodes import EpisodeTracker
 from megamind.store.rrf import MIN_SCORE, calibrated, fuse_hits
 
@@ -390,6 +390,18 @@ class LanceDBStore(MemoryStore):
             return 0
         where = self._where(device_id=device_id)
         return await asyncio.to_thread(self._table.count_rows, where)
+
+    def _devices_sync(self) -> list[DeviceInfo]:
+        tbl = self._scan_arrow(None, ["device_id", "kind", "ts"])
+        if tbl is None or tbl.num_rows == 0:
+            return []
+        g = tbl.group_by(["device_id", "kind"]).aggregate([("ts", "max"), ("ts", "count")])
+        groups = list(zip(*(g.column(c).to_pylist() for c in ("device_id", "kind", "ts_max", "ts_count")), strict=True))
+        counts = {(dev, kind): n for dev, kind, _, n in groups}
+        return device_infos(((dev, kind, ts) for dev, kind, ts, _ in groups), counts)
+
+    async def devices(self) -> list[DeviceInfo]:
+        return await asyncio.to_thread(self._devices_sync)
 
     async def recent_hashes(self, device_id: str, since_ts: float) -> list[tuple[float, str]]:
         where = self._where(device_id=device_id, time_from=since_ts, kinds=("frame",))
