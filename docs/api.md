@@ -229,8 +229,9 @@ early. Each event is `event: <name>` + one `data:` line of JSON:
 | `transcript` | `{ "text": "where did I leave my keys?" }` | voice (multipart) questions only: first event, right after speech-to-text, before retrieval (same text as `final.transcript`) |
 | `retrieval` | `{ "confidence": "high", "candidates": [Citation, ...] }` | after each memory search, before the answer (cited first, then the other retrieved moments; `thumb_url` / `replay_url` as in `cited`) |
 | `delta` | `{ "text": "On the kitchen" }` | answer text as Claude generates it; append (the `<cites>` trailer is never sent) |
-| `reset` | `{}` | discard the text streamed so far (that model round turned into another search, or Claude failed and the caption fallback answers) |
-| `final` | exactly the `POST /chat` response body | last event of a successful turn; authoritative (`answer`, `cited`, `tool_calls`, `audio_url`) |
+| `reset` | `{}` | discard the text streamed so far **and any `audio` clips received so far** (that model round turned into another search, or Claude failed and the caption fallback answers) |
+| `audio` | `{ "seq": 0, "url": "/v1/audio/01J...-0.wav", "text": "On the kitchen counter next to the coffee machine." }` | TTS of one sentence of the answer, as soon as that sentence is rendered, while Claude is still writing the rest (`TTS_STREAM`, default on). `seq` is 0, 1, 2, ... in sentence order, each sent exactly once and always in that order (a sentence whose TTS failed is skipped: `seq` can then have gaps): queue the clips and play them back to back, starting on `seq` 0. `text` is the sentence the clip speaks. Never sent with the mock TTS provider |
+| `final` | exactly the `POST /chat` response body | last event of a successful turn; authoritative (`answer`, `cited`, `tool_calls`, `audio_url`). All `audio` events of the turn precede it; `audio_url` is the whole answer as one file (the clips joined, or one fresh TTS call when a clip failed), for clients that don't play the clips, or `null` with the mock provider |
 | `error` | `{ "detail": "RuntimeError: ..." }` | last event when the turn fails after the stream started (no `final`) |
 
 ```
@@ -240,10 +241,25 @@ data: {"confidence": "high", "candidates": [{"id": "...", "ts": 1731000000.1, "c
 event: delta
 data: {"text": "On the kitchen counter"}
 
+event: audio
+data: {"seq": 0, "url": "/v1/audio/01J...-0.wav", "text": "On the kitchen counter next to the coffee machine."}
+
+event: delta
+data: {"text": " You put them there about"}
+
+event: audio
+data: {"seq": 1, "url": "/v1/audio/01J...-1.wav", "text": "You put them there about 20 minutes ago."}
+
 event: final
-data: {"transcript": "where did I leave my keys?", "answer": "On the kitchen counter ...", "audio_url": null, "cited": [...], "tool_calls": [...]}
+data: {"transcript": "where did I leave my keys?", "answer": "On the kitchen counter ...", "audio_url": "/v1/audio/01J....wav", "cited": [...], "tool_calls": [...]}
 ```
 `device_id_used` / `warning` arrive only in `final` (same rules as `POST /chat`).
+**Audio**: play each `audio` clip as it arrives (`GET url` with the bearer token, same as `audio_url`), in `seq`
+order, one after the other; a client that only knows `audio_url` keeps working unchanged (it just waits for
+`final`, exactly as before). Speech starts after the first sentence of the answer instead of after the whole
+answer plus one TTS call for all of it. `POST /chat` is unchanged: no clips, it blocks until `audio_url` is ready.
+Server env `TTS_STREAM=false` turns the clips off (one TTS call after the turn, `final.audio_url` as before).
+
 `retrieval` waits at most `STREAM_REPLAY_BUDGET_S` (0.15 s) for `replay_url` lookups so answer text is never held
 back; a link not found in time is `null` in that event and present in `final.cited`.
 Clients can swap it in for `POST /chat` and fall back to `POST /chat` on 404/405 (older servers). The model
@@ -382,7 +398,7 @@ The rendered montage (H.264, `MONTAGE_WIDTH`x`MONTAGE_HEIGHT`, default 960x540).
 Not a Claude tool: chat answers do not include a montage (call this endpoint from a "show me" UI action).
 
 ## `GET /audio/{id}.wav`
-TTS output for a chat response.
+TTS output for a chat response: `final.audio_url` (the whole answer) or a `/chat/stream` `audio` clip (`{id}-{seq}.wav`, one sentence).
 
 ## `DELETE /memories?device_id=...&since=...`
 Purge memory tokens (rows **and** thumbnails; frames already aged into an AV1 chunk are cut out of it by
