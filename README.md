@@ -85,6 +85,7 @@ python tools/feeder.py --server http://localhost:8000 --source walk.mp4 --fps 1 
 
 curl "localhost:8000/v1/memories?q=frame&k=5"
 python tools/ask.py --server http://localhost:8000 "what did I just see?"   # prints cited ids + thumbnail URLs
+python tools/ask.py --server http://localhost:8000 "frame"                  # mock mode: see below
 curl -o t.jpg localhost:8000/v1/thumbs/<id>.jpg
 curl -X DELETE "localhost:8000/v1/memories?device_id=feeder"
 ```
@@ -92,10 +93,11 @@ curl -X DELETE "localhost:8000/v1/memories?device_id=feeder"
 Gotchas:
 
 - **`--realtime` for video files.** Without it, the feeder sends frames as fast as it can decode them and stamps them
-  all with the current time, so the keyframe filter (`FILTER_MIN_GAP_S=2`) drops ~90% as `too_soon`. The webcam
+  all with the current time, so the keyframe filter (`FILTER_MIN_GAP_S=2`) drops ~90% as `too_soon` (shown in the feeder's `last=` field). The webcam
   (`--source 0`) is paced in real time and doesn't need it.
 - **Mock captions.** With no `READER_API_KEY` the enricher writes `mock caption for frame …`, so `q=keys` finds
-  nothing. Search `q=frame`, or configure a real VLM key (below) to get searchable captions.
+  nothing, and without `ANTHROPIC_API_KEY` "what did I just see?" answers "I don't have a memory of that". Search
+  or ask `frame` to see the loop work, or configure real keys (below) to get searchable captions.
 - **Persistence.** The default `STORE_BACKEND=memory` loses everything on restart. Set `STORE_BACKEND=lancedb` in
   `server/.env` to keep memories in `server/data/lancedb` (gitignored).
 - **Timestamps in URLs.** Use `Z`, not `+00:00`, e.g. `since=2026-11-07T18:00:00Z`. An unencoded `+` decodes to a
