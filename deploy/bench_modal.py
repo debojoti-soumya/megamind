@@ -87,6 +87,18 @@ def speech() -> dict:
                 next(r.iter_bytes(1024))
 
         res[f"tts {model} pcm first byte"] = _ms(first_byte)
+    import asyncio
+
+    from megamind.agent.tts import OpenAITTS
+    from megamind.config import Settings
+
+    two = answer + " You walked in from the car, put them down and went straight to the fridge."
+    for model in ("tts-1", "gpt-4o-mini-tts"):
+        ours = OpenAITTS(Settings(_env_file=None, openai_api_key=os.environ["OPENAI_API_KEY"], tts_model=model))
+        res[f"tts {model} 2 sentences, one call"] = _ms(
+            lambda m=model: c.audio.speech.create(model=m, voice="alloy", input=two, response_format="pcm").read()
+        )
+        res[f"tts {model} 2 sentences, OpenAITTS (parallel)"] = _ms(lambda o=ours: asyncio.run(o._render(two)))
     wav = c.audio.speech.create(
         model="tts-1", voice="alloy", input="Where did I leave my keys this morning?", response_format="wav"
     ).read()

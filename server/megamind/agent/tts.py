@@ -8,7 +8,9 @@ served at /v1/audio/{id}.wav (the headset plays it with UnityWebRequestMultimedi
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 import struct
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -39,6 +41,21 @@ def pcm16_to_wav(pcm: bytes, sample_rate: int, channels: int = 1) -> bytes:
         len(pcm),
     )
     return header + pcm
+
+
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'])")
+_GAP_24K = bytes(2 * 24000 * 15 // 100)  # 150 ms of silence
+
+
+def split_sentences(text: str, min_chars: int = 25) -> list[str]:
+    """`text` as sentences for parallel synthesis; fragments shorter than `min_chars` stay with their neighbour."""
+    out: list[str] = []
+    for part in _SENTENCE_END.split(text.strip()):
+        if out and (len(out[-1]) < min_chars or len(part) < min_chars):
+            out[-1] = f"{out[-1]} {part}"
+        elif part:
+            out.append(part)
+    return out or [text]
 
 
 class TTS(ABC):
@@ -81,10 +98,16 @@ class OpenAITTS(_FileTTS):
         self.model = settings.tts_model
         self.voice = settings.tts_voice
 
-    async def _render(self, text: str) -> bytes:
-        # pcm (24 kHz s16le mono) + our own header: OpenAI's streamed WAV header carries placeholder sizes
+    async def _pcm(self, text: str) -> bytes:
         r = await self.client.audio.speech.create(model=self.model, voice=self.voice, input=text, response_format="pcm")
-        return pcm16_to_wav(r.content, 24000)
+        return r.content
+
+    async def _render(self, text: str) -> bytes:
+        # Sentences render concurrently (TTS time ~ the longest sentence, not the sum), joined by a short pause.
+        # pcm (24 kHz s16le mono) + our own header: OpenAI's streamed WAV header carries placeholder sizes.
+        parts = split_sentences(text)
+        pcms = await asyncio.gather(*(self._pcm(p) for p in parts))
+        return pcm16_to_wav(_GAP_24K.join(pcms), 24000)
 
 
 class ElevenLabsTTS(_FileTTS):
