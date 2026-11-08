@@ -168,6 +168,24 @@ async def test_purge_hides_live_frames(client):
     assert (await c.delete("/v1/memories")).status_code == 200
     assert (await c.get(url)).status_code == 404
     assert (await c.get("/v1/live/now_1_nope.jpg")).status_code == 404
+    live_dir = app.state.live_memory.cache_dir
+    assert not list(live_dir.glob("now_*.jpg"))  # purge deletes the cached files, not just hides them
+
+
+async def test_past_time_window_gets_no_now_items(client):
+    c, app = client
+    ts = await _post_burst(c, 1_762_000_000.0)
+    from datetime import UTC, datetime
+
+    now = datetime.fromtimestamp(ts[-1] + 1, UTC)
+    q = "what am I looking at right now"
+    res = await app.state.retriever.retrieve(q, device_id="dev1", now=now)
+    assert [r for r in res.tokens if r.token.id.startswith("now_")]  # control: no window -> NOW items
+    yesterday = ts[-1] - 86_400
+    res = await app.state.retriever.retrieve(
+        q, time_from=yesterday - 3600, time_to=yesterday, device_id="dev1", now=now
+    )
+    assert not [r for r in res.tokens if r.token.id.startswith("now_")]
 
 
 class _STT(STT):
@@ -300,6 +318,22 @@ def test_opt_out_flag(tmp_path, monkeypatch):
     assert LiveMemorySettings(_env_file=None).enabled is False
     S.live_settings = LiveMemorySettings(_env_file=None, enabled=True)
     assert isinstance(wrap_retriever(S(), settings, inner), LiveRetriever)
+
+
+async def test_pinned_past_now_ignores_later_frames(tmp_path):
+    buf = ReplayBuffer()
+    for t in (100.0, 101.0, 102.0, 500.0, 501.0):
+        buf.add("d", t, _jpeg())
+    live = LiveMemory(_State(buf), LiveMemorySettings(_env_file=None), tmp_path)
+    out = await live.now_items([], "d", now=103.0)  # an eval pinning the clock before the newest frames
+    assert [t.ts for t in out] == [102.0, 101.0, 100.0]
+
+
+async def test_orphaned_cache_files_are_removed(tmp_path):
+    (tmp_path / "now_1_stale.jpg").write_bytes(b"x")
+    (tmp_path / "keep.txt").write_text("not ours")
+    LiveMemory(_State(None), LiveMemorySettings(_env_file=None), tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["keep.txt"]
 
 
 async def test_no_replay_buffer_is_harmless(tmp_path):

@@ -46,6 +46,7 @@ from megamind.retrieval.base import RetrievalResult, RetrievedToken, RetrieveMod
 log = logging.getLogger("megamind.live")
 
 LIVE_REASON = "live"
+_FUTURE_SLACK_S = 2.0  # frames up to this far after `now` still count as "now" (clock skew)
 
 
 class LiveMemorySettings(BaseSettings):
@@ -138,6 +139,10 @@ class LiveMemory:
         self.cache_dir = cache_dir
         self.face_blur = face_blur
         self._cache: OrderedDict[str, _Cached] = OrderedDict()
+        # frames cached by an earlier process are orphans (no index entry, maybe purged since): drop them
+        if cache_dir.is_dir():
+            for p in cache_dir.glob("now_*.jpg"):
+                p.unlink(missing_ok=True)
 
     # -- frame cache --
 
@@ -154,6 +159,13 @@ class LiveMemory:
             self._drop(frame_id)
             return None
         return c.path
+
+    def prune(self) -> int:
+        """Delete cached frames whose source frame left the replay buffer (e.g. after DELETE /memories)."""
+        dead = [fid for fid, c in self._cache.items() if not self._alive(c)]
+        for fid in dead:
+            self._drop(fid)
+        return len(dead)
 
     def _drop(self, frame_id: str) -> None:
         c = self._cache.pop(frame_id, None)
@@ -190,6 +202,9 @@ class LiveMemory:
             stats = buf.stats()
             device_id = max(stats, key=lambda d: stats[d]["to"]) if stats else None
         newest = buf.newest_ts(device_id) if device_id is not None else None
+        if newest is not None and newest > now + _FUTURE_SLACK_S:  # `now` pinned in the past (evals)
+            past = buf.frames(device_id, now - self.cfg.frame_window_s, now + _FUTURE_SLACK_S)
+            newest = past[-1].ts if past else None
         if newest is None or (self.cfg.max_age_s > 0 and now - newest > self.cfg.max_age_s):
             return device_id, []
         picked = []
@@ -275,6 +290,9 @@ class LiveRetriever(Retriever):
         if not (is_now_question(query) or is_now_question(live_question.get())):
             return res
         now_ts = now.timestamp() if now is not None else time.time()
+        horizon = max(self.live.cfg.frame_window_s, self.live.cfg.transcript_window_s, self.live.cfg.max_age_s)
+        if time_to is not None and time_to < now_ts - horizon:
+            return res  # the caller pinned a past window (e.g. Claude's time_to=yesterday): not about now
         try:
             items = await self.live.now_items(res.tokens, device_id, now_ts)
         except Exception:  # noqa: BLE001
@@ -304,12 +322,38 @@ async def get_live_frame(request: Request, frame_id: str):
     return FileResponse(p, media_type="image/jpeg")
 
 
+class _PurgeMirror:
+    """Pure-ASGI middleware: after a successful `DELETE /v1/memories`, delete cached live frames whose source
+    left the replay buffer (installed after replay's own mirror, so it runs after the buffer purge)."""
+
+    def __init__(self, app, state) -> None:
+        self.app = app
+        self.state = state
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "DELETE" or scope["path"].rstrip("/") != "/v1/memories":
+            return await self.app(scope, receive, send)
+        status: list[int] = []
+
+        async def _send(msg):
+            if msg["type"] == "http.response.start":
+                status.append(msg["status"])
+            await send(msg)
+
+        await self.app(scope, receive, _send)
+        live: LiveMemory | None = getattr(self.state, "live_memory", None)
+        if live is not None and status[:1] == [200]:
+            live.prune()
+
+
 def install(app: FastAPI, settings, live_settings: LiveMemorySettings | None = None) -> None:
-    """Call from `create_app`: the GET /v1/live route + settings. `wrap_retriever` does the rest in lifespan."""
+    """Call from `create_app` after `replay.install`: GET /v1/live route, purge mirror, settings.
+    `wrap_retriever` does the rest in lifespan."""
     st = app.state
     st.live_settings = live_settings or LiveMemorySettings()
     st.live_memory = None
     app.include_router(router, prefix="/v1")
+    app.add_middleware(_PurgeMirror, state=st)
 
 
 def wrap_retriever(state, settings, retriever: Retriever) -> Retriever:
