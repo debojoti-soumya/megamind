@@ -455,6 +455,7 @@ namespace Megamind.EditorTools
             var go = new GameObject("Thumb", typeof(RectTransform), typeof(RawImage), typeof(LayoutElement));
             go.GetComponent<RectTransform>().sizeDelta = new Vector2(ThumbW, ThumbH);
             var le = go.GetComponent<LayoutElement>(); le.preferredWidth = ThumbW; le.preferredHeight = ThumbH;
+            // Placeholder tint while the JPEG downloads; ChatPanel.LoadThumb resets it to white (RawImage.color multiplies the texture).
             go.GetComponent<RawImage>().color = new Color(0.2f, 0.22f, 0.26f);
             var label = MakeLabel(go.transform, "Age", "n min ago", 15, TextMain, TextAnchor.LowerRight);
             label.rectTransform.Stretch(); label.rectTransform.offsetMin = new Vector2(4f, 3f); label.rectTransform.offsetMax = new Vector2(-4f, -3f);
