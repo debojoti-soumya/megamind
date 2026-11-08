@@ -75,7 +75,7 @@ panel. Use it when they ask for a 3D model, a 3D view, a hologram or a splat of 
 sentence what was modelled and when the photo is from; if it is only a relief (full_3d false), say it only
 shows the side they saw. If it fails, say why."""
 
-_WANTS = re.compile(r"\b(3d|3-d|three[- ]d|hologram|gaussian\s+splats?|splat)\b", re.I)
+_WANTS = re.compile(r"\b(?:(?:3d|3-d|three[- ]d)\b(?!\s*-?print)|holograms?\b|(?:gaussian\s+)?splats?\b)", re.I)
 _FRAMING = re.compile(
     r"^\s*(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?"
     r"(?:make|create|build|generate|give|show|turn|render|reconstruct)?\s*(?:me\s+)?(?:an?\s+|the\s+)?"

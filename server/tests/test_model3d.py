@@ -83,6 +83,7 @@ def test_strip_3d_framing(q, subject):
 def test_wants_3d():
     assert wants_3d("make a 3D model of my mug") and wants_3d("splat of the car")
     assert not wants_3d("pictures of my dog") and not wants_3d("where did I leave my keys")
+    assert not wants_3d("where did I leave my 3D printer?") and not wants_3d("the 3d-printed vase")
 
 
 class FakeModels(model3d.LocalModels):
