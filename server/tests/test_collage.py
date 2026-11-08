@@ -288,6 +288,54 @@ def test_choose_hero_prefers_best_match():
     assert choose_hero([]) == 0
 
 
+def test_caption_match_needs_every_subject_word():
+    from megamind.agent.collage import _caption_matches
+    from megamind.agent.smart_montage import Pick
+
+    caps = ["a red car parked outside", "a blue car on the road", "a man in a red jacket"]
+    picks = [
+        Pick(MemoryToken(id=f"p{i}", device_id="d", ts=T0 + i, caption=c, thumb_path="", frame_hash=f"{i:016x}"),
+             "", 0.5, False)
+        for i, c in enumerate(caps)
+    ]  # fmt: skip
+    assert [p.token.id for p in _caption_matches(picks, phrase="red car")] == ["p0"]
+
+
+def test_collage_key_tracks_the_subtitle(tmp_path):
+    from megamind.agent.collage import CollageSettings, Tile, collage_key
+
+    tok = MemoryToken(id="t", device_id="d", ts=T0, caption="", thumb_path="", frame_hash="0" * 16)
+    tiles, cfg = [Tile(tok, "Coat", b"", 1.0)], CollageSettings()
+    assert collage_key("Coat", tiles, cfg, 0, "1 moment · unverified") != collage_key("Coat", tiles, cfg, 0, "1 moment")
+
+
+def test_cache_put_after_clear_writes_nothing_and_parallel_puts_dont_collide(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from megamind.agent.collage import CollageCache
+
+    cache = CollageCache(tmp_path, 10)
+    gen = cache.generation
+    cache.clear()
+    assert cache.put("k", b"old", gen) is None and not cache.path("k").exists()
+    with ThreadPoolExecutor(8) as ex:
+        paths = list(ex.map(lambda i: cache.put("same", bytes([i]) * 1000, cache.generation), range(32)))
+    assert all(p == cache.path("same") for p in paths)
+    assert len(cache.path("same").read_bytes()) == 1000 and not list(tmp_path.glob("*.tmp"))
+
+
+async def test_collage_time_range_skips_transcripts(app_client):
+    c, app = app_client
+    for i in range(200):  # an audio-heavy period: far more transcript tokens than candidates
+        await app.state.store.add(
+            MemoryToken(id=f"a{i:03d}", device_id="dev1", ts=T0 + 900 + i * 6, kind="transcript",
+                        caption=f"talking {i}", thumb_path="", frame_hash=f"{1000 + i:016x}")
+        )  # fmt: skip
+    r = await c.post("/v1/collage", json={"query": "photos", "time_from": T0 + 900, "time_to": T0 + 2100})
+    assert r.status_code == 200, r.text
+    assert {i["token_id"] for i in r.json()["images"]} == {"t003", "t004", "t005", "t006", "t007"}
+
+
 def test_choose_hero_decodes_only_tied_best_matches(monkeypatch):
     from megamind.agent import collage
 

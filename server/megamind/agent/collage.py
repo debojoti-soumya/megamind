@@ -23,6 +23,8 @@ import logging
 import math
 import os
 import re
+import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -107,25 +109,36 @@ class CollageCache:
     def __init__(self, cache_dir: Path, max_files: int) -> None:
         self.dir, self.max_files = Path(cache_dir), max(1, max_files)
         self.generation = 0  # bumped by `clear` (DELETE /v1/memories) so in-flight renders are dropped
+        self._lock = threading.Lock()  # `put`'s generation check + rename vs `clear`
 
     def path(self, key: str) -> Path:
         return self.dir / f"{key}.jpg"
 
-    def put(self, key: str, data: bytes) -> Path:
+    def put(self, key: str, data: bytes, generation: int | None = None) -> Path | None:
+        """None (nothing written) when `clear` ran since `generation` was read."""
         self.dir.mkdir(parents=True, exist_ok=True)
         p = self.path(key)
-        tmp = p.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_bytes(data)
-        tmp.replace(p)
+        fd, name = tempfile.mkstemp(dir=self.dir, prefix=f"{key}.", suffix=".tmp")
+        tmp = Path(name)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            with self._lock:
+                if generation is not None and generation != self.generation:
+                    return None
+                tmp.replace(p)
+        finally:
+            tmp.unlink(missing_ok=True)
         files = sorted(self.dir.glob("*.jpg"), key=lambda f: f.stat().st_mtime, reverse=True)
         for old in files[self.max_files :]:
             old.unlink(missing_ok=True)
         return p
 
     def clear(self) -> None:
-        self.generation += 1
-        for f in self.dir.glob("*.jpg") if self.dir.is_dir() else []:
-            f.unlink(missing_ok=True)
+        with self._lock:
+            self.generation += 1
+            for f in self.dir.glob("*.jpg") if self.dir.is_dir() else []:
+                f.unlink(missing_ok=True)
 
 
 # ---- render ----
@@ -343,8 +356,8 @@ def render_collage(tiles: list[Tile], title: str, subtitle: str, cfg: CollageSet
     return buf.getvalue()
 
 
-def collage_key(title: str, tiles: list[Tile], cfg: CollageSettings, hero: int = 0) -> str:
-    raw = repr(("v3", title, [(t.token.id, t.title) for t in tiles], hero, cfg.tile_px, cfg.quality))
+def collage_key(title: str, tiles: list[Tile], cfg: CollageSettings, hero: int = 0, subtitle: str = "") -> str:
+    raw = repr(("v4", title, subtitle, [(t.token.id, t.title) for t in tiles], hero, cfg.tile_px, cfg.quality))
     return hashlib.sha1(raw.encode()).hexdigest()[:20]
 
 
@@ -367,14 +380,15 @@ def _forms(w: str) -> set[str]:
 
 
 def _caption_matches(picks: list[smart.Pick], *, phrase: str) -> list[smart.Pick]:
-    """Unverified picks whose caption names the subject ("dogs" ~ "a dog on the couch"): without the visual check,
+    """Unverified picks whose caption names every subject word ("dogs" ~ "a dog on the couch"; "red car" needs both
+    "red" and "car"): without the visual check,
     a vector-search neighbour that never mentions it is more likely noise than a photo of it. None when no caption
     does: retrieval always returns its nearest neighbours, so "elephants" would otherwise get any photos at all."""
     want = [_forms(w) for w in smart._content_words(phrase)]
     hits = []
     for p in picks:
         words = {f for w in re.findall(r"[a-z0-9']+", p.token.caption.lower()) for f in _forms(w)}
-        if any(f & words for f in want):
+        if want and all(f & words for f in want):
             hits.append(p)
     return hits
 
@@ -411,7 +425,8 @@ async def make_collage(
             t0, t1 = win.time_from, win.time_to
         if t0 is None and t1 is None:
             raise CollageError(400, "say what the photos should show, or give a time range")
-        cands = [t for t in await candidates(st, "", t0, t1, device_id, mcfg.max_candidates) if t.has_image]
+        cands = await candidates(st, "", t0, t1, device_id, mcfg.max_candidates, kinds=("frame",))
+        cands = [t for t in cands if t.has_image]
         picks = [smart.Pick(t, "", 0.0, False) for t in cands]
         phrase, title = "", "Your photos"
     else:
@@ -460,13 +475,14 @@ async def make_collage(
     subtitle = f"{len(tiles)} moment{'s' if len(tiles) != 1 else ''} · {span}" + ("" if verified else " · unverified")
 
     hero = await asyncio.to_thread(choose_hero, tiles)
-    key = collage_key(title, tiles, cfg, hero)
+    key = collage_key(title, tiles, cfg, hero, subtitle)
     p = cache.path(key)
     if not p.is_file():
         data = await asyncio.to_thread(render_collage, tiles, title, subtitle, cfg, tz, hero)
-        if cache.generation != gen:
+        put = await asyncio.to_thread(cache.put, key, data, gen)
+        if put is None:
             raise CollageError(409, "memories were deleted while the collage was being made; try again")
-        p = await asyncio.to_thread(cache.put, key, data)
+        p = put
     with Image.open(p) as im:
         width, height = im.size
     log.info("collage %s: %r -> %d tiles (%d candidates, verified=%s)", key, query, len(tiles), len(cands), verified)
