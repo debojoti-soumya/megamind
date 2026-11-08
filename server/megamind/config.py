@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""
 
     store_backend: str = "memory"
-    retriever_backend: str = "hybrid"  # "hybrid" (ours) | "ucc" (Universal Constructor; falls back to hybrid on error)
+    retriever_backend: str = "hybrid"  # hybrid (ours) | ucc | hier | combo (per question: hybrid / UCC / hier)
     # | "hier": LLM day/hour/block notes searched coarse-to-fine over the hybrid's candidates (retrieval/hier.py)
     hier_model: str = "gpt-4.1"  # ranks blocks and frame tokens at recall time
     hier_note_model: str = "gpt-4.1-mini"  # writes the block/hour/day notes

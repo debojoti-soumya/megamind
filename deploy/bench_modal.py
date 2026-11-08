@@ -36,7 +36,10 @@ secrets = [modal.Secret.from_name("megamind-providers")]
 
 SAIL = {"READER_BASE_URL": "https://api.sailresearch.com/v1", "READER_PROVIDER": "vlm"}
 CONFIGS: dict[str, dict[str, str]] = {
-    "defaults": {},  # whatever config.py ships (CLAUDE_MODEL, READER_PROVIDER=auto, ...)
+    "defaults": {},
+    "combo": {
+        "RETRIEVER_BACKEND": "combo"
+    },  # hybrid / UCC / hier routed per question  # whatever config.py ships (CLAUDE_MODEL, READER_PROVIDER=auto, ...)
     "sail512_sonnet": {**SAIL, "READER_THUMB_MAX_PX": "512"},
     "sail960_sonnet": {**SAIL, "READER_THUMB_MAX_PX": "960"},
     "claude_sonnet": {"READER_PROVIDER": "claude", "READER_THUMB_MAX_PX": "960"},
@@ -68,6 +71,16 @@ def _ms(fn, reps: int = 3) -> dict:
     return {"p50": round(statistics.median(xs)), "min": round(min(xs)), "max": round(max(xs))}
 
 
+async def _render_ms(tts, text: str, reps: int = 3) -> dict:
+    xs = []
+    for _ in range(reps):
+        t0 = time.perf_counter()
+        await tts._render(text)
+        xs.append((time.perf_counter() - t0) * 1000)
+    await tts.client.close()
+    return {"p50": round(statistics.median(xs)), "min": round(min(xs)), "max": round(max(xs))}
+
+
 @app.function(image=image, secrets=secrets, timeout=600)
 def speech() -> dict:
     from openai import OpenAI
@@ -94,11 +107,11 @@ def speech() -> dict:
 
     two = answer + " You walked in from the car, put them down and went straight to the fridge."
     for model in ("tts-1", "gpt-4o-mini-tts"):
-        ours = OpenAITTS(Settings(_env_file=None, openai_api_key=os.environ["OPENAI_API_KEY"], tts_model=model))
+        cfg = Settings(_env_file=None, openai_api_key=os.environ["OPENAI_API_KEY"], tts_model=model)
         res[f"tts {model} 2 sentences, one call"] = _ms(
             lambda m=model: c.audio.speech.create(model=m, voice="alloy", input=two, response_format="pcm").read()
         )
-        res[f"tts {model} 2 sentences, OpenAITTS (parallel)"] = _ms(lambda o=ours: asyncio.run(o._render(two)))
+        res[f"tts {model} 2 sentences, OpenAITTS (parallel)"] = asyncio.run(_render_ms(OpenAITTS(cfg), two))
     wav = c.audio.speech.create(
         model="tts-1", voice="alloy", input="Where did I leave my keys this morning?", response_format="wav"
     ).read()

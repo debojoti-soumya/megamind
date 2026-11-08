@@ -303,6 +303,33 @@ def eval_settings(live: bool) -> Settings:
     return s
 
 
+async def eval_retriever(settings: Settings, store, text_emb, image_emb, day: Day):
+    """`settings.retriever_backend` (hybrid when unset). UCC gets the day pushed to a throwaway eval corpus first;
+    hier gets every block/hour/day note written up front, so neither pays index time inside a measured turn."""
+    if settings.retriever_backend == "hybrid":
+        return None
+    import hashlib
+    import time as _time
+
+    from megamind.retrieval import build_retriever
+    from megamind.retrieval.hier import HierRetriever
+
+    digest = hashlib.sha256(json.dumps([t.id for t in day.tokens]).encode()).hexdigest()[:10]
+    settings = settings.model_copy(update={"ucc_corpus": f"megamind-eval-agent-{digest}", "hier_cache_path": ""})
+    retriever, indexer = build_retriever(settings, store, text_emb, image_emb)
+    if indexer is not None:
+        indexer.client.keep_alive_s = 3 * 86400
+        await indexer.sync_once()
+        want, deadline = len([t for t in day.tokens if t.caption]), _time.monotonic() + 180
+        while len(await indexer.client.token_ids()) < want and _time.monotonic() < deadline:
+            await asyncio.sleep(3)  # uploads become queryable once the engine has read them
+    hier = retriever if isinstance(retriever, HierRetriever) else getattr(retriever, "hier", None)
+    if hier is not None:
+        await hier.memory.build(day.now, full=True)
+    print(f"retriever: {type(retriever).__name__}", file=sys.stderr)
+    return retriever
+
+
 async def run(
     day: Day,
     settings: Settings,
@@ -316,10 +343,12 @@ async def run(
     text_emb = build_text_embedder(settings)
     store = await seed_store(day.tokens, text_emb)
     reader = RecordingReader(build_reader(settings))
+    image_emb = build_image_embedder(settings)
+    retriever = await eval_retriever(settings, store, text_emb, image_emb, day)
     if agent is None:
-        agent = ClaudeAgent(settings, RecallMemory(store, text_emb, build_image_embedder(settings), reader))
+        agent = ClaudeAgent(settings, RecallMemory(store, text_emb, image_emb, reader, retriever=retriever))
     else:  # test hook: caller-built agent (e.g. mocked Anthropic client); re-point its tool at our store
-        agent.recall = RecallMemory(store, text_emb, build_image_embedder(settings), reader)
+        agent.recall = RecallMemory(store, text_emb, image_emb, reader, retriever=retriever)
 
     turns: list[Turn] = []
     for i, case in enumerate(day.cases[: limit or None]):
@@ -394,6 +423,7 @@ async def main() -> int:
     ap.add_argument("--live", action="store_true", help="use ANTHROPIC_API_KEY / READER_API_KEY from the env ($$$)")
     ap.add_argument("--limit", type=int, default=None, help="only the first N questions (use with --live)")
     ap.add_argument("--no-thumbs", action="store_true", help="skip rendering synthetic frames (captions only)")
+    ap.add_argument("--backend", choices=["hybrid", "combo", "ucc", "hier"], default=None, help="RETRIEVER_BACKEND")
     ap.add_argument("--thumb-width", type=int, default=512, help="synthetic frame width (960 = headset upload)")
     ap.add_argument("--price-in", type=float, default=CLAUDE_PRICE_IN, help="USD per 1M Claude input tokens")
     ap.add_argument("--price-out", type=float, default=CLAUDE_PRICE_OUT, help="USD per 1M Claude output tokens")
@@ -403,6 +433,8 @@ async def main() -> int:
     args = ap.parse_args()
 
     settings = eval_settings(args.live)
+    if args.backend:
+        settings = settings.model_copy(update={"retriever_backend": args.backend})
     if args.live and not (settings.anthropic_api_key or settings.reader_api_key not in ("", "none")):
         print("--live but no ANTHROPIC_API_KEY/READER_API_KEY in the environment", file=sys.stderr)
         return 2
