@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -129,8 +130,11 @@ class EnrichmentWorker:
 
 async def purge_all(state: Any, device_id: str | None = None, *, since_ts: float | None = None) -> int:
     """Purge for `DELETE /v1/memories`: store rows + thumbnails, queued/in-flight frames, and the
-    ingest dedupe state (pending hashes, keyframe-filter history) that still references them."""
-    n = await state.worker.purge(device_id, since_ts=since_ts)
+    ingest dedupe state (pending hashes, keyframe-filter history) that still references them. Transcript writes
+    are held off for the duration and their merge target is dropped, so no merge re-inserts a purged token."""
+    sink = getattr(state, "transcripts", None)
+    async with sink.purging(device_id) if sink is not None else contextlib.nullcontext():
+        n = await state.worker.purge(device_id, since_ts=since_ts)
     pending: dict[str, list[tuple[float, str]]] = getattr(state, "pending_hashes", {})
     for dev in [d for d in pending if device_id is None or d == device_id]:
         pending[dev] = [(t, h) for t, h in pending[dev] if since_ts is not None and t < since_ts]

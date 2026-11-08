@@ -20,8 +20,13 @@ the value is `mock (<provider> configured, no key | not installed | not implemen
 - `meta`: JSON string
   ```json
   { "device_id": "quest3-abc", "ts": 1731000000.123,
-    "pose": { "x": 0.0, "y": 1.6, "z": 0.0, "yaw": 90.0 } }
+    "pose": { "x": 0.0, "y": 1.6, "z": 0.0, "yaw": 90.0 },
+    "transcript": null }
   ```
+  `transcript` (optional, string|null): text heard around this frame (subtitles, an external ASR). It is stored as a
+  `kind="transcript"` token (same path and merge rule as `POST /audio`, no STT), **never** attached to the frame and
+  **never** changes the frame's keep decision: it is stored even when the frame is rejected. `""`/`null` = none.
+  Send each piece of text once (a repeat of the last piece within the merge window is ignored).
 Response `202 Accepted`:
 ```json
 { "frame_id": "01J...", "accepted": true, "reason": null }
@@ -46,6 +51,11 @@ no thumbnail). Response `200 OK`:
 ```json
 { "audio_id": "01J...", "duration_s": 15.0, "transcript": "hi I'm Priya ...", "token_ids": ["01J..."] }
 ```
+Speech that starts ≤ `SPEECH_MERGE_S` (10 s) after the device's last transcript token ends continues that token
+(its caption grows, `ts` stays the token's start) as long as it would span ≤ `SPEECH_MAX_TOKEN_S` (60 s), so an
+utterance cut by a chunk boundary stays one token. Only the first window of a chunk can continue the previous chunk;
+so `token_ids` may start with an **existing** (merged-into) token id. The merge target is kept per device in server
+memory (no merge across a restart) and dropped by `DELETE /memories`.
 Silence → `token_ids: []`. Bad `meta` (incl. non-finite `ts_start`) / empty body → 400; > 25 MB or > 600 s → 413;
 undecodable audio → 415; STT provider error → 502.
 
@@ -125,11 +135,11 @@ text_vec[1024], image_vec[768], thumb_path, frame_hash, episode_id|null,
 kind: "frame" | "episode" | "transcript"
 ```
 `kind` is `"frame"` for captured keyframes (default). The store groups consecutive frames into
-`episode_id`s (time gap + visual change) and a consolidation job writes one `kind="episode"` token
+`episode_id`s (time gap, visual change against the last few frames, pose movement, and a 30 min length cap) and a consolidation job writes one `kind="episode"` token
 per closed episode whose `caption` is a summary of that episode and whose `ts` is the episode start,
 so vague queries ("what did I do this morning") hit summaries. Episode tokens are server-internal and
 never appear in `FrameAccepted`; they surface through search/chat citations like any other token.
-`kind="transcript"` tokens come from `POST /audio`: `caption` holds the heard words, `thumb_path`/`frame_hash` are
+`kind="transcript"` tokens come from `POST /audio` and `FrameMeta.transcript`: `caption` holds the heard words, `thumb_path`/`frame_hash` are
 empty and `image_vec` is null; they are never episodized or used for frame dedupe.
 Storage note (no wire change): the LanceDB backend stores `text_vec`/`image_vec` as float16 in newly created
 tables (`LANCEDB_VECTOR_DTYPE`, default `float16`; existing float32 tables are kept as

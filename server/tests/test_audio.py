@@ -315,3 +315,86 @@ def test_faster_whisper_provider_builds_lazily():
 
     stt = build_audio_stt(Settings(audio_stt_provider="faster-whisper", _env_file=None), MockSTT())
     assert isinstance(stt, FasterWhisperSTT) and stt.model == "small.en"  # no model download until first use
+
+
+# ------------------------------------------------------------------ speech merge (TranscriptSink)
+
+
+async def test_audio_chunks_close_together_merge_into_one_token(client):
+    c, app = client
+    app.state.audio_stt = TextOnlySTT("so the plan is that we meet")
+    first = (await _post_audio(c, _wav(4.0), ts_start=T0)).json()
+    app.state.audio_stt = TextOnlySTT("at the north entrance on Tuesday")
+    second = (await _post_audio(c, _wav(4.0), ts_start=T0 + 9.0)).json()  # starts 5 s after the first ends
+    assert second["token_ids"] == first["token_ids"]  # the merged-into token's id
+    assert second["transcript"] == "at the north entrance on Tuesday"  # this chunk's words only
+
+    (tid,) = first["token_ids"]
+    tok = await app.state.store.get(tid)
+    assert tok.caption == 'Speech heard nearby: "so the plan is that we meet at the north entrance on Tuesday"'
+    assert tok.ts == pytest.approx(T0) and tok.kind == "transcript"
+    assert tok.text_vec == pytest.approx(await app.state.text_embedder.embed(tok.caption), abs=1e-6)  # re-embedded
+    assert await app.state.store.count() == 1
+    hits = (await c.get("/v1/memories", params={"q": "plan north entrance"})).json()["results"]
+    assert [h["id"] for h in hits] == [tid]
+
+
+async def test_audio_chunks_far_apart_stay_separate(client):
+    c, app = client
+    app.state.audio_stt = TextOnlySTT("first thing")
+    a = (await _post_audio(c, _wav(4.0), ts_start=T0)).json()["token_ids"]
+    b = (await _post_audio(c, _wav(4.0), ts_start=T0 + 24.0)).json()["token_ids"]  # 20 s after the first ends
+    assert a != b and await app.state.store.count() == 2
+    other = (await _post_audio(c, _wav(4.0), ts_start=T0 + 28.0, device="dev2")).json()["token_ids"]
+    assert other != b  # merging is per device
+
+
+async def test_audio_merge_respects_max_token_span(client):
+    c, app = client
+    app.state.audio_stt = TextOnlySTT("still talking")
+    ids = [
+        (await _post_audio(c, _wav(10.0), ts_start=T0 + 12.0 * i)).json()["token_ids"][0] for i in range(7)
+    ]  # 10 s chunks, 2 s apart: merge until the token would span > 60 s
+    assert ids[:5] == [ids[0]] * 5  # [T0, T0+58]
+    assert ids[5] != ids[0] and ids[6] == ids[5]
+
+
+async def test_audio_merge_only_continues_previous_chunk(client):
+    c, app = client
+    app.state.audio_stt = MockSTT(script=["one", "two", "three", "four"], segment_s=5.0)
+    r1 = (await _post_audio(c, _wav(20.0), ts_start=T0)).json()  # windows [0,15) [15,20)
+    assert len(r1["token_ids"]) == 2  # within a chunk AUDIO_WINDOW_S still decides
+    r2 = (await _post_audio(c, _wav(20.0), ts_start=T0 + 22.0)).json()
+    assert r2["token_ids"][0] == r1["token_ids"][1]  # the boundary utterance continues the last token
+    assert len(r2["token_ids"]) == 2 and r2["token_ids"][1] not in r1["token_ids"]
+
+
+async def test_purge_drops_merge_target(client):
+    c, app = client
+    app.state.audio_stt = TextOnlySTT("my PIN is something private")
+    (old,) = (await _post_audio(c, _wav(4.0), ts_start=T0)).json()["token_ids"]
+    assert (await c.delete("/v1/memories", params={"device_id": "dev1"})).json()["deleted"] == 1
+    app.state.audio_stt = TextOnlySTT("anyway")
+    (new,) = (await _post_audio(c, _wav(4.0), ts_start=T0 + 6.0)).json()["token_ids"]
+    assert new != old and await app.state.store.get(old) is None
+    assert (await app.state.store.get(new)).caption == 'Speech heard nearby: "anyway"'
+
+
+async def test_transcript_sink_unit():
+    from megamind.ingest.audio import TranscriptSink
+    from megamind.ingest.enrich import MockTextEmbedder
+    from megamind.store.memory_store import InMemoryStore
+
+    store = InMemoryStore()
+    sink = TranscriptSink(store, MockTextEmbedder(), merge_s=10, max_token_s=60)
+    assert await sink.add("d", T0, T0 + 1, "   ") is None
+    a = await sink.add("d", T0, T0 + 2, "hello there")
+    same = await sink.add("d", T0 + 3, T0 + 3, "hello there")  # the same cue re-sent with the next frame
+    assert same.id == a.id and same.caption == a.caption
+    late = await sink.add("d", T0 - 30, T0 - 28, "earlier words")  # out of order: never merged
+    assert late.id != a.id
+    nxt = await sink.add("d", T0 + 8, T0 + 9, "general Kenobi")  # target stays the newest token
+    assert nxt.id == a.id and nxt.caption == 'Speech heard nearby: "hello there general Kenobi"'
+    off = TranscriptSink(store, MockTextEmbedder(), merge_s=0)
+    x = await off.add("d", T0, T0 + 1, "a")
+    assert (await off.add("d", T0 + 1, T0 + 2, "b")).id != x.id

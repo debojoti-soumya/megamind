@@ -16,6 +16,7 @@ from megamind.agent.stt import build_stt
 from megamind.agent.tools import RecallMemory
 from megamind.agent.tts import build_tts
 from megamind.config import Settings, get_settings
+from megamind.ingest.audio import TranscriptSink
 from megamind.ingest.audio import router as audio_router
 from megamind.ingest.enrich import build_enricher
 from megamind.ingest.filter import KeyframeFilter
@@ -85,9 +86,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.text_embedder = build_text_embedder(settings)
         st.image_embedder = build_image_embedder(settings)
         st.store.image_calibration = image_calibration(settings, st.image_embedder)
+        st.transcripts = TranscriptSink(
+            st.store,
+            st.text_embedder,
+            merge_s=settings.speech_merge_s,
+            max_token_s=settings.speech_max_token_s,
+        )
         st.worker = EnrichmentWorker(
             st.store,
-            build_enricher(settings),
+            build_enricher(settings, st.image_embedder),
             st.text_embedder,
             st.image_embedder,
             face_blur=build_face_blur(settings),
