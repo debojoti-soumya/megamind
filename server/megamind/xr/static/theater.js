@@ -12,7 +12,8 @@
  * comes from the importmap in index.html, so the server needs no frontend build.
  *
  * Main-thread budget: the render loop only raycasts and draws. Thumbnails are fetched and decoded off the
- * main thread (fetch + createImageBitmap); canvas panels are redrawn only when their content changes.
+ * main thread (fetch + createImageBitmap) once per memory (cards are diffed, not rebuilt, as memories arrive);
+ * canvas panels are redrawn only when their content changes, the streamed answer at most once per frame.
  */
 import * as THREE from "three";
 
@@ -33,9 +34,14 @@ const VOICE_LABELS = {
 };
 const VOICE_BG = { idle: "#1c2a4a", starting: "#4a3a12", listening: "#5a1f2a", transcribing: "#1f3460", error: "#3a1d24" };
 
-export function formatClock(ts) {
+/** "14:05" for a moment from today, "Tue 14:05" for one from another day (cited moments can be days old). */
+export function formatClock(ts, now = Date.now()) {
   if (typeof ts !== "number" || !Number.isFinite(ts)) return "";
-  return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const d = new Date(ts * 1000);
+  const time = { hour: "2-digit", minute: "2-digit" };
+  return d.toDateString() === new Date(now).toDateString()
+    ? d.toLocaleTimeString([], time)
+    : d.toLocaleString([], { weekday: "short", ...time });
 }
 
 /** Decode an image without blocking the main thread. Resolves null on any failure. */
@@ -122,7 +128,12 @@ export class MemoryTheater {
     this.drag = null;
     this.disposed = false;
     this.cardMeshes = new Map();
+    this.highlighted = new Set();
+    this.playingId = null;
     this.playToken = 0;
+    this.pendingAnswer = null; // drawn once per frame in tick(): streamed answers arrive many times a second
+    this.audioUnlocked = false;
+    this.ducked = false;
     this.mode = "preview";
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -143,7 +154,8 @@ export class MemoryTheater {
     this.video.crossOrigin = "anonymous";
     this.video.playsInline = true;
     this.video.preload = "auto";
-    this.video.muted = true; // autoplay-safe until a user gesture (enterXR) unmutes
+    this.video.muted = true; // autoplay-safe until a user gesture (enterXR / first question) unlocks audio
+    this.video.loop = true; // a +-5 s moment loops on the screen until the next pick
     this.videoTex = new THREE.VideoTexture(this.video);
     this.videoTex.colorSpace = THREE.SRGBColorSpace;
     const frame = new THREE.Mesh(new THREE.PlaneGeometry(2.04, 1.2), new THREE.MeshBasicMaterial({ color: 0x0b0f17 }));
@@ -233,11 +245,28 @@ export class MemoryTheater {
   }
 
   highlight(ids) {
-    const hl = new Set(ids);
-    for (const [id, mesh] of this.cardMeshes) mesh.userData.glow.visible = hl.has(id);
+    this.highlighted = new Set(ids);
+    this.refreshGlow();
   }
 
+  /** Cited cards glow blue; the card on the screen glows white and stands a little larger than its neighbours. */
+  refreshGlow() {
+    for (const [id, mesh] of this.cardMeshes) {
+      const glow = mesh.userData.glow;
+      const playing = id === this.playingId;
+      glow.visible = playing || this.highlighted.has(id);
+      glow.material.color.set(playing ? 0xf2f5fa : 0x7aa2ff);
+      mesh.userData.baseScale = playing ? 1.15 : 1;
+      if (mesh !== this.hovered) mesh.scale.setScalar(mesh.userData.baseScale);
+    }
+  }
+
+  /** Queue the answer panel; the next frame draws it (one redraw per frame however fast the stream is). */
   setAnswer(question, text, found = true) {
+    this.pendingAnswer = { question, text, found };
+  }
+
+  drawAnswer({ question, text, found }) {
     const { ctx, canvas, tex } = this.answer;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "rgba(15,20,32,0.92)";
@@ -281,6 +310,8 @@ export class MemoryTheater {
   play(m) {
     if (!m) return;
     const token = ++this.playToken;
+    this.playingId = m.id ?? null;
+    this.refreshGlow();
     const title = formatClock(m.ts) || "Memory";
     const sub = (m.caption || "").slice(0, 120);
     const showStill = (note) => {
@@ -316,9 +347,25 @@ export class MemoryTheater {
     v.load();
   }
 
+  /** Call from a user gesture (a click, a submitted question): lets the replay play with sound. */
+  unlockAudio() {
+    this.audioUnlocked = true;
+    this.applyMute();
+  }
+
+  /** Mute the replay while the spoken answer plays, so the two don't talk over each other. */
+  duckReplay(on) {
+    this.ducked = on;
+    this.applyMute();
+  }
+
+  applyMute() {
+    this.video.muted = !this.audioUnlocked || this.ducked;
+  }
+
   /** Must be called from a user gesture (button click). */
   async enterXR() {
-    this.video.muted = false; // unlock audio playback with the same gesture
+    this.unlockAudio(); // the same gesture unlocks audio playback
     const xr = navigator.xr;
     if (!xr) return "preview";
     const mode = (await xr.isSessionSupported("immersive-ar").catch(() => false))
@@ -441,64 +488,77 @@ export class MemoryTheater {
     return m;
   }
 
+  /** Lay the cards out on the arc, reusing the mesh (and decoded thumbnail) of every memory that is still shown. */
   buildCards(hits) {
-    const old = new Set(this.cardMeshes.values());
-    this.selectables = this.selectables.filter((s) => !old.has(s));
-    for (const m of old) {
+    const keep = new Set(hits.map((h) => h.id));
+    for (const [id, m] of this.cardMeshes) {
+      if (keep.has(id)) continue;
+      this.cardMeshes.delete(id);
+      this.cardsGroup.remove(m);
+      this.selectables = this.selectables.filter((s) => s !== m);
+      if (this.hovered === m) this.hovered = null;
+      m.userData.glow.material.dispose();
       m.material.map?.dispose();
       m.material.dispose();
       m.geometry.dispose();
     }
-    this.cardsGroup.clear();
-    this.cardMeshes.clear();
     const n = hits.length;
     const radius = 1.75;
     const spread = Math.min(Math.PI * 0.6, n * 0.13);
     hits.forEach((h, i) => {
+      let card = this.cardMeshes.get(h.id);
+      if (!card) {
+        card = this.makeCard(h);
+        this.cardsGroup.add(card);
+        this.cardMeshes.set(h.id, card);
+        this.selectables.push(card);
+      }
       const a = n === 1 ? 0 : -spread / 2 + (spread * i) / (n - 1);
-      const p = canvasPanel(320, 220);
-      const draw = (img) => {
-        p.ctx.fillStyle = "#121826";
-        roundRect(p.ctx, 0, 0, 320, 220, 18);
-        p.ctx.fill();
-        if (img) {
-          p.ctx.save();
-          roundRect(p.ctx, 8, 8, 304, 164, 12);
-          p.ctx.clip();
-          drawCover(p.ctx, img, 8, 8, 304, 164);
-          p.ctx.restore();
-        }
-        p.ctx.fillStyle = "#e8edf6";
-        p.ctx.font = "600 30px system-ui, sans-serif";
-        p.ctx.fillText(formatClock(h.ts), 14, 206);
-        p.tex.needsUpdate = true;
-      };
-      draw();
-      loadBitmap(h.thumb_url).then((img) => {
-        if (img && !this.disposed) draw(img);
-        img?.close?.(); // cards are rebuilt as memories arrive; don't leave bitmaps to GC on the headset
-      });
-      const card = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.3, 0.206),
-        new THREE.MeshBasicMaterial({ map: p.tex, transparent: true }),
-      );
       const row = i % 2;
       card.position.set(Math.sin(a) * radius, 0.78 + row * 0.24, -Math.cos(a) * radius);
       card.lookAt(0, 0.95 + row * 0.24, 0);
-      const glow = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.33, 0.236),
-        new THREE.MeshBasicMaterial({ color: 0x7aa2ff, transparent: true, opacity: 0.9 }),
-      );
-      glow.position.z = -0.002;
-      glow.visible = false;
-      card.add(glow);
-      card.userData.glow = glow;
-      card.userData.onSelect = () => this.cb.onSelectMemory(h);
-      card.userData.hoverScale = 1.12;
-      this.cardsGroup.add(card);
-      this.cardMeshes.set(h.id, card);
-      this.selectables.push(card);
     });
+    this.refreshGlow();
+  }
+
+  makeCard(h) {
+    const p = canvasPanel(320, 220);
+    const draw = (img) => {
+      p.ctx.fillStyle = "#121826";
+      roundRect(p.ctx, 0, 0, 320, 220, 18);
+      p.ctx.fill();
+      if (img) {
+        p.ctx.save();
+        roundRect(p.ctx, 8, 8, 304, 164, 12);
+        p.ctx.clip();
+        drawCover(p.ctx, img, 8, 8, 304, 164);
+        p.ctx.restore();
+      }
+      p.ctx.fillStyle = "#e8edf6";
+      p.ctx.font = "600 30px system-ui, sans-serif";
+      p.ctx.fillText(formatClock(h.ts), 14, 206);
+      p.tex.needsUpdate = true;
+    };
+    draw();
+    loadBitmap(h.thumb_url).then((img) => {
+      if (img && !this.disposed && this.cardMeshes.get(h.id) === card) draw(img);
+      img?.close?.(); // free the decoded pixels now (copied into the canvas), not at GC on the headset
+    });
+    const card = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.3, 0.206),
+      new THREE.MeshBasicMaterial({ map: p.tex, transparent: true }),
+    );
+    const glow = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.33, 0.236),
+      new THREE.MeshBasicMaterial({ color: 0x7aa2ff, transparent: true, opacity: 0.9 }),
+    );
+    glow.position.z = -0.002;
+    glow.visible = false;
+    card.add(glow);
+    card.userData.glow = glow;
+    card.userData.onSelect = () => this.cb.onSelectMemory(h);
+    card.userData.hoverScale = 1.12;
+    return card;
   }
 
   setupControllers() {
@@ -565,6 +625,10 @@ export class MemoryTheater {
 
   tick() {
     if (this.disposed) return;
+    if (this.pendingAnswer) {
+      this.drawAnswer(this.pendingAnswer);
+      this.pendingAnswer = null;
+    }
     let hover = null;
     if (this.renderer.xr.isPresenting) {
       for (const c of this.controllers) hover = hover ?? this.pick(c);
@@ -575,8 +639,8 @@ export class MemoryTheater {
       this.renderer.domElement.style.cursor = hover ? "pointer" : this.drag ? "grabbing" : "grab";
     }
     if (hover !== this.hovered) {
-      this.hovered?.scale.setScalar(1);
-      if (hover?.userData.hoverScale) hover.scale.setScalar(hover.userData.hoverScale);
+      this.hovered?.scale.setScalar(this.hovered.userData.baseScale ?? 1);
+      if (hover?.userData.hoverScale) hover.scale.setScalar(hover.userData.hoverScale * (hover.userData.baseScale ?? 1));
       this.hovered = hover;
     }
     this.renderer.render(this.scene, this.camera);
