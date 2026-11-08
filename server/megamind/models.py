@@ -147,6 +147,25 @@ class ChatResponse(BaseModel):
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
 
 
+class ChatStreamRetrieval(BaseModel):
+    """`POST /v1/chat/stream` event `retrieval`: candidates from one recall (cited first), before the answer."""
+
+    confidence: Confidence
+    candidates: list[Citation] = Field(default_factory=list)
+
+
+class ChatStreamDelta(BaseModel):
+    """`POST /v1/chat/stream` event `delta`: the next piece of answer text (append)."""
+
+    text: str
+
+
+class ChatStreamError(BaseModel):
+    """`POST /v1/chat/stream` event `error`: the turn failed after the stream started; no `final` follows."""
+
+    detail: str
+
+
 class MontageRequest(BaseModel):
     """`POST /v1/montage`: a query, a time range, or both (time bounds: unix seconds or ISO-8601; "" = unset)."""
 

@@ -105,6 +105,33 @@ For questions about the present ("what am I looking at right now", "what did I j
 includes live short-term memory (see `GET /live/{id}.jpg`): a cited raw frame has an id starting `now_`, a
 caption starting `LIVE NOW-<n>:` and `thumb_url` `/v1/live/{id}.jpg`. Treat `thumb_url` as an opaque URL.
 
+## `POST /chat/stream`
+The same turn as `POST /chat` (same request body, JSON or multipart, same 400/415/422 errors before the stream
+starts), answered as Server-Sent Events (`text/event-stream`) so clients can show candidates and answer text
+early. Each event is `event: <name>` + one `data:` line of JSON:
+
+| event | data | when |
+|---|---|---|
+| `retrieval` | `{ "confidence": "high", "candidates": [Citation, ...] }` | after each memory search, before the answer (cited first, then the other retrieved moments; `thumb_url` / `replay_url` as in `cited`) |
+| `delta` | `{ "text": "On the kitchen" }` | answer text as Claude generates it; append (the `<cites>` trailer is never sent) |
+| `reset` | `{}` | discard the text streamed so far (that model round turned into another search, or Claude failed and the caption fallback answers) |
+| `final` | exactly the `POST /chat` response body | last event of a successful turn; authoritative (`answer`, `cited`, `tool_calls`, `audio_url`) |
+| `error` | `{ "detail": "RuntimeError: ..." }` | last event when the turn fails after the stream started (no `final`) |
+
+```
+event: retrieval
+data: {"confidence": "high", "candidates": [{"id": "...", "ts": 1731000000.1, "caption": "...", "thumb_url": "/v1/thumbs/....jpg", "replay_url": null}]}
+
+event: delta
+data: {"text": "On the kitchen counter"}
+
+event: final
+data: {"transcript": "where did I leave my keys?", "answer": "On the kitchen counter ...", "audio_url": null, "cited": [...], "tool_calls": [...]}
+```
+Clients can swap it in for `POST /chat` and fall back to `POST /chat` on 404/405 (older servers). The model
+requests are identical to `POST /chat` apart from streaming, so answers are the same. With `RECALL_FIRST` a
+standalone question's `retrieval` arrives before Claude is called at all.
+
 ## `GET /replay.mp4?device_id=...&from=...&to=...`
 Moment replay: an H.264 mp4 of **every** frame received from the device in `[from, to]` (not just the
 keyframes the filter kept), each frame held until the next, so mp4 offset 0 = the first frame's `ts`.

@@ -342,6 +342,41 @@
 
   // ---------- chat ----------
   let speaker = null;
+  // POST /v1/chat/stream: answer text shows in a draft bubble as it is generated; resolves to a Response-like
+  // object for handleResponse (json() = the final event, i.e. the POST /v1/chat body). Plain POST /v1/chat on
+  // servers without the stream endpoint.
+  async function postChat(init) {
+    const r = await fetch(url('/v1/chat/stream'), init);
+    if (r.status === 404 || r.status === 405 || !r.body) return fetch(url('/v1/chat'), init);
+    if (!r.ok) return r;
+    let draft = null;
+    const setDraft = (t) => {
+      if (!draft) { $('empty')?.remove(); draft = document.createElement('div'); draft.className = 'msg assistant'; draft.innerHTML = '<div class="bubble"></div>'; transcript.appendChild(draft); }
+      draft.firstChild.textContent = t; scrollEnd();
+    };
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = '', text = '', final = null, error = null;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read(); if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          let ev = 'message', data = '';
+          for (const line of buf.slice(0, i).split('\n')) { if (line.startsWith('event:')) ev = line.slice(6).trim(); else if (line.startsWith('data:')) data += line.slice(5).trim(); }
+          buf = buf.slice(i + 2);
+          if (!data) continue;
+          const d = JSON.parse(data);
+          if (ev === 'delta') setDraft(text += d.text);
+          else if (ev === 'reset') { text = ''; if (draft) setDraft(''); }
+          else if (ev === 'final') final = d;
+          else if (ev === 'error') error = d.detail;
+        }
+      }
+    } finally { draft?.remove(); }
+    if (final) return { ok: true, json: async () => final };
+    return { ok: false, status: 'stream', text: async () => error || 'stream ended without an answer' };
+  }
   async function handleResponse(r, t0, echoTranscript) {
     const ms = performance.now() - t0;
     if (!r.ok) { addAssistant(`(server error ${r.status}: ${(await r.text()).slice(0, 200)})`, [], null, true); return; }
@@ -357,7 +392,7 @@
     text = text.trim(); if (!text) return;
     addUser(text); setThinking(true); const t0 = performance.now();
     try {
-      const r = await fetch(url('/v1/chat'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const r = await postChat({ method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: cfg.session, device_id: cfg.device, text }) });
       await handleResponse(r, t0, false);
     } catch (e) { addAssistant('(network error: ' + e.message + ')', [], null, true); }
@@ -369,7 +404,7 @@
       const fd = new FormData();
       fd.append('session_id', cfg.session); fd.append('device_id', cfg.device);
       fd.append('audio', new Blob([wav], { type: 'audio/wav' }), 'q.wav');
-      const r = await fetch(url('/v1/chat'), { method: 'POST', body: fd });
+      const r = await postChat({ method: 'POST', body: fd });
       await handleResponse(r, t0, true);
     } catch (e) { addAssistant('(network error: ' + e.message + ')', [], null, true); }
     finally { setThinking(false); }
