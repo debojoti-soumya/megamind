@@ -7,7 +7,9 @@ namespace Megamind
 {
     [Serializable] public class Pose { public float x, y, z, yaw; }
 
-    [Serializable] public class FrameMeta { public string device_id; public double ts; public Pose pose; }
+    // transcript: optional text heard around this frame; the server stores it as a kind="transcript" token and it
+    // never affects the keep decision. Leave null/empty (JsonUtility sends ""), the server treats "" as none.
+    [Serializable] public class FrameMeta { public string device_id; public double ts; public Pose pose; public string transcript; }
 
     [Serializable] public class FrameAccepted { public string frame_id; public bool accepted; public string reason; }
 
@@ -48,4 +50,21 @@ namespace Megamind
     [Serializable] public class HealthResponse { public string status; public int store_count; public HealthModels models; }
 
     [Serializable] public class PurgeResponse { public int deleted; }
+
+    // POST /v1/montage. time_from/time_to: unix seconds or ISO-8601 as strings; JsonUtility sends "" for null,
+    // which the server reads as unbounded (and query "" as no query). max_clips 0 = server default.
+    [Serializable] public class MontageRequest { public string device_id; public string query; public string time_from; public string time_to; public int max_clips; }
+
+    [Serializable] public class MontageClip { public string token_id; public double ts; public string title; public double duration_s; public string source; public string thumb_url; }
+
+    [Serializable]
+    public class MontageResponse
+    {
+        public string id;
+        public string url;
+        public string title;
+        public string narration;
+        public string planner;
+        public List<MontageClip> clips = new List<MontageClip>();
+    }
 }
