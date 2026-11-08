@@ -27,7 +27,7 @@ namespace Megamind
         [Header("Panel")]
         [Tooltip("Distance in metres in front of the head where the panel is placed on (re-)anchor.")]
         public float panelDistance = 1.0f;
-        public float panelWidthMeters = 0.6f;
+        public float panelWidthMeters = 0.82f; // sidebar 216 px + chat 600 px at the old 1 mm/px
         public int maxTranscriptMessages = 40;
         public float healthPollSeconds = 4f;
 

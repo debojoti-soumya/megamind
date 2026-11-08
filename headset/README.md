@@ -338,8 +338,8 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | `Lightbox.cs` | 3 | full-size memory viewer inside the panel: caption, time, n / N, ‹ › prev/next, pan/zoom (thumbsticks, ray/pinch drag, +/−), close via X / scrim / B·Y / "close" |
 | `CitationCard.cs` | 3 | thumbnail card (image + age + caption snippet, tap = Lightbox) and the `TypingIndicator` dots |
 | `SessionStore.cs` | 3 | ChatGPT-style chats persisted as JSON in `Application.persistentDataPath/megamind-sessions.json` (id = server `session_id`, title, created/updated, messages with cited memories) |
-| `SessionListView.cs` | 3 | the drawer's chat list: Today / Yesterday / Earlier, active highlighted, tap = switch, long-press or `…` = Rename (Quest keyboard) / Delete |
-| `PanelMenu.cs` | 3 | the right-side drawer's actions (New chat, Settings, Debug, Pin/Unpin, Text size, Controls, Purge) + voice-command execution |
+| `SessionListView.cs` | 3 | the left sidebar's chat list: Today / Yesterday / Earlier, active highlighted, tap = switch, long-press or `…` = Rename (Quest keyboard) / Delete |
+| `PanelMenu.cs` | 3 | the right-side drawer's actions (Settings, Debug, Pin/Unpin, Text size, Controls, Purge) + voice-command execution |
 | `PanelDrawer.cs` | 3 | slides the drawer down the right edge of the panel (150 ms ease-out, `CanvasGroup` fade, chevron rotates) |
 | `VoiceCommands.cs` | 3 | normalized-string matcher for short spoken commands (no wake word, no dependencies) |
 | `PanelControls.cs` | 3 | input bar: Record/Pause pill + state text, phase line (Listening/Transcribing/Thinking/Answering/Speaking), mic meter, question field + Send (`ChatClient.SendText`), Hide / arrow tab (fold the whole window) |
@@ -353,7 +353,7 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 After **Megamind > 1. Create Capture Scene**, run **Megamind > 1b. Add Chat Panel To Current Scene** before
 building. It renders the UI sprites into `Assets/Megamind/Art/*.png` (rounded rectangles 10/16/20/24 px, a circle; imported
 as 9-sliced sprites), creates `Assets/Megamind/Prefabs/{UserBubble,AssistantBubble,SystemChip,MetaLine,ThumbRow,Thumb}.prefab` and this
-hierarchy (one World Space Canvas, 600x720 px, scaled by `PanelAnchor` to `panelWidthMeters` x the UI scale), wires every
+hierarchy (one World Space Canvas, 816x720 px = 216 px sidebar + 600 px chat, scaled by `PanelAnchor` to `panelWidthMeters` x the UI scale), wires every
 field on `ChatPanel`/`ChatClient`/`PanelAnchor`/`SettingsPanel`, finds `CenterEyeAnchor`, `OVRHand`s and the
 `FrameUploader`, and adds an `EventSystem` with Meta's `OVRInputModule` + `OVRRaycaster` (right-controller
 ray) when the SDK provides them:
@@ -362,15 +362,16 @@ MegamindPanel (Canvas + CanvasScaler)  + PanelAnchor + ChatPanel + ChatClient + 
  WindowTab (above the top-right corner, always visible: RecDot + chevron; click = drop the window down / fold it up)
  WindowClip (RectMask2D) -> Window (CanvasGroup, slid by the 2nd PanelDrawer, open/closed kept in PlayerPrefs megamind.windowOpen):
   Background, Header (ServerDot, StatusLine, Hide button, MenuTab = bars + chevron in the corner)
-  Scroll -> Viewport -> Content (VerticalLayoutGroup)        = ChatPanel.content
+  Sidebar (left 216 px): + New chat, Chats, Sessions (scroll list = SessionListView.content)
+  Scroll -> Viewport -> Content (VerticalLayoutGroup)        = ChatPanel.content (right of the sidebar)
   EmptyHint (push-to-talk + voice phrases)
   JumpToLatest pill, Footer: RecordButton + Knob, StateLabel, Indicators (PhaseDot, PhaseLabel), Buttons (HoldToTalkButton + Meter, Question field, SendButton)
   Lightbox (inactive): Counter, Time, Close, Viewport -> Image, Prev / Next, Caption, ZoomOut / ZoomIn
   Settings (inactive): ServerUrl, DeviceId, Save / New session / Purge, Reset / Close, Feedback
   Debug (inactive): Title, Close, Scroll -> Viewport -> Text (CaptureHud.FullReport)
   Controls (inactive): Title, Close, Text (controller / hand / panel / voice cheat-sheet)
-  MenuBackdrop (inactive, click = close), DrawerClip (RectMask2D) -> Drawer (216 px column, slides in from above): Chats, + New chat,
-    Sessions (scroll list), divider, Settings, Debug stats, Pin panel, Text size, Controls, Purge memory
+  MenuBackdrop (inactive, click = close), DrawerClip (RectMask2D) -> Drawer (216 px column, slides in from above):
+    Settings, Debug stats, Pin panel, Text size, Controls, Purge memory
 ```
 Re-running the menu item replaces a previous `MegamindPanel`; tweak the result in the Inspector and save.
 
@@ -424,8 +425,8 @@ toggle. The chat panel header shows:
 - **Corner tab** (top-right: three bars + a chevron, 72x40 px, visible even when the panel is Hidden): click / trigger /
   pinch or say "open menu" and a **drawer** slides down the right edge of the panel (216 px ≈ 35 % of the width,
   `PanelDrawer`: 150 ms ease-out on `anchoredPosition`, `CanvasGroup` fade, the chevron turns upside down; clipped by a
-  `RectMask2D` while it moves). Top to bottom: **Chats** — *+ New chat* (coral) and the chats list (see *Sessions*
-  below) — then a divider and the actions, each with a coloured one-letter disc:
+  `RectMask2D` while it moves). It holds the actions, each with a coloured one-letter disc (the chats live in the left
+  sidebar, see *Sessions* below):
   *Settings* (the settings sheet), *Debug stats* (everything the old HUD showed — state, resolution, head °/s,
   sent/accepted/last reason/latency/KB, skipped and bg/unfocus counters, the `mic:` line, server URL + `url:<source>` —
   as a scrollable mono block refreshed 4x/s), *Pin panel* / *Unpin panel*, *Text size 1x → 1.25x → 1.5x → 2x*,
@@ -447,13 +448,13 @@ the server's `transcript` event arrives.
 **Sessions (ChatGPT-style).** `SessionStore` keeps every chat in `Application.persistentDataPath/megamind-sessions.json`
 (`{ activeId, sessions: [{ id, title, created, updated, messages: [{ role, text, ts, cited: [Citation] }] }] }`, written
 atomically on the next frame after a change and on pause/quit). The chat's `id` *is* the server `session_id`
-(`ChatClient.SessionId`), so tapping an older chat in the drawer resumes Claude's history for it while the server still
+(`ChatClient.SessionId`), so tapping an older chat in the sidebar resumes Claude's history for it while the server still
 holds that session. `ChatPanel` appends every user / assistant / system message to the active chat (errors are not
 stored) and `ChatPanel.Render(session)` replays one — on launch the last active chat comes back, thumbnails re-load
-from their stored `thumb_url`. The title is the first user message (≤ 36 chars, "New chat" until then). The drawer list
-(`SessionListView`) groups by last activity — **Today / Yesterday / Earlier** — highlights the active chat in coral,
-tap switches (and closes the drawer), long-press (0.6 s) or the `…` button reveals **Rename** (opens the Quest keyboard)
-and **Delete** (deleting the active chat switches to the newest remaining one). *+ New chat* (drawer) and *New session*
+from their stored `thumb_url`. The title is the first user message (≤ 36 chars, "New chat" until then). The left sidebar
+(`SessionListView`, ChatGPT / Claude style) groups by last activity — **Today / Yesterday / Earlier** — highlights the active chat in coral,
+tap switches, long-press (0.6 s) or the `…` button reveals **Rename** (opens the Quest keyboard)
+and **Delete** (deleting the active chat switches to the newest remaining one). *+ New chat* (sidebar) and *New session*
 (Settings) both go through `SessionStore.NewSession()`; a blank active chat is reused rather than stacking blanks, and
 blank chats are dropped on save. Up to 60 chats x 200 messages are kept.
 

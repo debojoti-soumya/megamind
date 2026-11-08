@@ -23,6 +23,6 @@ MonoBehaviour:
   speakAnswers: 1
   chatTimeoutSeconds: 60
   panelDistance: 1
-  panelWidthMeters: 0.6
+  panelWidthMeters: 0.82
   maxTranscriptMessages: 40
   healthPollSeconds: 4
