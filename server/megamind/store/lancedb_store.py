@@ -4,9 +4,11 @@ Layout (see store/README.md): one table `memory_tokens` under `settings.lancedb_
 Columns mirror `MemoryToken` (docs/api.md) plus two derived columns:
   - `search_text`: caption + ocr_text + entities, the BM25 (full-text) index target
   - `kind`: "frame" for captured keyframes, "episode" for consolidation summaries
-Vector columns are nullable fixed-size lists; their dimension is taken from the first token
-that carries a vector (the mock embedder is 256-d, OpenAI/SigLIP 1024/768-d), or from the
-`text_dim` / `image_dim` constructor arguments. New tables store vectors as float16
+Vector columns are nullable fixed-size lists. Their dimension comes from the `text_dim` / `image_dim`
+constructor arguments (the server passes the configured embedders' `dim`, so insert order doesn't matter), else
+from the first token that carries a vector (the mock embedder is 256-d, OpenAI/SigLIP 1024/768-d). A vector
+whose width doesn't match the table is refused with a logged error and `degraded` is set (`/v1/health` shows it);
+an empty table with the wrong widths is recreated. New tables store vectors as float16
 (`vector_dtype`, LANCEDB_VECTOR_DTYPE): half the bytes (1024+768 dims: 7.2 -> 3.6 KB/token) with the
 same nearest neighbours (ported from PR #54). An existing table keeps the dtype it was created with.
 
@@ -99,6 +101,8 @@ class LanceDBStore(MemoryStore):
         self.path.mkdir(parents=True, exist_ok=True)
         self._text_dim = text_dim
         self._image_dim = image_dim
+        self._want_dims = (text_dim, image_dim)
+        self.degraded: str | None = None  # last vector-width mismatch, for /v1/health
         self._optimize_every = optimize_every
         self._vector_index_min_rows = vector_index_min_rows
         self._fts_index_min_rows = fts_index_min_rows
@@ -114,6 +118,32 @@ class LanceDBStore(MemoryStore):
             self._image_dim = schema.field("image_vec").type.list_size
             value_type = schema.field("text_vec").type.value_type
             self.vector_dtype = next((n for n, t in VECTOR_DTYPES.items() if t == value_type), str(value_type))
+            self._check_table_dims()
+
+    def _check_table_dims(self) -> None:
+        """An existing table whose vector widths differ from the configured embedders: recreate it if it is
+        empty, otherwise keep it readable but mark the store degraded (new vectors would be refused)."""
+        assert self._table is not None
+        bad = [
+            f"{field} is {have}-d but the configured embedder is {want}-d"
+            for field, have, want in zip(("text_vec", "image_vec"), (self._text_dim, self._image_dim), self._want_dims)
+            if want is not None and have != want
+        ]
+        if not bad:
+            self.degraded = None
+            return
+        if self._table.count_rows() == 0:
+            log.info("recreating empty %s with the configured vector widths (%s)", TABLE_NAME, "; ".join(bad))
+            self._db.drop_table(TABLE_NAME)
+            self._table = None
+            self._text_dim, self._image_dim = self._want_dims
+            self.degraded = None
+            return
+        self.degraded = (
+            f"LanceDB table at {self.path}: {'; '.join(bad)}; new memories with those vectors are not stored. "
+            "Purge the store (DELETE /v1/memories) or switch back to the original embedder"
+        )
+        log.error(self.degraded)
 
     # ------------------------------------------------------------------ schema
 
@@ -174,10 +204,12 @@ class LanceDBStore(MemoryStore):
         dims = (("text_vec", token.text_vec, self._text_dim), ("image_vec", token.image_vec, self._image_dim))
         for field, vec, dim in dims:
             if vec is not None and len(vec) != dim:
-                raise ValueError(
+                self.degraded = (
                     f"{field} has {len(vec)} dims but the LanceDB table at {self.path} was created with {dim}; "
                     "purge the store (DELETE /v1/memories or delete the directory) after changing embedders"
                 )
+                log.error("refusing token %s: %s", token.id, self.degraded)
+                raise ValueError(self.degraded)
 
     @staticmethod
     def _row(token: MemoryToken) -> dict[str, Any]:
@@ -574,6 +606,8 @@ class LanceDBStore(MemoryStore):
                     if p.is_file():
                         p.unlink(missing_ok=True)
             self._table.delete(where or "id IS NOT NULL")
+            if self.degraded is not None:
+                self._check_table_dims()  # a full purge recreates a mis-sized table
             return len(rows)
 
     async def purge(

@@ -22,13 +22,18 @@ Response bodies are unchanged: `thumb_url`/`replay_url`/`audio_url` stay token-f
 { "status": "ok", "store_count": 1234,
   "models": { "claude": "claude-sonnet-4-6", "reader": "google/gemma-4-31B-it",
               "embed": "mock (openai configured, no key)", "enrich": "vlm:google/gemma-4-31B-it",
-              "stt": "mock", "tts": "mock" } }
+              "stt": "mock", "tts": "mock", "store": "lancedb" } }
 ```
 `models` names what is actually serving each role. When the configured provider has no key, or isn't wired up yet,
 the value is `mock (<provider> configured, no key | not installed | not implemented)`. Claude without a key reports
 `fallback (<model> configured, no key)`, meaning the no-LLM caption path. `enrich` is the keyframe captioner
 (`ENRICH_PROVIDER`): `vlm:<model>`, `local` (keyless SigLIP label + Tesseract OCR) or `mock`; a VLM that is failing
 over to its fallback reports `vlm:<model> (degraded: last error 503)` until its next successful call.
+`store` is `STORE_BACKEND` (`memory` | `lancedb`). LanceDB sizes its vector columns from the configured embedders
+(`EMBED_PROVIDER`/`IMAGE_EMBED_PROVIDER` widths), whatever kind of memory arrives first. If an existing table was
+built with different widths (embedder changed), new memories carrying those vectors can't be stored: the server
+logs an error, `status` becomes `"degraded"` and `store` reads `lancedb (degraded: <reason>)` until a full
+`DELETE /memories` (an empty mis-sized table is recreated automatically).
 
 ## `POST /frames`  (headset / feeder -> server)
 `multipart/form-data`
