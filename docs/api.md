@@ -47,9 +47,24 @@ Response:
 { "transcript": "where did I leave my keys?",
   "answer": "On the kitchen counter next to the coffee machine, about 20 minutes ago.",
   "audio_url": "/v1/audio/01J....wav",
-  "cited": [ { "id": "...", "ts": 1731000000.1, "caption": "...", "thumb_url": "/v1/thumbs/....jpg" } ],
+  "cited": [ { "id": "...", "ts": 1731000000.1, "caption": "...", "thumb_url": "/v1/thumbs/....jpg",
+               "replay_url": "/v1/replay.mp4?device_id=quest3-abc&from=1731000000.100&to=1731000010.100" } ],
   "tool_calls": [ { "name": "recall_memory", "args": { "query": "keys", "k": 12 }, "confidence": "high" } ] }
 ```
+`replay_url` is optional and `null` when the server holds no buffered frames around the citation
+(older than the replay window, replay disabled, or a different device). It covers `ts - 5 s .. ts + 5 s`.
+
+## `GET /replay.mp4?device_id=...&from=...&to=...`
+Moment replay: an H.264 mp4 of **every** frame received from the device in `[from, to]` (not just the
+keyframes the filter kept), each frame held until the next, so mp4 offset 0 = the first frame's `ts`.
+The server keeps raw frames for a sliding window per device (default 15 min, bounded by count/bytes; `REPLAY_*`).
+- `from`/`to`: unix seconds or ISO-8601 (naive = server local time). Defaults: `to` = newest buffered frame,
+  `from` = `to - 30 s`. `to < from` or span > `REPLAY_MAX_SPAN_S` (300) → 400; unparseable → 400.
+- `device_id`: optional; without it the device with the most frames in the window is used.
+- Supports `Range: bytes=...` (206 / 416) for seeking; `Accept-Ranges: bytes` on every 200.
+- Headers: `X-Replay-Start` (unix ts at offset 0), `X-Replay-Device`, `X-Replay-Frames`.
+- 404 when no frames are buffered in the window; 503 when ffmpeg is not available on the server.
+Rendered clips are cached; `DELETE /memories` also purges the matching buffered frames and the clip cache.
 
 ## `GET /audio/{id}.wav`
 TTS output for a chat response.
