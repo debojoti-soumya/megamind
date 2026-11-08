@@ -126,16 +126,16 @@ namespace Megamind
         /// <summary>`collage` (photo montage) replaces the thumbnail row: it already shows every cited photo.</summary>
         public void AddAssistantMessage(string text, List<Citation> cited, bool isError, string confidence, float latencySeconds,
                                         CollageResponse collage)
-            => AddAssistantMessage(text, cited, isError, confidence, latencySeconds, 0f, collage);
+            => AddAssistantMessage(text, cited, isError, confidence, latencySeconds, 0f, collage: collage);
 
         /// <summary>firstTextSeconds &gt; 0 (streamed answers): the meta line shows time to the first words too.</summary>
         public void AddAssistantMessage(string text, List<Citation> cited, bool isError, string confidence, float latencySeconds,
-                                        float firstTextSeconds, CollageResponse collage = null)
+                                        float firstTextSeconds, List<Marker> markers = null, CollageResponse collage = null)
         {
             var b = AddAssistantBubble(text);
             if (isError) b.SetError(errorTextColor, errorBubbleColor);
             if (isError) ClearCandidates();
-            else AddAnswerDetails(text, cited, confidence, latencySeconds, firstTextSeconds, collage);
+            else AddAnswerDetails(text, cited, confidence, latencySeconds, firstTextSeconds, markers, collage);
             if (!isError) Record("assistant", text, cited);
         }
 
@@ -165,19 +165,19 @@ namespace Megamind
         /// <summary>The final answer replaces the draft text (it is authoritative) and gets the usual thumbnails and
         /// meta line; without a draft this is AddAssistantMessage.</summary>
         public void FinishDraft(string text, List<Citation> cited, string confidence, float latencySeconds, float firstTextSeconds,
-                                CollageResponse collage = null)
+                                List<Marker> markers = null, CollageResponse collage = null)
         {
             var b = _draft;
             _draft = null;
             if (b == null)
             {
-                AddAssistantMessage(text, cited, false, confidence, latencySeconds, firstTextSeconds, collage);
+                AddAssistantMessage(text, cited, false, confidence, latencySeconds, firstTextSeconds, markers, collage);
                 return;
             }
             b.gameObject.SetActive(true);
             b.transform.SetAsLastSibling(); // thumbnails/meta go right under it even if a system chip came in between
             b.Text = text;
-            AddAnswerDetails(text, cited, confidence, latencySeconds, firstTextSeconds, collage);
+            AddAnswerDetails(text, cited, confidence, latencySeconds, firstTextSeconds, markers, collage);
             Record("assistant", text, cited);
             RequestScroll();
         }
@@ -190,10 +190,10 @@ namespace Megamind
         }
 
         private void AddAnswerDetails(string answer, List<Citation> cited, string confidence, float latencySeconds, float firstTextSeconds,
-                                      CollageResponse collage)
+                                      List<Marker> markers, CollageResponse collage)
         {
             ClearCandidates(); // the answer's own citations replace the retrieval preview
-            if (!AddCollage(collage)) AddCitations(cited);
+            if (!AddCollage(collage)) AddCitations(cited, markers);
             AddTurnActions(answer, confidence, latencySeconds, firstTextSeconds);
         }
 
@@ -219,7 +219,7 @@ namespace Megamind
         }
 
         /// <summary>Strip of CitationCards for every citation with an image; null when none has one.</summary>
-        private RectTransform MakeCardStrip(List<Citation> cited)
+        private RectTransform MakeCardStrip(List<Citation> cited, List<Marker> markers = null)
         {
             var withImage = cited.FindAll(c => c != null && !string.IsNullOrEmpty(c.thumb_url));
             if (withImage.Count == 0) return null;
@@ -231,6 +231,9 @@ namespace Megamind
                 var card = Instantiate(cardPrefab, row);
                 card.Bind(withImage[i], withImage, i, lightbox);
                 if (card.image) StartCoroutine(LoadThumb(card.image, config.Url(withImage[i].thumb_url)));
+                if (card.image && markers != null)
+                    foreach (var m in markers)
+                        if (m.token_id == withImage[i].id) AddBox(card.image.rectTransform, m);
             }
             return strip;
         }
@@ -293,12 +296,12 @@ namespace Megamind
             return set;
         }
 
-        public void AddCitations(List<Citation> cited)
+        public void AddCitations(List<Citation> cited, List<Marker> markers = null)
         {
             if (cited == null || cited.Count == 0) return;
             if (cardPrefab != null && cardStripPrefab != null)
             {
-                var strip = MakeCardStrip(cited);
+                var strip = MakeCardStrip(cited, markers);
                 if (strip != null) Track(strip.gameObject);
                 return;
             }
@@ -320,6 +323,9 @@ namespace Megamind
                     if (label) label.text = Ago(c.ts);
                     if (thumbnailRowPrefab == null) Track(frame.gameObject);
                     if (img) StartCoroutine(LoadThumb(img, config.Url(c.thumb_url)));
+                    if (img && markers != null)
+                        foreach (var m in markers)
+                            if (m.token_id == c.id) AddBox(img.rectTransform, m);
                 }
             }
         }
@@ -479,6 +485,34 @@ namespace Megamind
         {
             _scrollPending = false; // a pending ScrollToEnd stopped with the object
             if (scroll) scroll.onValueChanged.RemoveListener(OnScrolled);
+        }
+
+        /// <summary>Outline of a marker's box on its cited thumbnail (the RawImage stretches the whole frame).</summary>
+        private static void AddBox(RectTransform thumb, Marker m)
+        {
+            if (m.box == null || m.box.Count != 4) return;
+            var box = new GameObject("MarkerBox", typeof(RectTransform)).GetComponent<RectTransform>();
+            box.SetParent(thumb, false);
+            box.anchorMin = new Vector2(m.box[0], 1f - m.box[3]);
+            box.anchorMax = new Vector2(m.box[2], 1f - m.box[1]);
+            box.offsetMin = box.offsetMax = Vector2.zero;
+            var c = new Color(1f, 0.8f, 0.1f, 1f);
+            const float t = 2f;
+            Edge(box, c, new Vector2(0, 0), new Vector2(1, 0), new Vector2(0, t)); // bottom
+            Edge(box, c, new Vector2(0, 1), new Vector2(1, 1), new Vector2(0, t)); // top
+            Edge(box, c, new Vector2(0, 0), new Vector2(0, 1), new Vector2(t, 0)); // left
+            Edge(box, c, new Vector2(1, 0), new Vector2(1, 1), new Vector2(t, 0)); // right
+        }
+
+        private static void Edge(RectTransform parent, Color c, Vector2 min, Vector2 max, Vector2 size)
+        {
+            var img = new GameObject("Edge", typeof(RectTransform)).AddComponent<Image>();
+            img.rectTransform.SetParent(parent, false);
+            img.rectTransform.anchorMin = min;
+            img.rectTransform.anchorMax = max;
+            img.rectTransform.sizeDelta = size;
+            img.color = c;
+            img.raycastTarget = false;
         }
 
         private IEnumerator LoadThumb(RawImage target, string url)

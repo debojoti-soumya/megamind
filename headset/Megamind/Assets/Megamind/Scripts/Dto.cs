@@ -82,6 +82,7 @@ namespace Megamind
         public List<ToolCallRecord> tool_calls = new List<ToolCallRecord>();
         public string device_id_used;  // device whose memories were searched; null/"" = all devices
         public string warning;         // e.g. "device 'x' has no memories; active devices: quest3-1"; null/"" = none
+        public List<Marker> markers = new List<Marker>(); // "where is X": X's box in a cited frame (ObjectMarkers)
         public CollageResponse collage; // photo montage the turn made (make_collage); null or url "" = none
 
         public Model3DResponse model3d; // 3D model the turn made (make_3d_model); null or url "" = none
@@ -98,6 +99,10 @@ namespace Megamind
             return null;
         }
     }
+
+    // ChatResponse.markers: where the asked-about object is in cited frame token_id, captured by device_id at ts
+    // (FrameMeta.ts). x/y = box centre and box = [x_min, y_min, x_max, y_max], all normalized, origin top-left.
+    [Serializable] public class Marker { public string label; public string token_id; public string device_id; public double ts; public float x; public float y; public List<float> box = new List<float>(); public float confidence; }
 
     // POST /v1/chat/stream (Server-Sent Events): `event: <name>` + one `data:` JSON line per event. The `final`
     // event's data is a ChatResponse (same as POST /v1/chat); the others deserialize into these.

@@ -84,6 +84,30 @@ namespace Megamind
 
         private void Awake() => _sessionId = Guid.NewGuid().ToString("N");
 
+        private void Start() => EnsureSpeakerAudible();
+
+        /// <summary>Answer speech needs an un-muted AudioSource and an enabled AudioListener (normally on CenterEyeAnchor).</summary>
+        private void EnsureSpeakerAudible()
+        {
+            if (speaker == null) { Debug.LogWarning("[Megamind] speech: ChatClient.speaker is not set (re-run Megamind > 1b): answers are silent"); return; }
+            if (!speaker.enabled || speaker.mute || speaker.volume <= 0f)
+            {
+                Debug.LogWarning($"[Megamind] speech: speaker was enabled={speaker.enabled} mute={speaker.mute} volume={speaker.volume}; fixing");
+                speaker.enabled = true; speaker.mute = false; speaker.volume = 1f;
+            }
+            if (AudioListener.volume <= 0f || AudioListener.pause)
+            {
+                Debug.LogWarning($"[Megamind] speech: AudioListener.volume={AudioListener.volume} pause={AudioListener.pause}; fixing");
+                AudioListener.volume = 1f; AudioListener.pause = false;
+            }
+            foreach (var l in FindObjectsByType<AudioListener>(FindObjectsSortMode.None))
+                if (l.isActiveAndEnabled) return;
+            var cam = Camera.main != null ? Camera.main : FindAnyObjectByType<Camera>();
+            if (cam == null) { Debug.LogWarning("[Megamind] speech: no AudioListener and no camera in the scene: answers are silent"); return; }
+            cam.gameObject.AddComponent<AudioListener>();
+            Debug.LogWarning("[Megamind] speech: no enabled AudioListener in the scene; added one to " + cam.name);
+        }
+
         private void Update()
         {
             bool pinch = IsPinching(leftHand) || IsPinching(rightHand);
@@ -144,7 +168,7 @@ namespace Megamind
                 panel?.AddAssistantMessage("(no microphone available)", null, true);
                 return;
             }
-            StopSpeech(); // barge-in: also drops queued sentence clips
+            StopSpeech("push-to-talk"); // barge-in: also drops queued sentence clips
             AmbientAudioRecorder.PushToTalkStarting(); // ambient audio memory releases the shared mic
             _recording = Microphone.Start(null, false, config.maxRecordSeconds, config.micSampleRate);
             _recordingActive = true;
@@ -273,7 +297,8 @@ namespace Megamind
         /// when streaming is off, the server has no stream endpoint (404/405), or the stream failed before any event.</summary>
         private IEnumerator Ask(byte[] body, string contentType, bool voice)
         {
-            StopSpeech(); // the previous answer's audio, if still playing
+            StopSpeech("new question"); // the previous answer's audio, if still playing
+            _loggedFirstPlay = false;
             IsThinking = true;
             _turnPhase = voice ? Phase.Transcribing : Phase.Thinking;
             panel?.SetThinking(true);
@@ -332,7 +357,7 @@ namespace Megamind
             // command discards that answer. The stream path matches on the early `transcript` event and cancels instead.
             if (echoTranscript && menu != null && menu.TryVoiceCommand(resp.transcript)) return;
             if (echoTranscript && !string.IsNullOrEmpty(resp.transcript)) panel?.AddUserMessage(resp.transcript);
-            panel?.AddAssistantMessage(resp.answer, resp.cited, false, resp.Confidence(), LastLatencySeconds,
+            panel?.AddAssistantMessage(resp.answer, resp.cited, false, resp.Confidence(), LastLatencySeconds, 0f, resp.markers,
                 resp.HasCollage() ? resp.collage : null);
             Open3D(resp);
             OnResponse?.Invoke(resp);
@@ -525,7 +550,7 @@ namespace Megamind
                 if (!string.IsNullOrEmpty(resp.transcript)) panel?.AddUserMessage(resp.transcript);
             }
             turn.Released = true;
-            panel?.FinishDraft(resp.answer, resp.cited, resp.Confidence(), LastLatencySeconds, turn.FirstText,
+            panel?.FinishDraft(resp.answer, resp.cited, resp.Confidence(), LastLatencySeconds, turn.FirstText, resp.markers,
                 resp.HasCollage() ? resp.collage : null);
             Open3D(resp);
             OnResponse?.Invoke(resp);
@@ -547,7 +572,7 @@ namespace Megamind
             turn.Over = true;
             panel?.DiscardDraft();
             panel?.ClearCandidates();
-            if (turn.Speech != null && turn.Speech == _speech) StopSpeech();
+            if (turn.Speech != null && turn.Speech == _speech) StopSpeech("turn failed/cancelled");
             else turn.Speech?.Cancel();
             panel?.AddAssistantMessage(message, null, true);
         }
@@ -557,7 +582,7 @@ namespace Megamind
             turn.Over = true;
             panel?.DiscardDraft();
             panel?.ClearCandidates();
-            if (turn.Speech != null && turn.Speech == _speech) StopSpeech();
+            if (turn.Speech != null && turn.Speech == _speech) StopSpeech("turn failed/cancelled");
             else turn.Speech?.Cancel();
         }
 
@@ -608,9 +633,12 @@ namespace Megamind
         private SpeechQueue _speech;   // the queue currently allowed to use the speaker
         private int _speechGen;        // bumped by StopSpeech; a final.audio_url download from an older turn is dropped
         private AudioClip _ownedClip;  // last clip this client put on the speaker (destroyed when replaced)
+        private bool _loggedFirstPlay;
 
-        private void StopSpeech()
+        private void StopSpeech(string reason)
         {
+            if ((_speech != null && _speech.Pending.Count > 0) || (speaker != null && speaker.isPlaying))
+                Debug.Log($"[Megamind] speech: stopped ({reason}), {(_speech != null ? _speech.Pending.Count : 0)} clips dropped");
             _speechGen++;
             if (_speech != null) _speech.Cancel();
             _speech = null;
@@ -619,8 +647,13 @@ namespace Megamind
 
         private void OnAudio(ChatStreamAudio a, StreamTurn turn)
         {
+            if (a == null) { Debug.LogWarning("[Megamind] speech: unreadable audio event (final.audio_url is used instead)"); return; }
             turn.AudioEvents++;
-            if (a == null || !config.speakAnswers || speaker == null) return;
+            if (!config.speakAnswers || speaker == null)
+            {
+                if (turn.AudioEvents == 1) Debug.LogWarning($"[Megamind] speech: audio event ignored (speakAnswers={config.speakAnswers}, speaker={(speaker != null ? "set" : "null")})");
+                return;
+            }
             if (turn.Speech == null)
             {
                 turn.Speech = new SpeechQueue { Released = turn.Released, T0 = turn.T0 };
@@ -631,7 +664,7 @@ namespace Megamind
             turn.Speech.Insert(clip);
             if (!string.IsNullOrEmpty(a.b64)) DecodeInlineClip(clip, a);
             else if (!string.IsNullOrEmpty(a.url)) StartCoroutine(FetchClip(clip, a, turn.Speech));
-            else clip.Done = true;
+            else { Debug.LogWarning($"[Megamind] speech: audio event {a.seq} has neither url nor b64"); clip.Done = true; }
         }
 
         private static void DecodeInlineClip(SpeechClip c, ChatStreamAudio a)
@@ -681,6 +714,12 @@ namespace Megamind
                 {
                     try { clip = DownloadHandlerAudioClip.GetContent(req); }
                     catch (Exception e) { Debug.LogWarning("[Megamind] audio clip " + a.seq + ": " + e.Message); }
+                    if (clip != null && (clip.length <= 0f || clip.loadState == AudioDataLoadState.Failed))
+                    {
+                        Debug.LogWarning($"[Megamind] audio clip {a.seq}: unplayable ({clip.loadState}, {clip.length:0.00}s, {req.downloadedBytes} bytes)");
+                        Destroy(clip);
+                        clip = null;
+                    }
                 }
                 else Debug.LogWarning("[Megamind] audio clip " + a.seq + ": " + req.error);
                 if (clip != null && (c.Dropped || sp.Cancelled))
@@ -721,6 +760,7 @@ namespace Megamind
                     else if (sp.Ended)
                     {
                         if (sp.Played == 0 && !string.IsNullOrEmpty(sp.FallbackUrl)) StartCoroutine(PlayAudio(sp.FallbackUrl));
+                        else if (sp.Played == 0) Debug.LogWarning("[Megamind] speech: no clip of this answer could be played and there is no audio_url");
                         break;
                     }
                 }
@@ -737,6 +777,12 @@ namespace Megamind
             speaker.clip = clip;
             _ownedClip = clip;
             speaker.Play();
+            if (!_loggedFirstPlay)
+            {
+                _loggedFirstPlay = true;
+                Debug.Log($"[Megamind] speech: playing {clip.length:0.00}s clip ({clip.frequency} Hz, {clip.loadState}), isPlaying={speaker.isPlaying}, " +
+                          $"volume={speaker.volume} listener={(FindAnyObjectByType<AudioListener>() != null ? "yes" : "NONE")} mic={(Microphone.IsRecording(null) ? "recording" : "off")}");
+            }
             if (prev != null && prev != clip) Destroy(prev);
         }
 
@@ -754,7 +800,11 @@ namespace Megamind
                 config.Authorize(req);
                 req.timeout = 20;
                 yield return req.SendWebRequest();
-                if (req.result != UnityWebRequest.Result.Success || speaker == null) yield break;
+                if (req.result != UnityWebRequest.Result.Success || speaker == null)
+                {
+                    Debug.LogWarning("[Megamind] speech: audio_url download failed: " + (speaker == null ? "no speaker" : req.error));
+                    yield break;
+                }
                 var clip = DownloadHandlerAudioClip.GetContent(req);
                 if (gen != _speechGen) // barge-in or a newer question while downloading
                 {

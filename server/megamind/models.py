@@ -187,6 +187,20 @@ class Citation(BaseModel):
     replay_url: str | None = None  # /v1/replay.mp4 clip around ts; null when no frames are buffered
 
 
+class Marker(BaseModel):
+    """Where the asked-about object is in a cited frame (`POST /v1/chat` `markers`). Normalized image coordinates,
+    origin top-left; the headset projects (x, y) through the camera pose it had at (device_id, ts)."""
+
+    label: str
+    token_id: str  # the cited frame (a `cited[].id`)
+    device_id: str | None = None
+    ts: float  # the frame's capture time (FrameMeta.ts)
+    x: float  # box centre, 0..1 from the left
+    y: float  # box centre, 0..1 from the top
+    box: list[float]  # [x_min, y_min, x_max, y_max], 0..1
+    confidence: float = 1.0
+
+
 class CollageRequest(BaseModel):
     """`POST /v1/collage`: what the photos should show, optionally within a time range (unix s or ISO-8601)."""
 
@@ -289,6 +303,7 @@ class ChatResponse(BaseModel):
     # when CHAT_DEFAULT_DEVICE=latest fell back to the most recently active device
     device_id_used: str | None = None
     warning: str | None = None  # e.g. the request's device has no memories while other devices do
+    markers: list[Marker] = Field(default_factory=list)  # "where is X" answers: X's box in a cited frame
     collage: CollageResponse | None = None  # photo montage the turn made (make_collage tool); null otherwise
     model3d: Model3DResponse | None = None  # 3D model the turn made (make_3d_model tool); null otherwise
 

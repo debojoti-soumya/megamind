@@ -29,7 +29,7 @@ namespace Megamind.EditorTools
         const string Root = "Assets/Megamind";
         const string PrefabDir = Root + "/Prefabs";
         const string ArtDir = Root + "/Art";
-        const float PanelW = 600f, PanelH = 720f, HeaderH = 64f, FooterH = 120f, FooterButtonsH = 72f;
+        const float SidebarW = 216f, ChatW = 600f, PanelW = SidebarW + ChatW, PanelH = 720f, HeaderH = 64f, FooterH = 120f, FooterButtonsH = 72f;
         // uGUI Text rasterises glyphs at fontSize * dynamicPixelsPerUnit: at 1000 canvas px/m and ~25 px/deg on Quest 3 a
         // 1x glyph is upscaled ~1.4x and looks soft, so render the font atlas at 3x.
         const float DynamicPixelsPerUnit = 3f;
@@ -38,7 +38,7 @@ namespace Megamind.EditorTools
         const float ContentPad = Space2;
         const float DrawerW = 216f, TabW = 72f, TabH = 40f;   // drawer ≈ 35 % of the panel; tab hugs the top-right corner
         const float AvatarSize = 32f;
-        static readonly float BubbleMaxW = Mathf.Round((PanelW - 2f * ContentPad - AvatarSize - Space1) * BubbleMaxWidthFraction);
+        static readonly float BubbleMaxW = Mathf.Round((ChatW - 2f * ContentPad - AvatarSize - Space1) * BubbleMaxWidthFraction);
 
         static Font _font;
         static Font UIFont => _font ??= Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
@@ -131,7 +131,7 @@ namespace Megamind.EditorTools
             // Scroll view with the transcript
             var scrollGo = new GameObject("Scroll", typeof(RectTransform), typeof(ScrollRect));
             scrollGo.transform.SetParent(go.transform, false);
-            scrollGo.GetComponent<RectTransform>().Fill(new Vector2(0f, FooterH), new Vector2(0f, -HeaderH));
+            scrollGo.GetComponent<RectTransform>().Fill(new Vector2(SidebarW, FooterH), new Vector2(0f, -HeaderH));
             var scroll = scrollGo.GetComponent<ScrollRect>();
             scroll.horizontal = false; scroll.movementType = ScrollRect.MovementType.Clamped; scroll.scrollSensitivity = 30f;
 
@@ -156,7 +156,18 @@ namespace Megamind.EditorTools
                 "Ask Megamind about something you saw.\n\nHold the trigger (or pinch) and talk, or tap Type.\n\nShort commands work too: " + VoiceCommands.Hint + ".",
                 FontButton, TextDim, TextAnchor.MiddleCenter);
             emptyHint.lineSpacing = 1.15f;
-            emptyHint.rectTransform.Fill(new Vector2(Space4 + Space1, FooterH), new Vector2(-(Space4 + Space1), -HeaderH));
+            emptyHint.rectTransform.Fill(new Vector2(SidebarW + Space4 + Space1, FooterH), new Vector2(-(Space4 + Space1), -HeaderH));
+
+            // Left sidebar (ChatGPT / Claude style): + New chat, then the chats list (Today / Yesterday / Earlier).
+            var sidebar = MakeImage(go.transform, "Sidebar", new Color(SurfaceRaised.r, SurfaceRaised.g, SurfaceRaised.b, 0.6f), RoundedM);
+            sidebar.rectTransform.Fill(new Vector2(Space1, Space1), new Vector2(-ChatW, -(HeaderH + Space1)));
+            var sbvlg = sidebar.gameObject.AddComponent<VerticalLayoutGroup>();
+            sbvlg.padding = new RectOffset((int)Space1, (int)Space1, (int)Space1, (int)Space1); sbvlg.spacing = 4f;
+            sbvlg.childControlWidth = true; sbvlg.childControlHeight = true; sbvlg.childForceExpandWidth = true; sbvlg.childForceExpandHeight = false;
+            var miNewSession = DrawerEntry(sidebar.transform, "NewSession", "+", Accent, "New chat", AccentButton);
+            MakeLabel(sidebar.transform, "SessionsTitle", "Chats", FontCaption, TextMuted, TextAnchor.MiddleLeft).PreferredHeight(24f);
+            var sessionsList = DrawerList(sidebar.transform, "Sessions");
+            var sessionsEmpty = MakeLabel(sessionsList, "Empty", "Earlier chats will show up here.", FontCaption, TextMuted, TextAnchor.UpperLeft);
 
             // Typing indicator: an assistant bubble ("● ○ ○" cycling) kept at the end of the transcript while thinking.
             var typing = (ChatBubble)PrefabUtility.InstantiatePrefab(assistantBubble, crt);
@@ -170,7 +181,7 @@ namespace Megamind.EditorTools
             var jump = MakeButton(go.transform, "JumpToLatest", "\u2193  Latest", FontCaption, sprite: RoundedM);
             var jrt = jump.GetComponent<RectTransform>();
             jrt.anchorMin = jrt.anchorMax = new Vector2(0.5f, 0f); jrt.pivot = new Vector2(0.5f, 0f);
-            jrt.anchoredPosition = new Vector2(0f, FooterH + Space1); jrt.sizeDelta = new Vector2(128f, 36f);
+            jrt.anchoredPosition = new Vector2(SidebarW / 2f, FooterH + Space1); jrt.sizeDelta = new Vector2(128f, 36f);
             jump.GetComponent<Image>().color = SurfaceRaised; // solid pill over the transcript
             jump.GetComponentInChildren<Text>().color = Accent;
             jump.gameObject.SetActive(false);
@@ -179,7 +190,9 @@ namespace Megamind.EditorTools
             // big Record|Pause / Hold to talk / Type buttons below (3 controls: no crowding).
             var footer = new GameObject("Footer", typeof(RectTransform));
             footer.transform.SetParent(go.transform, false);
-            footer.GetComponent<RectTransform>().AnchorBottom(FooterH);
+            var frt = footer.GetComponent<RectTransform>();
+            frt.AnchorBottom(FooterH);
+            frt.offsetMin = new Vector2(SidebarW, frt.offsetMin.y);
             Hairline(footer.transform, bottom: false);
             // Top row: capture pill (Record | Pause + knob) and state text on the left, turn phase on the right.
             float topH = FooterH - FooterButtonsH;
@@ -348,11 +361,6 @@ namespace Megamind.EditorTools
             var mvlg = menuRoot.gameObject.AddComponent<VerticalLayoutGroup>();
             mvlg.padding = new RectOffset((int)Space1 + 4, (int)Space1 + 4, (int)HeaderH, (int)Space2); mvlg.spacing = 4f;
             mvlg.childControlWidth = true; mvlg.childControlHeight = true; mvlg.childForceExpandWidth = true; mvlg.childForceExpandHeight = false;
-            MakeLabel(menuRoot.transform, "SessionsTitle", "Chats", FontCaption, TextMuted, TextAnchor.MiddleLeft).PreferredHeight(24f);
-            var miNewSession = DrawerEntry(menuRoot.transform, "NewSession", "+", Accent, "New chat", AccentButton);
-            var sessionsList = DrawerList(menuRoot.transform, "Sessions");
-            var sessionsEmpty = MakeLabel(sessionsList, "Empty", "Earlier chats will show up here.", FontCaption, TextMuted, TextAnchor.UpperLeft);
-            HairlineRow(menuRoot.transform);
             var miSettings = DrawerEntry(menuRoot.transform, "Settings", "S", Secondary, "Settings");
             var miDebug = DrawerEntry(menuRoot.transform, "Debug", "D", Warning, "Debug stats");
             var miPin = DrawerEntry(menuRoot.transform, "Pin", "P", Success, "Pin panel");
@@ -449,7 +457,7 @@ namespace Megamind.EditorTools
             controls.minimizeLabel = minimizeButton.GetComponentInChildren<Text>();
             controls.inputField = inputField; controls.sendButton = sendButton; controls.phaseLabel = phaseLabel; controls.phaseDot = phaseDot;
             controls.micMeter = meterFill;
-            controls.hiddenWhenMinimized = new[] { background.gameObject, scrollGo, emptyHint.gameObject, footer.gameObject, jump.gameObject };
+            controls.hiddenWhenMinimized = new GameObject[0];
             var holdToTalk = talkButton.gameObject.AddComponent<HoldToTalkButton>();
             holdToTalk.client = client; holdToTalk.background = talkButton.GetComponent<Image>();
             holdToTalk.idleColor = GhostButton.normalColor; holdToTalk.activeColor = Rec;
@@ -492,6 +500,34 @@ namespace Megamind.EditorTools
             backdrop.gameObject.SetActive(false);
             listening.gameObject.SetActive(false);
             thinking.gameObject.SetActive(false);
+
+            // Whole window drops down from a small arrow tab above the panel's top-right corner (REC dot rides on the tab,
+            // so it stays visible while collapsed). Window = everything built above; WindowClip hides it once slid up.
+            var windowClip = new GameObject("WindowClip", typeof(RectTransform), typeof(RectMask2D));
+            windowClip.transform.SetParent(go.transform, false);
+            windowClip.GetComponent<RectTransform>().Stretch();
+            var window = new GameObject("Window", typeof(RectTransform), typeof(CanvasGroup));
+            window.transform.SetParent(windowClip.transform, false);
+            var wrt = window.GetComponent<RectTransform>();
+            wrt.Stretch();
+            var built = new System.Collections.Generic.List<Transform>();
+            foreach (Transform child in go.transform) if (child != windowClip.transform) built.Add(child);
+            foreach (var child in built) child.SetParent(window.transform, false);
+            var windowTab = MakeButton(go.transform, "WindowTab", "", FontCaption, sprite: RoundedM);
+            var wtrt = windowTab.GetComponent<RectTransform>();
+            wtrt.anchorMin = wtrt.anchorMax = new Vector2(1f, 1f); wtrt.pivot = new Vector2(1f, 0f);
+            wtrt.anchoredPosition = new Vector2(0f, Space1); wtrt.sizeDelta = new Vector2(TabW, TabH);
+            recDot.transform.SetParent(windowTab.transform, false);
+            recDot.AnchorLeftCentre(14f, 12f, 12f);
+            var windowChevron = Chevron(windowTab.transform, TextMain);
+            windowChevron.anchorMin = windowChevron.anchorMax = new Vector2(1f, 0.5f); windowChevron.pivot = new Vector2(0.5f, 0.5f);
+            windowChevron.anchoredPosition = new Vector2(-22f, 0f); windowChevron.sizeDelta = new Vector2(16f, 16f);
+            var windowDrawer = go.AddComponent<PanelDrawer>();
+            windowDrawer.drawer = wrt; windowDrawer.group = window.GetComponent<CanvasGroup>(); windowDrawer.chevron = windowChevron;
+            windowDrawer.hiddenOffset = PanelH; windowDrawer.deactivateWhenClosed = false; windowDrawer.prefsKey = "megamind.windowOpen";
+            windowDrawer.duration = 0.2f;
+            controls.window = windowDrawer;
+            UnityEventTools.AddPersistentListener(windowTab.onClick, new UnityAction(controls.ToggleMinimized));
             return go;
         }
 
@@ -643,7 +679,7 @@ namespace Megamind.EditorTools
             var label = MakeLabel(chip.transform, "Label", "", FontCaption, TextDim, TextAnchor.MiddleCenter);
             label.supportRichText = false;
             var fit = chip.gameObject.AddComponent<ChatBubbleFit>();
-            fit.label = label; fit.maxWidth = PanelW - 2f * ContentPad - Space4; fit.horizontalPadding = 24f;
+            fit.label = label; fit.maxWidth = ChatW - 2f * ContentPad - Space4; fit.horizontalPadding = 24f;
             var cb = row.GetComponent<ChatBubble>();
             cb.label = label; cb.background = chip;
             return SavePrefab(row).GetComponent<ChatBubble>();
@@ -926,7 +962,7 @@ namespace Megamind.EditorTools
             "  Ask Megamind…  field opens the keyboard; Send asks\n" +
             "  Thumbnail  tap to open it large; ‹ › prev/next, sticks pan/zoom, B/Y back\n" +
             "  Copy / Retry  under each answer\n" +
-            "  Hide / Show  collapse to the header (REC dot stays)\n" +
+            "  Hide / arrow  fold the window up behind the top-right arrow (REC dot stays)\n" +
             "  Tab (top-right)  drawer: New chat, chats, Settings, Debug, Pin, Text size, Controls, Purge\n\n" +
             "Voice (hold trigger, say):\n  " + VoiceCommands.Hint;
 

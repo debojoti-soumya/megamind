@@ -30,8 +30,10 @@ namespace Megamind
         [Header("Minimise")]
         public Text minimizeLabel;      // "Hide" / "Show"
         public GameObject[] hiddenWhenMinimized;
+        public PanelDrawer window;      // when set, Hide/Show (and the top-right arrow) slide the whole window up/down instead
 
-        public bool IsMinimized { get; private set; }
+        public bool IsMinimized { get => window ? !window.IsOpen : _minimized; private set => _minimized = value; }
+        private bool _minimized;
         public bool KeyboardOpen => _keyboard != null && _keyboard.active;
 
         private TouchScreenKeyboard _keyboard;
@@ -104,6 +106,7 @@ namespace Megamind
         {
             IsMinimized = minimized;
             if (minimized && menu) menu.CloseAll();
+            if (window) { if (minimized) window.Close(); else window.Open(); }
             if (hiddenWhenMinimized != null)
                 foreach (var go in hiddenWhenMinimized)
                     if (go) go.SetActive(!minimized);
