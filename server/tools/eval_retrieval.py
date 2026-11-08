@@ -40,7 +40,8 @@ async def main() -> int:
     text_emb = image_emb = None
     if args.real:
         from megamind.config import get_settings
-        from megamind.ingest.enrich import build_image_embedder, build_text_embedder
+        from megamind.ingest.enrich import build_text_embedder
+        from megamind.store.embeddings import build_image_embedder
 
         s = get_settings()
         text_emb, image_emb = build_text_embedder(s), build_image_embedder(s)

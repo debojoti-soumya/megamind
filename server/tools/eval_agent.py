@@ -35,7 +35,8 @@ from megamind.agent.claude_agent import NOT_FOUND_ANSWER, ClaudeAgent, TurnStats
 from megamind.agent.reader import Reader, ReaderOutput, build_reader  # noqa: E402
 from megamind.agent.tools import RecallMemory  # noqa: E402
 from megamind.config import Settings  # noqa: E402
-from megamind.ingest.enrich import MockTextEmbedder, build_image_embedder, build_text_embedder  # noqa: E402
+from megamind.ingest.enrich import MockTextEmbedder, build_text_embedder  # noqa: E402
+from megamind.store.embeddings import build_image_embedder  # noqa: E402
 from megamind.models import MemoryToken  # noqa: E402
 from megamind.store.memory_store import InMemoryStore  # noqa: E402
 
