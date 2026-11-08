@@ -78,8 +78,9 @@ curl -s "localhost:8000/v1/memories?q=keys&k=5"
 
 With no API keys configured the server runs entirely on deterministic mocks (mock captions,
 hashing embeddings, caption-only reader, no STT/TTS), so the whole loop is exercisable on a
-laptop. Set `ANTHROPIC_API_KEY`, `READER_API_KEY` (Sail Research serving `Qwen/Qwen3.6-35B-A3B`, or any
-OpenAI-compatible endpoint: vLLM on Modal, Together, OpenRouter), `EMBED_PROVIDER`, `STT_PROVIDER`,
+laptop. Set `ANTHROPIC_API_KEY`, `READER_API_KEY` + `READER_BASE_URL` (Sail Research:
+`https://api.sailresearch.com/v1` serving `google/gemma-4-31B-it`; or any OpenAI-compatible endpoint:
+vLLM on Modal, Together, OpenRouter), `EMBED_PROVIDER`, `STT_PROVIDER`,
 `TTS_PROVIDER` to turn on the real thing — see `server/.env.example` and `docs/resources.md`.
 
 ### Headset

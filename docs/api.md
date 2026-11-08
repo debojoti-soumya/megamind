@@ -26,7 +26,7 @@ frame was dropped by the filter (`blurry` = motion blur / out of focus, `budget`
 in search a few seconds later.
 
 ## `GET /memories`  (debug search)
-Query: `q` (str), `from`/`to` (ISO-8601, optional), `k` (int, default 12),
+Query: `q` (str), `from`/`to` (ISO-8601, optional; unparseable → 400), `k` (int, default 12),
 `mode` (`semantic|visual|hybrid`, default `hybrid`), `device_id` (optional).
 ```json
 { "results": [ { "id": "...", "ts": 1731000000.1, "caption": "...", "ocr_text": "...",
@@ -54,8 +54,12 @@ Response:
 ## `GET /audio/{id}.wav`
 TTS output for a chat response.
 
-## `DELETE /memories?device_id=...`
-Purge all memory tokens for a device. Returns `{ "deleted": 1234 }`.
+## `DELETE /memories?device_id=...&since=...`
+Purge memory tokens (rows **and** thumbnails). Both params are optional: `device_id` limits the purge to one
+device (default: all devices); `since` deletes only tokens with `ts >= since` ("forget the last 2 hours"),
+given as ISO-8601 (`2026-11-07T09:00:00Z`; naive = server local time) or unix seconds (`1731000000.0`).
+Episode summaries whose `ts` (episode start) falls in the window are deleted too. Invalid `since` → 400.
+Returns `{ "deleted": 1234 }`. Offline equivalent: `python -m megamind.store.purge --device --since`.
 
 ## Memory token (stored record)
 ```

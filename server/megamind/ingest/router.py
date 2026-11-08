@@ -10,14 +10,19 @@ from fastapi.responses import FileResponse
 from PIL import Image
 from ulid import ULID
 
-from megamind.models import FrameAccepted, FrameMeta, MemoryToken, SearchMode, SearchResponse
+from megamind.models import FrameAccepted, FrameMeta, MemoryToken, PurgeResponse, SearchMode, SearchResponse
 
 log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _iso_to_ts(s: str | None) -> float | None:
-    return datetime.fromisoformat(s).timestamp() if s else None
+def _iso_to_ts(s: str | None, param: str = "from/to") -> float | None:
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s).timestamp()
+    except ValueError:
+        raise HTTPException(400, f"{param}: expected ISO-8601, got {s!r}") from None
 
 
 @router.post("/frames", response_model=FrameAccepted, status_code=202)
@@ -84,16 +89,26 @@ async def search_memories(
         k=k,
         mode=mode,
         device_id=device_id,
-        time_from=_iso_to_ts(params.get("from")),
-        time_to=_iso_to_ts(params.get("to")),
+        time_from=_iso_to_ts(params.get("from"), "from"),
+        time_to=_iso_to_ts(params.get("to"), "to"),
     )
     return SearchResponse(results=hits)
 
 
-@router.delete("/memories")
-async def purge_memories(request: Request, device_id: str | None = None):
-    n = await request.app.state.store.purge(device_id)
-    return {"deleted": n}
+def _since_to_ts(s: str | None) -> float | None:
+    """ISO-8601 (naive = server local time) or unix seconds."""
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return _iso_to_ts(s, "since")
+
+
+@router.delete("/memories", response_model=PurgeResponse)
+async def purge_memories(request: Request, device_id: str | None = None, since: str | None = None):
+    n = await request.app.state.store.purge(device_id, since_ts=_since_to_ts(since))
+    return PurgeResponse(deleted=n)
 
 
 @router.get("/thumbs/{token_id}.jpg")

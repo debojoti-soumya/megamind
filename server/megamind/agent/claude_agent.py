@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anthropic
 from ulid import ULID
@@ -43,16 +44,21 @@ no lists, no token ids, no URLs.
 You have one tool, recall_memory, which searches first-person snapshots captured by the
 wearer's headset cameras. Call it whenever a question depends on past perception: where an
 object is, what some text said, who or what was there, what the wearer was doing earlier.
-Current time (UTC): {now}. Convert relative times ("ten minutes ago", "this morning") into
-ISO-8601 time_from/time_to for the tool. You may call the tool more than once per question,
-for example to widen the time window or rephrase the query when the first result is
-not_found or low confidence, but stop after a few attempts.
+Pass short keywords as query (the object, place or text), not the whole question.
+
+The wearer's local time is {local} ({tz}); in UTC that is {now}. Resolve relative times
+("ten minutes ago", "this morning", "yesterday") against the LOCAL time and pass them as
+ISO-8601 with the UTC offset, e.g. {example}. Leave time_from/time_to null when the
+question has no time hint. You may call the tool more than once per question, for example to
+widen the time window or rephrase the query when the first result is not_found or low
+confidence, but stop after a few attempts.
 
 Ground every claim in the evidence the tool returns. Mention when something was seen using
 the relative times in the tool result (for example "about twenty minutes ago"). If the tool
 returns not_found, or the evidence does not actually answer the question, say
 "I don't have a memory of that." and never guess or invent details. Never claim to identify
-people; describe them neutrally.
+people; describe them neutrally. If the evidence is marked "reader unavailable", answer from
+the captions but add that you could not check the images.
 
 After your spoken answer, on the same message, append the token ids of the evidence your
 answer relies on inside a trailer like <cites>id1,id2</cites>. The trailer is stripped
@@ -77,6 +83,27 @@ class TurnStats:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+def _zone(tz_name: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(tz_name or "UTC")
+    except (ZoneInfoNotFoundError, ValueError):
+        log.warning("unknown WEARER_TZ %r, using UTC", tz_name)
+        return ZoneInfo("UTC")
+
+
+def render_system_prompt(now: float | None, tz_name: str) -> str:
+    utc = datetime.fromtimestamp(now, UTC) if now is not None else datetime.now(UTC)
+    zone = _zone(tz_name)
+    local = utc.astimezone(zone)
+    example = local.replace(hour=max(0, local.hour - 1), minute=0, second=0, microsecond=0)
+    return SYSTEM_PROMPT.format(
+        local=local.strftime("%A %Y-%m-%d %H:%M:%S %Z"),
+        tz=zone.key,
+        now=utc.isoformat(timespec="seconds"),
+        example=example.isoformat(timespec="seconds"),
+    )
+
+
 def _relative(ts: float, now: float) -> str:
     d = max(0.0, now - ts)
     if d < 60:
@@ -91,11 +118,12 @@ def _relative(ts: float, now: float) -> str:
     return f"about {days} day{'s' if days != 1 else ''} ago"
 
 
-def _tool_result_payload(r: RecallResult, now: float) -> str:
+def _tool_result_payload(r: RecallResult, now: float, zone: ZoneInfo) -> str:
     def cite(c: Citation) -> dict:
         return {
             "id": c.id,
             "when": _relative(c.ts, now),
+            "time_local": datetime.fromtimestamp(c.ts, zone).strftime("%a %H:%M"),
             "time_utc": datetime.fromtimestamp(c.ts, UTC).isoformat(timespec="seconds"),
             "caption": c.caption,
         }
@@ -145,20 +173,21 @@ class ClaudeAgent:
         return resp
 
     async def chat_with_stats(
-        self, session_id: str, text: str, device_id: str | None
+        self, session_id: str, text: str, device_id: str | None, *, now: float | None = None
     ) -> tuple[ChatResponse, TurnStats]:
+        """`now` pins the wall clock (system prompt, relative times) for deterministic evals."""
         stats = TurnStats(request_id=str(ULID()))
         t0 = time.perf_counter()
         if not self.enabled:
             stats.path = "fallback"
-            resp = await self._no_llm_fallback(text, device_id, stats)
+            resp = await self._no_llm_fallback(text, device_id, stats, now=now)
         else:
             try:
-                resp = await self._claude_turn(session_id, text, device_id, stats)
+                resp = await self._claude_turn(session_id, text, device_id, stats, now=now)
             except (anthropic.APIError, anthropic.APIConnectionError) as e:  # network, 4xx/5xx, timeouts
                 log.warning("req=%s claude failed (%s); using caption fallback", stats.request_id, e)
                 stats.path, stats.error = "fallback", f"{type(e).__name__}: {e}"
-                resp = await self._no_llm_fallback(text, device_id, stats)
+                resp = await self._no_llm_fallback(text, device_id, stats, now=now)
         stats.total_ms = (time.perf_counter() - t0) * 1000
         log.info(
             "req=%s session=%s path=%s llm_calls=%d tool_calls=%d in_tok=%d out_tok=%d "
@@ -176,9 +205,11 @@ class ClaudeAgent:
         )
         return resp, stats
 
-    async def _claude_turn(self, session_id: str, text: str, device_id: str | None, stats: TurnStats) -> ChatResponse:
+    async def _claude_turn(
+        self, session_id: str, text: str, device_id: str | None, stats: TurnStats, *, now: float | None = None
+    ) -> ChatResponse:
         assert self._client is not None
-        now = time.time()
+        now = time.time() if now is None else now
         turn: list[dict] = [{"role": "user", "content": text}]
         prior = [m for t in self.histories.get(session_id, []) for m in t]
         tool_calls: list[ToolCallRecord] = []
@@ -213,7 +244,7 @@ class ClaudeAgent:
             for use in uses:
                 args = dict(use.input) if isinstance(use.input, dict) else {}
                 t_tool = time.perf_counter()
-                r = await self._run_tool(use.name, args, device_id)
+                r = await self._run_tool(use.name, args, device_id, now)
                 stats.tool_ms += (time.perf_counter() - t_tool) * 1000
                 stats.tool_calls += 1
                 tool_calls.append(ToolCallRecord(name=use.name, args=args, confidence=r.confidence))
@@ -232,7 +263,8 @@ class ClaudeAgent:
                     len(r.cited),
                     len(r.all_retrieved),
                 )
-                results.append({"type": "tool_result", "tool_use_id": use.id, "content": _tool_result_payload(r, now)})
+                payload = _tool_result_payload(r, now, _zone(self.settings.wearer_tz))
+                results.append({"type": "tool_result", "tool_use_id": use.id, "content": payload})
             turn.append({"role": "user", "content": results})
 
         answer, cite_ids = _split_cites(answer_text)
@@ -251,21 +283,23 @@ class ClaudeAgent:
         del hist[:-MAX_TURNS]
         return ChatResponse(transcript=text, answer=answer, cited=cited, tool_calls=tool_calls)
 
-    async def _run_tool(self, name: str, args: dict, device_id: str | None) -> RecallResult:
+    async def _run_tool(self, name: str, args: dict, device_id: str | None, now: float | None = None) -> RecallResult:
         if name != "recall_memory":
             return RecallResult(evidence=f"Unknown tool {name}.", confidence="not_found", cited=[], all_retrieved=[])
         allowed = {"query", "time_from", "time_to", "k", "mode"}
         kwargs = {k: v for k, v in args.items() if k in allowed and v is not None}
         kwargs.setdefault("query", "")
         try:
-            return await self.recall(device_id=device_id, **kwargs)
+            return await self.recall(device_id=device_id, now=now, **kwargs)
         except ValueError as e:  # bad ISO timestamp etc. -> tell the model instead of crashing the turn
             return RecallResult(evidence=f"Tool error: {e}", confidence="not_found", cited=[], all_retrieved=[])
 
-    async def _no_llm_fallback(self, text: str, device_id: str | None, stats: TurnStats | None = None) -> ChatResponse:
+    async def _no_llm_fallback(
+        self, text: str, device_id: str | None, stats: TurnStats | None = None, *, now: float | None = None
+    ) -> ChatResponse:
         """Deterministic path used before Claude is wired: always recall, echo evidence."""
         t_tool = time.perf_counter()
-        r = await self.recall(query=text, device_id=device_id)
+        r = await self.recall(query=text, device_id=device_id, now=now)
         if stats is not None:
             stats.tool_ms += (time.perf_counter() - t_tool) * 1000
             stats.tool_calls += 1
@@ -283,7 +317,5 @@ class ClaudeAgent:
         else:
             self.histories.pop(session_id, None)
 
-    @staticmethod
-    def system_prompt(now: float | None = None) -> str:
-        ts = datetime.fromtimestamp(now, UTC) if now is not None else datetime.now(UTC)
-        return SYSTEM_PROMPT.format(now=ts.isoformat(timespec="seconds"))
+    def system_prompt(self, now: float | None = None) -> str:
+        return render_system_prompt(now, self.settings.wearer_tz)

@@ -190,3 +190,25 @@ def test_build_retriever_selects_backend(tmp_path):
     assert isinstance(r, HybridRetriever) and idx is None  # no key: hybrid
     r, idx = build_retriever(Settings(_env_file=None, retriever_backend="ucc", ucc_api_key="k"), store, emb)
     assert isinstance(r, UCCRetriever) and isinstance(idx, UCCIndexer)
+
+
+async def test_indexer_backs_off_exponentially_while_unreachable(monkeypatch):
+    fake = FakeUCC(fail=503)
+    store, client, _, _ = await setup(fake)
+    idx = UCCIndexer(client, store, interval_s=30, max_backoff_s=300)
+    delays: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def sleep(s):
+        delays.append(s)
+        if len(delays) == 5:
+            fake.fail = None  # UCC comes back
+        if len(delays) == 7:
+            raise asyncio.CancelledError
+        await real_sleep(0)
+
+    monkeypatch.setattr("megamind.retrieval.ucc.asyncio.sleep", sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await idx._loop()
+    assert delays == [60, 120, 240, 300, 300, 30, 30]
+    assert idx.failures == 0 and len(fake.docs) == 4
