@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 Confidence = Literal["high", "medium", "low", "not_found"]
 SearchMode = Literal["semantic", "visual", "hybrid"]
-TokenKind = Literal["frame", "episode"]
+TokenKind = Literal["frame", "episode", "transcript"]
 
 
 class Pose(BaseModel):
@@ -30,6 +30,19 @@ class FrameAccepted(BaseModel):
     reason: Literal["duplicate", "too_soon", "dark", "blurry", "budget"] | None = None
 
 
+class AudioMeta(BaseModel):
+    device_id: str
+    ts_start: float  # unix seconds of the clip's first sample
+    pose: Pose | None = None
+
+
+class AudioAccepted(BaseModel):
+    audio_id: str
+    duration_s: float = 0.0
+    transcript: str = ""
+    token_ids: list[str] = Field(default_factory=list)
+
+
 class MemoryToken(BaseModel):
     id: str
     device_id: str
@@ -47,7 +60,8 @@ class MemoryToken(BaseModel):
 
     @property
     def thumb_url(self) -> str:
-        return f"/v1/thumbs/{self.id}.jpg"
+        """Empty for tokens without an image (kind="transcript")."""
+        return f"/v1/thumbs/{self.id}.jpg" if self.thumb_path else ""
 
 
 class MemoryHit(BaseModel):
@@ -58,6 +72,7 @@ class MemoryHit(BaseModel):
     entities: list[str] = Field(default_factory=list)
     thumb_url: str
     score: float
+    kind: TokenKind = "frame"
 
     @classmethod
     def from_token(cls, t: MemoryToken, score: float) -> MemoryHit:
@@ -69,6 +84,7 @@ class MemoryHit(BaseModel):
             entities=t.entities,
             thumb_url=t.thumb_url,
             score=score,
+            kind=t.kind,
         )
 
 

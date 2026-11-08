@@ -1,0 +1,268 @@
+import io
+import json
+import math
+import struct
+import wave
+
+import pytest
+
+from megamind.agent.stt import STT, MockSTT, Segment, wav_duration
+from megamind.config import Settings
+from megamind.ingest.audio import merge_segments
+from megamind.ingest.transcribe import (
+    OpenAIWhisperSTT,
+    build_audio_stt,
+    ensure_wav,
+    have_ffmpeg,
+    to_wav16k,
+)
+
+T0 = 1_762_000_000.0
+
+
+def _wav(seconds: float, rate: int = 16000, freq: float = 440.0) -> bytes:
+    n = int(seconds * rate)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        samples = (int(3000 * math.sin(2 * math.pi * freq * i / rate)) for i in range(n))
+        w.writeframes(b"".join(struct.pack("<h", x) for x in samples))
+    return buf.getvalue()
+
+
+async def _post_audio(c, data, ts_start=T0, device="dev1", filename="a.wav", ctype="audio/wav"):
+    return await c.post(
+        "/v1/audio",
+        files={"audio": (filename, data, ctype)},
+        data={"meta": json.dumps({"device_id": device, "ts_start": ts_start})},
+    )
+
+
+class TextOnlySTT(STT):
+    """A provider with no timestamps: exercises the STT.transcribe_segments default."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    async def transcribe(self, wav: bytes) -> str:
+        return self.text
+
+
+async def test_audio_transcript_becomes_searchable_token(client):
+    c, app = client
+    app.state.audio_stt = MockSTT(
+        script=[
+            "hi I'm Priya from the robotics lab",
+            "nice to meet you",
+            "the demo is on Friday",
+            "let's grab lunch on Tuesday",
+            "bring the headset",
+        ],
+        segment_s=5.0,
+    )
+    r = await _post_audio(c, _wav(25.0))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["duration_s"] == pytest.approx(25.0)
+    # 5 mock segments of 5 s merged into <= 15 s windows -> [0,15) and [15,25)
+    assert len(body["token_ids"]) == 2
+    assert "Priya" in body["transcript"]
+
+    r = await c.get("/v1/memories", params={"q": "Priya"})
+    assert r.status_code == 200
+    hits = r.json()["results"]
+    assert [h["id"] for h in hits] == [body["token_ids"][0]]
+    assert hits[0]["kind"] == "transcript"
+    assert hits[0]["ts"] == pytest.approx(T0)
+    assert hits[0]["thumb_url"] == ""
+    assert "Priya" in hits[0]["caption"]
+
+    second = await app.state.store.get(body["token_ids"][1])
+    assert second.ts == pytest.approx(T0 + 15.0) and second.kind == "transcript"
+    assert second.caption == 'Speech heard nearby: "let\'s grab lunch on Tuesday bring the headset"'
+
+
+async def test_recall_memory_finds_transcript(client):
+    c, app = client
+    app.state.audio_stt = TextOnlySTT("this is Marcus, he runs the coffee cart downstairs")
+    await _post_audio(c, _wav(3.0), ts_start=T0)
+    res = await app.state.recall(query="who is Marcus", k=4, now=T0 + 600)
+    assert res.confidence != "not_found"
+    assert res.all_retrieved and "Marcus" in res.all_retrieved[0].caption
+    assert res.all_retrieved[0].thumb_url == ""
+
+
+async def test_audio_fallback_single_segment(client):
+    c, app = client
+    app.state.audio_stt = TextOnlySTT("met Dana at the bakery on Fifth")
+    r = await _post_audio(c, _wav(4.0), ts_start=T0 + 100)
+    assert r.status_code == 200, r.text
+    assert len(r.json()["token_ids"]) == 1
+
+    hits = (await c.get("/v1/memories", params={"q": "Dana bakery"})).json()["results"]
+    assert len(hits) == 1 and hits[0]["ts"] == pytest.approx(T0 + 100)
+    assert hits[0]["kind"] == "transcript"
+
+
+async def test_audio_silence_creates_no_tokens(client):
+    c, app = client
+    app.state.audio_stt = TextOnlySTT("   ")
+    r = await _post_audio(c, _wav(2.0))
+    assert r.status_code == 200
+    assert r.json()["token_ids"] == [] and r.json()["transcript"] == ""
+    assert await app.state.store.count() == 0
+
+
+async def test_audio_tokens_do_not_disturb_frames_and_purge(client):
+    c, app = client
+    r = await _post_audio(c, _wav(6.0))  # default mock: "[mock transcript]" segments
+    assert r.status_code == 200 and r.json()["token_ids"]
+    assert await app.state.store.recent_hashes("dev1", 0.0) == []  # transcripts never enter the frame dedupe
+    assert (await c.delete("/v1/memories", params={"device_id": "dev1"})).json()["deleted"] == 1
+
+
+async def test_audio_bad_requests(client):
+    c, _ = client
+    r = await c.post("/v1/audio", files={"audio": ("a.wav", _wav(1.0), "audio/wav")}, data={"meta": "{not json"})
+    assert r.status_code == 400
+    r = await c.post(
+        "/v1/audio", files={"audio": ("a.wav", _wav(1.0), "audio/wav")}, data={"meta": json.dumps({"device_id": "d"})}
+    )
+    assert r.status_code == 400  # ts_start missing
+    r = await _post_audio(c, b"")
+    assert r.status_code == 400
+    r = await _post_audio(c, b"definitely not audio" * 10, filename="a.bin", ctype="application/octet-stream")
+    assert r.status_code == 415  # ffmpeg missing or unable to decode -> same answer
+
+
+async def test_default_stt_segments_fallback():
+    stt = TextOnlySTT("hello there")
+    assert await stt.transcribe_segments(_wav(3.0)) == [Segment(0.0, 3.0, "hello there")]
+    assert await stt.transcribe_segments(b"not a wav") == [Segment(0.0, 0.0, "hello there")]
+    assert await TextOnlySTT("").transcribe_segments(_wav(1.0)) == []
+
+
+async def test_mock_stt_segments_deterministic():
+    segs = await MockSTT().transcribe_segments(_wav(12.0))
+    assert [(s.start, s.end) for s in segs] == [(0.0, 5.0), (5.0, 10.0), (10.0, 12.0)]
+    assert {s.text for s in segs} == {"[mock transcript]"}
+    assert await MockSTT().transcribe(_wav(1.0)) == "[mock transcript]"  # chat path unchanged
+
+
+def test_merge_segments_windows():
+    segs = [Segment(i * 4.0, i * 4.0 + 3.5, f"w{i}") for i in range(8)] + [Segment(40.0, 41.0, "  ")]
+    out = merge_segments(segs, 15.0)
+    assert [o.text for o in out] == ["w0 w1 w2", "w3 w4 w5", "w6 w7"]
+    assert all(o.end - o.start <= 15.0 for o in out)
+    assert merge_segments([Segment(0.0, 30.0, "long monologue")], 15.0) == [Segment(0.0, 30.0, "long monologue")]
+    assert merge_segments([], 15.0) == []
+
+
+def test_wav_duration():
+    assert wav_duration(_wav(1.5, rate=8000)) == pytest.approx(1.5)
+    assert wav_duration(b"RIFF....garbage") is None
+
+
+class _FakeTranscriptions:
+    def __init__(self, resp):
+        self.resp, self.calls = resp, []
+
+    async def create(self, **kw):
+        self.calls.append(kw)
+        return self.resp
+
+
+class _FakeClient:
+    def __init__(self, resp):
+        self.audio = type("A", (), {})()
+        self.audio.transcriptions = _FakeTranscriptions(resp)
+
+
+async def test_openai_verbose_json_segments():
+    resp = {
+        "text": "hello Sam see you at noon",
+        "segments": [
+            {"start": 0.0, "end": 2.1, "text": " hello Sam", "no_speech_prob": 0.01},
+            {"start": 2.1, "end": 4.0, "text": " Thanks for watching!", "no_speech_prob": 0.95},
+            {"start": 4.0, "end": 6.5, "text": " see you at noon", "no_speech_prob": 0.05},
+        ],
+    }
+    client = _FakeClient(resp)
+    stt = OpenAIWhisperSTT(Settings(_env_file=None), client=client)
+    segs = await stt.transcribe_segments(_wav(7.0))
+    assert segs == [Segment(0.0, 2.1, "hello Sam"), Segment(4.0, 6.5, "see you at noon")]
+    call = client.audio.transcriptions.calls[0]
+    assert call["model"] == "whisper-1" and call["response_format"] == "verbose_json"
+    assert call["timestamp_granularities"] == ["segment"]
+
+
+async def test_openai_non_whisper_model_falls_back_to_text():
+    client = _FakeClient({"text": "just text"})
+    stt = OpenAIWhisperSTT(Settings(audio_stt_model="gpt-4o-mini-transcribe", _env_file=None), client=client)
+    assert await stt.transcribe_segments(_wav(2.0)) == [Segment(0.0, 2.0, "just text")]
+    assert client.audio.transcriptions.calls[0]["response_format"] == "json"
+
+
+def test_build_audio_stt_selection():
+    chat = MockSTT()
+    assert build_audio_stt(Settings(_env_file=None), chat) is chat
+    assert isinstance(build_audio_stt(Settings(audio_stt_provider="mock", _env_file=None), chat), MockSTT)
+    # unconfigured / unknown providers degrade to the chat STT instead of failing startup
+    assert build_audio_stt(Settings(audio_stt_provider="openai", openai_api_key="", _env_file=None), chat) is chat
+    assert build_audio_stt(Settings(audio_stt_provider="nope", _env_file=None), chat) is chat
+    s = Settings(stt_provider="openai", openai_api_key="sk-test", _env_file=None)
+    assert isinstance(build_audio_stt(s, chat), OpenAIWhisperSTT)
+
+
+def test_build_audio_stt_faster_whisper_missing(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **kw):
+        if name == "faster_whisper":
+            raise ImportError("no faster_whisper")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    chat = MockSTT()
+    assert build_audio_stt(Settings(audio_stt_provider="faster-whisper", _env_file=None), chat) is chat
+
+
+needs_ffmpeg = pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg not on PATH")
+
+
+@needs_ffmpeg
+def test_ffmpeg_resamples_low_rate_headset_audio():
+    out = to_wav16k(_wav(2.0, rate=8000), enhance=True)
+    assert out is not None
+    with wave.open(io.BytesIO(out)) as w:
+        assert (w.getframerate(), w.getnchannels(), w.getsampwidth()) == (16000, 1, 2)
+        assert w.getnframes() / 16000 == pytest.approx(2.0, abs=0.05)
+    assert to_wav16k(b"garbage" * 20) is None
+
+
+@needs_ffmpeg
+def test_ensure_wav_decodes_non_wav(tmp_path):
+    import subprocess
+
+    src = tmp_path / "a.wav"
+    src.write_bytes(_wav(1.0))
+    flac = tmp_path / "a.flac"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(src), str(flac)], check=True)
+    wav = ensure_wav(flac.read_bytes())
+    assert wav is not None and wav_duration(wav) == pytest.approx(1.0, abs=0.05)
+    same = _wav(0.5)
+    assert ensure_wav(same) is same
+
+
+def test_faster_whisper_provider_builds_lazily():
+    pytest.importorskip("faster_whisper")
+    if not have_ffmpeg():
+        pytest.skip("ffmpeg not on PATH")
+    from megamind.ingest.transcribe import FasterWhisperSTT
+
+    stt = build_audio_stt(Settings(audio_stt_provider="faster-whisper", _env_file=None), MockSTT())
+    assert isinstance(stt, FasterWhisperSTT) and stt.model == "small.en"  # no model download until first use
