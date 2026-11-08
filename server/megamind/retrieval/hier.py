@@ -307,11 +307,21 @@ class HierMemory:
 
     # ------------------------------------------------------------------ read
 
-    def outline(self, until: float) -> tuple[str, list[dict[str, Any]]]:
-        """The log a stage-1 prompt shows: day and hour overviews, then numbered blocks, all before `until`."""
-        blocks = sorted(
-            (n for n in self.notes.values() if n["level"] == "block" and n["start"] < until), key=lambda n: n["start"]
+    def blocks(self, until: float, time_from: float | None = None) -> list[dict[str, Any]]:
+        """Block notes overlapping [time_from, until), oldest first: stage 1's B0, B1, ... in this order."""
+        return sorted(
+            (
+                n
+                for n in self.notes.values()
+                if n["level"] == "block" and n["start"] < until and (time_from is None or n["end"] > time_from)
+            ),
+            key=lambda n: n["start"],
         )
+
+    def outline(self, until: float, blocks: list[dict[str, Any]] | None = None) -> str:
+        """The log a stage-1 prompt shows: day and hour overviews, then `blocks` (default: every block before
+        `until`) numbered B0, B1, ... in that order."""
+        blocks = self.blocks(until) if blocks is None else blocks
         coarse = sorted(
             (n for n in self.notes.values() if n["level"] in ("day", "hour") and n["end"] <= until),
             key=lambda n: (n["start"], n["level"] != "day"),
@@ -330,7 +340,7 @@ class HierMemory:
             lines.append(
                 f"[B{i}] {self._fmt(n['start'])}-{self._fmt(n['end'], '%H:%M')}: {n['summary']} (keywords: {kw})"
             )
-        return "\n".join(lines), blocks
+        return "\n".join(lines)
 
 
 def _note(level: str, start: float, end: float, out: dict[str, Any], n: int) -> dict[str, Any]:
@@ -474,9 +484,7 @@ class HierRetriever(Retriever):
         until = min(now.timestamp(), time_to) if time_to is not None else now.timestamp()
         if self.auto_build:
             await self._ensure_notes(until, device_id)
-        outline, blocks = self.memory.outline(until)
-        if time_from is not None:
-            blocks = [b for b in blocks if b["end"] > time_from]
+        blocks = self.memory.blocks(until, time_from)
         now_s = self.memory._fmt(until)
         hits = base.ranked[: self.cfg.hint_windows]
         vec_ids = await self._vector_blocks(query, blocks, time_from, until, device_id)
@@ -487,6 +495,7 @@ class HierRetriever(Retriever):
                     hint_ids.append(f"B{i}")
         chosen: list[dict[str, Any]] = []
         if blocks:
+            outline = self.memory.outline(until, blocks)
             out = await self.llm(
                 SEARCH_SYSTEM,
                 STAGE1_PROMPT.format(
