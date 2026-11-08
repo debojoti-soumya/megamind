@@ -38,8 +38,20 @@ namespace Megamind
         [NonSerialized] public string fileServerBaseUrl;
         [NonSerialized] public string fileDeviceId;
 
+        /// <summary>Parsed megamind.json, or null when absent/unreadable.</summary>
+        public static FileOverrides ReadOverrideFile()
+        {
+            try
+            {
+                var path = OverrideFilePath;
+                if (!File.Exists(path)) return null;
+                return JsonUtility.FromJson<FileOverrides>(File.ReadAllText(path));
+            }
+            catch (Exception) { return null; }
+        }
+
         [Serializable]
-        private class FileOverrides
+        public class FileOverrides
         {
             public string serverBaseUrl;
             public string deviceId;

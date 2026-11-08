@@ -30,5 +30,5 @@ def build_store(settings: Settings) -> MemoryStore:
     if settings.store_backend == "lancedb":
         from megamind.store.lancedb_store import LanceDBStore
 
-        return LanceDBStore(settings.lancedb_path, episodes=episodes)
+        return LanceDBStore(settings.lancedb_path, episodes=episodes, vector_dtype=settings.lancedb_vector_dtype)
     return InMemoryStore(episodes=episodes)

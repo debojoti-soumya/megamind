@@ -59,6 +59,12 @@ class ImageEmbedder(ABC):
     async def embed_text(self, text: str) -> list[float]:
         """Text tower of the same model, for visual-mode queries."""
 
+    @property
+    def calibration(self) -> tuple[float, float] | None:
+        """(scale, bias) such that sigmoid(scale * cos + bias) is a match probability, if the model was trained
+        with one (SigLIP). None = uncalibrated: image hits keep full RRF credit. Optional; default None."""
+        return None
+
 
 class MockTextEmbedder(TextEmbedder):
     """Deterministic bag-of-words hashing embedding so retrieval tests work offline."""
