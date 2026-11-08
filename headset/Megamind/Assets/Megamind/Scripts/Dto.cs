@@ -29,6 +29,25 @@ namespace Megamind
     // thumb_url: /v1/thumbs/{id}.jpg, or /v1/live/{id}.jpg for live "NOW" frames (id "now_..."), or "" (speech)
     [Serializable] public class Citation { public string id; public double ts; public string caption; public string thumb_url; public string replay_url; }
 
+    [Serializable] public class CollageImage { public string token_id; public double ts; public string title; public string thumb_url; }
+
+    /// <summary>Photo montage (POST /v1/collage, or ChatResponse.collage): one JPEG grid at `url`.</summary>
+    [Serializable]
+    public class CollageResponse
+    {
+        public string id;
+        public string url;   // /v1/collages/{id}.jpg; JsonUtility leaves this "" when the chat turn made no collage
+        public string title;
+        public string narration;
+        public string subject;
+        public bool verified;
+        public int candidates;
+        public int matches;
+        public int width;
+        public int height;
+        public List<CollageImage> images = new List<CollageImage>();
+    }
+
     [Serializable] public class ToolCallRecord { public string name; public string confidence; }
 
     [Serializable] public class ChatRequest { public string session_id; public string device_id; public string text; }
@@ -43,6 +62,9 @@ namespace Megamind
         public List<ToolCallRecord> tool_calls = new List<ToolCallRecord>();
         public string device_id_used;  // device whose memories were searched; null/"" = all devices
         public string warning;         // e.g. "device 'x' has no memories; active devices: quest3-1"; null/"" = none
+        public CollageResponse collage; // photo montage the turn made (make_collage); null or url "" = none
+
+        public bool HasCollage() => collage != null && !string.IsNullOrEmpty(collage.url);
 
         /// <summary>Confidence of the recall_memory call, or null if the agent did not recall.</summary>
         public string Confidence()

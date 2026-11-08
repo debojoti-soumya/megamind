@@ -71,11 +71,12 @@ _FRAMING = re.compile(
     r"^(?:every\s+time|times\s+when|whenever|please|can you|could you|would you|i want|i'd like|show me|give me|"
     r"make me|make|create|build|generate|"
     r"cut|put together|a|an|me|quick|short|little|"
-    r"(?:video\s+)?(?:montage|supercut|compilation|highlight reel|highlights?|reel|recap|video)s?"
+    r"(?:(?:video|photo|picture|image)\s+)?"
+    r"(?:montage|collage|supercut|compilation|highlight reel|highlights?|reel|recap|video)s?"
     r"(?:\s+(?:of|with|showing|featuring))?|"
     r"(?:all|every|each|any)(?:\s+of)?(?:\s+the)?(?:\s+(?:shots?|clips?|times|moments?|scenes?|frames?|photos?|"
-    r"pictures?|footage))?(?:\s+(?:of|with|showing|where|when))?|"
-    r"(?:shots?|clips?|moments?|scenes?|frames?|photos?|pictures?|footage)\s+(?:of|with|showing|where|when)"
+    r"pictures?|images?|footage))?(?:\s+(?:of|with|showing|where|when))?|"
+    r"(?:shots?|clips?|moments?|scenes?|frames?|photos?|pictures?|images?|footage)\s+(?:of|with|showing|where|when)"
     r")\b[\s,:]*",
     re.I,
 )
@@ -395,9 +396,9 @@ def spoken(phrase: str) -> str:
 def narration(subject: str, n_moments: int, n_clips: int, days: int, verified: bool) -> str:
     subject = spoken(subject)
     if not verified:
-        return (
-            f"Here are {n_clips} likely moment{'s' if n_clips != 1 else ''} matching {subject} (not visually checked)."
-        )
+        if n_clips == 1:
+            return f"Here is 1 likely moment matching {subject} (not visually checked)."
+        return f"Here are {n_clips} likely moments matching {subject} (not visually checked)."
     text = f"Found {n_moments} moment{'s' if n_moments != 1 else ''} matching {subject}"
     if days > 1:
         text += f" across {days} days"

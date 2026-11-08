@@ -43,10 +43,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import anthropic
 from ulid import ULID
 
+from megamind.agent.collage import COLLAGE_PROMPT, MAKE_COLLAGE_TOOL, CollageError, wants_collage
 from megamind.agent.tools import OCR_MATCH_PREFIX, RECALL_MEMORY_TOOL, RecallMemory, keywords
 from megamind.config import Settings
 from megamind.live import is_now_question, live_question
-from megamind.models import ChatResponse, Citation, RecallResult, ToolCallRecord
+from megamind.models import ChatResponse, Citation, CollageResponse, RecallResult, ToolCallRecord
 from megamind.retrieval.planner import QueryPlan, plan_query
 
 log = logging.getLogger("megamind.agent")
@@ -103,6 +104,9 @@ CLOCK_BLOCK = (
     "For example, one hour ago in ISO-8601 with the UTC offset is {example}."
 )
 EPHEMERAL = {"type": "ephemeral"}
+
+
+CollageFn = Callable[[str, float | None, float | None, str | None], Awaitable[CollageResponse]]
 
 
 @dataclass
@@ -485,9 +489,11 @@ class ClaudeAgent:
         settings: Settings,
         recall: RecallMemory,
         client: anthropic.AsyncAnthropic | None = None,
+        collage: CollageFn | None = None,
     ) -> None:
         self.settings = settings
         self.recall = recall
+        self.collage = collage  # make_collage tool (photo montage); None = recall_memory only
         self.histories: dict[str, list[list[dict]]] = {}
         self.cite_histories: dict[str, list[list[Citation]]] = {}  # per turn, trimmed with `histories`
         self._client = client
@@ -568,7 +574,7 @@ class ClaudeAgent:
         tz = self.settings.wearer_tz
         system: str | list[dict] = (
             # byte-stable (no clock) and marked, so tools + system are one cache entry shared by every turn
-            [{"type": "text", "text": render_static_system_prompt(tz), "cache_control": EPHEMERAL}]
+            [{"type": "text", "text": self.static_system_prompt(), "cache_control": EPHEMERAL}]
             if cache
             else self.system_prompt(now)
         )
@@ -579,6 +585,7 @@ class ClaudeAgent:
         retrieved: dict[str, Citation] = {c.id: c for t in self.cite_histories.get(session_id, []) for c in t}
         reader_cited: list[Citation] = []
         turn_cites: list[Citation] = []
+        collage: CollageResponse | None = None
         answer_text = ""
 
         prefetch: asyncio.Task[RecallResult] | None = None
@@ -591,7 +598,7 @@ class ClaudeAgent:
         t_live = time.perf_counter()
         if self.settings.now_fast_path and now_fast_path(text, plan, now):
             live = await self._recall_now(text, device_id, now, stats)  # None: no live frames, search as usual
-        if live is None and self.settings.recall_prefetch:
+        if live is None and self.settings.recall_prefetch and not (self.collage and wants_collage(text)):
             # overlap retrieval + reader with Claude's first call; most first tool calls are the question's keywords
             prefetch = asyncio.create_task(self._run_tool("recall_memory", {"query": text}, device_id, now))
             stats.extra["prefetch"] = "unused"
@@ -602,6 +609,9 @@ class ClaudeAgent:
         stats.extra["model"] = model
 
         def record(use_id: str, name: str, args: dict, r: RecallResult, t_tool: float) -> dict:
+            nonlocal collage
+            if r.collage is not None:
+                collage = r.collage
             if r.evidence.startswith(OCR_MATCH_PREFIX):
                 stats.extra["reader_skipped"] = stats.extra.get("reader_skipped", 0) + 1
             stats.tool_ms += (time.perf_counter() - t_tool) * 1000
@@ -674,7 +684,7 @@ class ClaudeAgent:
                     "model": model,
                     "max_tokens": MAX_TOKENS,
                     "system": system,
-                    "tools": [RECALL_MEMORY_TOOL],
+                    "tools": self.tools(),
                     "messages": with_cache_breakpoints(p_sent, t_sent) if cache else p_sent + t_sent,
                 }
                 msg = await self._create(req, emit, stats.request_id)
@@ -734,7 +744,12 @@ class ClaudeAgent:
         cite_hist = self.cite_histories.setdefault(session_id, [])
         cite_hist.append(turn_cites)
         del cite_hist[:-MAX_TURNS]
-        return ChatResponse(transcript=text, answer=answer, cited=cited, tool_calls=tool_calls)
+        if collage is not None and answer.strip() != NOT_FOUND_ANSWER:
+            shown = [retrieved[i.token_id] for i in collage.images if i.token_id in retrieved]
+            cited = [*shown, *(c for c in cited if c.id not in {x.id for x in shown})]
+        else:
+            collage = None
+        return ChatResponse(transcript=text, answer=answer, cited=cited, tool_calls=tool_calls, collage=collage)
 
     async def _create(self, req: dict, emit: _Emitter | None, request_id: str = ""):
         """One Messages API call: `messages.create`, or `messages.stream` (same parameters) forwarding text deltas.
@@ -790,6 +805,8 @@ class ClaudeAgent:
             return None
 
     async def _run_tool(self, name: str, args: dict, device_id: str | None, now: float | None = None) -> RecallResult:
+        if name == "make_collage" and self.collage is not None:
+            return await self._run_collage(args, device_id)
         if name != "recall_memory":
             return RecallResult(evidence=f"Unknown tool {name}.", confidence="not_found", cited=[], all_retrieved=[])
         allowed = {"query", "time_from", "time_to", "k", "mode"}
@@ -802,6 +819,25 @@ class ClaudeAgent:
         except ValueError as e:  # bad ISO timestamp etc. -> tell the model instead of crashing the turn
             return RecallResult(evidence=f"Tool error: {e}", confidence="not_found", cited=[], all_retrieved=[])
 
+    async def _run_collage(self, args: dict, device_id: str | None) -> RecallResult:
+        try:
+            t0, t1 = _iso_ts(args.get("time_from")), _iso_ts(args.get("time_to"))
+            c = await self.collage(str(args.get("query") or ""), t0, t1, device_id)
+        except CollageError as e:
+            confidence = "not_found" if e.status in (400, 404) else "low"
+            return RecallResult(evidence=e.detail, confidence=confidence, cited=[], all_retrieved=[])
+        except ValueError as e:
+            return RecallResult(evidence=f"Tool error: {e}", confidence="not_found", cited=[], all_retrieved=[])
+        cites = [Citation(id=i.token_id, ts=i.ts, caption=i.title, thumb_url=i.thumb_url) for i in c.images]
+        evidence = f"Photo montage shown to the wearer: {c.narration}"
+        return RecallResult(
+            evidence=evidence,
+            confidence="high" if c.verified else "medium",
+            cited=cites,
+            all_retrieved=cites,
+            collage=c,
+        )
+
     async def _no_llm_fallback(
         self,
         text: str,
@@ -813,6 +849,22 @@ class ClaudeAgent:
     ) -> ChatResponse:
         """Deterministic path used before Claude is wired: always recall, echo evidence."""
         t_tool = time.perf_counter()
+        if self.collage is not None and wants_collage(text):
+            r = await self._run_collage({"query": text}, device_id)
+            if stats is not None:
+                stats.tool_ms += (time.perf_counter() - t_tool) * 1000
+                stats.tool_calls += 1
+            answer = r.collage.narration if r.collage is not None else r.evidence
+            if emit is not None:
+                await emit.retrieval(r)
+                await emit.delta(answer)
+            return ChatResponse(
+                transcript=text,
+                answer=answer,
+                cited=r.cited,
+                tool_calls=[ToolCallRecord(name="make_collage", args={"query": text}, confidence=r.confidence)],
+                collage=r.collage,
+            )
         r = await self.recall(query=text, device_id=device_id, now=now)
         if stats is not None:
             stats.tool_ms += (time.perf_counter() - t_tool) * 1000
@@ -836,5 +888,13 @@ class ClaudeAgent:
             self.histories.pop(session_id, None)
             self.cite_histories.pop(session_id, None)
 
+    def tools(self) -> list[dict]:
+        return [RECALL_MEMORY_TOOL, MAKE_COLLAGE_TOOL] if self.collage is not None else [RECALL_MEMORY_TOOL]
+
+    def static_system_prompt(self) -> str:
+        prompt = render_static_system_prompt(self.settings.wearer_tz)
+        return prompt + COLLAGE_PROMPT if self.collage is not None else prompt
+
     def system_prompt(self, now: float | None = None) -> str:
-        return render_system_prompt(now, self.settings.wearer_tz)
+        prompt = render_system_prompt(now, self.settings.wearer_tz)
+        return prompt + COLLAGE_PROMPT if self.collage is not None else prompt

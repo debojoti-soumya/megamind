@@ -187,12 +187,47 @@ class Citation(BaseModel):
     replay_url: str | None = None  # /v1/replay.mp4 clip around ts; null when no frames are buffered
 
 
+class CollageRequest(BaseModel):
+    """`POST /v1/collage`: what the photos should show, optionally within a time range (unix s or ISO-8601)."""
+
+    device_id: str | None = None
+    query: str
+    time_from: float | str | None = None
+    time_to: float | str | None = None
+    max_images: int | None = Field(None, ge=0, le=24)  # None/0 = COLLAGE_MAX_IMAGES
+
+
+class CollageImage(BaseModel):
+    token_id: str
+    ts: float
+    title: str
+    thumb_url: str = ""
+
+
+class CollageResponse(BaseModel):
+    """A photo montage: one JPEG grid of the matching moments, with the local time and a caption on each tile."""
+
+    id: str
+    url: str  # /v1/collages/{id}.jpg
+    title: str
+    narration: str = ""
+    subject: str = ""
+    verified: bool = False  # True when Claude checked every photo shows the subject
+    candidates: int = 0  # retriever candidates considered
+    matches: int = 0  # matching moments (before the cap)
+    width: int = 0
+    height: int = 0
+    images: list[CollageImage] = Field(default_factory=list)  # chronological, one per moment
+    hero: int = 0  # index into `images` of the lead (best) photo
+
+
 class RecallResult(BaseModel):
     evidence: str
     confidence: Confidence
     cited: list[Citation]
     all_retrieved: list[Citation]
     images: list[tuple[str, str]] = Field(default_factory=list, exclude=True)  # (token id, data URI), best first
+    collage: CollageResponse | None = Field(None, exclude=True)  # set by the make_collage tool only
 
 
 class ToolCallRecord(BaseModel):
@@ -217,6 +252,7 @@ class ChatResponse(BaseModel):
     # when CHAT_DEFAULT_DEVICE=latest fell back to the most recently active device
     device_id_used: str | None = None
     warning: str | None = None  # e.g. the request's device has no memories while other devices do
+    collage: CollageResponse | None = None  # photo montage the turn made (make_collage tool); null otherwise
 
 
 class DeviceInfo(BaseModel):
