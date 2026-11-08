@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     voyage_api_key: str = ""
 
     stt_provider: str = "mock"
-    stt_model: str = "gpt-4o-mini-transcribe"  # ~0.37 s vs ~1.1 s whisper-1
+    stt_model: str = "gpt-transcribe"  # ~0.42 s live, same as gpt-4o-mini-transcribe; whisper-1 ~1.6 s
     tts_provider: str = "mock"
     tts_model: str = "gpt-4o-mini-tts"  # ~1.1 s vs ~1.8 s tts-1
     tts_voice: str = "alloy"
