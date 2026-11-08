@@ -12,6 +12,7 @@ namespace Megamind
         public GameObject root;         // the dropdown list (inactive until opened)
         public GameObject backdrop;     // transparent full-panel raycast target behind the list; click = close
         public GameObject debugRoot;    // debug sub-panel
+        public GameObject controlsRoot; // controls cheat-sheet sub-panel
         public Text debugText;
         public Text pinLabel;           // "Pin panel" / "Unpin panel"
         public Text textSizeLabel;      // "Text size 1.25x"
@@ -24,6 +25,7 @@ namespace Megamind
 
         public bool IsOpen => root != null && root.activeSelf;
         public bool IsDebugOpen => debugRoot != null && debugRoot.activeSelf;
+        public bool IsControlsOpen => controlsRoot != null && controlsRoot.activeSelf;
 
         private float _nextDebug;
 
@@ -32,6 +34,7 @@ namespace Megamind
             if (root) root.SetActive(false);
             if (backdrop) backdrop.SetActive(false);
             if (debugRoot) debugRoot.SetActive(false);
+            if (controlsRoot) controlsRoot.SetActive(false);
         }
 
         private void Update()
@@ -49,6 +52,7 @@ namespace Megamind
         {
             if (settings) settings.Hide();
             CloseDebug();
+            CloseControls();
             RefreshLabels();
             if (backdrop) backdrop.SetActive(true);
             if (root) root.SetActive(true);
@@ -65,6 +69,7 @@ namespace Megamind
         {
             Close();
             CloseDebug();
+            CloseControls();
             if (settings) settings.Hide();
         }
 
@@ -72,18 +77,30 @@ namespace Megamind
         {
             Close();
             CloseDebug();
+            CloseControls();
             if (settings) settings.Show();
         }
 
         public void OpenDebug()
         {
             Close();
+            CloseControls();
             if (settings) settings.Hide();
             if (debugRoot) debugRoot.SetActive(true);
             _nextDebug = 0f;
         }
 
         public void CloseDebug() { if (debugRoot) debugRoot.SetActive(false); }
+
+        public void OpenControls()
+        {
+            Close();
+            CloseDebug();
+            if (settings) settings.Hide();
+            if (controlsRoot) controlsRoot.SetActive(true);
+        }
+
+        public void CloseControls() { if (controlsRoot) controlsRoot.SetActive(false); }
 
         public void TogglePin()
         {
@@ -134,6 +151,7 @@ namespace Megamind
                 case VoiceCommand.CloseMenu: CloseAll(); break;
                 case VoiceCommand.OpenSettings: OpenSettings(); break;
                 case VoiceCommand.OpenDebug: OpenDebug(); break;
+                case VoiceCommand.OpenControls: OpenControls(); break;
                 case VoiceCommand.StartRecording: if (hud) hud.SetCapturing(true); break;
                 case VoiceCommand.StopRecording: if (hud) hud.SetCapturing(false); break;
                 case VoiceCommand.BiggerText: if (anchor) anchor.ScaleUp(); RefreshLabels(); break;

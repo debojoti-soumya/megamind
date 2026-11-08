@@ -8,7 +8,7 @@ namespace Megamind
     public enum VoiceCommand
     {
         None, OpenMenu, CloseMenu, OpenSettings, OpenDebug, StartRecording, StopRecording,
-        BiggerText, SmallerText, PinPanel, UnpinPanel,
+        BiggerText, SmallerText, PinPanel, UnpinPanel, OpenControls,
     }
 
     public static class VoiceCommands
@@ -38,13 +38,15 @@ namespace Megamind
             ("pin panel", VoiceCommand.PinPanel), ("pin", VoiceCommand.PinPanel), ("lock panel", VoiceCommand.PinPanel),
             ("unpin panel", VoiceCommand.UnpinPanel), ("unpin", VoiceCommand.UnpinPanel), ("unlock panel", VoiceCommand.UnpinPanel),
             ("follow me", VoiceCommand.UnpinPanel),
+            ("show controls", VoiceCommand.OpenControls), ("open controls", VoiceCommand.OpenControls), ("controls", VoiceCommand.OpenControls),
+            ("help", VoiceCommand.OpenControls), ("show help", VoiceCommand.OpenControls),
         };
 
         static readonly string[] Fillers = { "please", "hey", "ok", "okay", "megamind", "can", "you", "could", "would", "the", "a", "my", "now", "up" };
 
         /// <summary>Human-readable list for the panel's empty-state hint and the docs.</summary>
         public const string Hint = "\"open menu\", \"open settings\", \"show debug\", \"pause recording\", \"start recording\", " +
-                                   "\"bigger text\", \"smaller text\", \"pin panel\", \"unpin panel\"";
+                                   "\"bigger text\", \"smaller text\", \"pin panel\", \"unpin panel\", \"show controls\"";
 
         public static VoiceCommand Match(string transcript)
         {
@@ -89,6 +91,7 @@ namespace Megamind
             VoiceCommand.SmallerText => "text smaller",
             VoiceCommand.PinPanel => "panel pinned",
             VoiceCommand.UnpinPanel => "panel unpinned (follows you)",
+            VoiceCommand.OpenControls => "controls opened",
             _ => "",
         };
     }

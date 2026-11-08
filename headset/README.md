@@ -334,6 +334,9 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | `SettingsPanel.cs` | 3 | runtime server URL / device id, new session, purge memory |
 | `PanelMenu.cs` | 3 | header **Menu** dropdown (Settings, Debug, Pin/Unpin, Text size, New session, Purge) + voice-command execution |
 | `VoiceCommands.cs` | 3 | normalized-string matcher for short spoken commands (no wake word, no dependencies) |
+| `PanelControls.cs` | 3 | footer Record/Pause toggle + state text, Type (TouchScreenKeyboard → `ChatClient.SendText`), Hide/Show (collapse to header) |
+| `HoldToTalkButton.cs` | 3 | footer Hold-to-talk: pointer down/up → `ChatClient.BeginRecording` / `EndRecordingAndSendNow` |
+| `PanelHover.cs` | 3 | pointer enter/exit on the panel root; `ChatClient` ignores trigger/pinch push-to-talk while the ray is over the panel |
 | `Editor/MegamindSceneBuilder.cs` | 1 | the `Megamind` menu: create scene, apply player settings, build, build & run, push config, check project |
 | `Editor/MegamindChatPanelBuilder.cs` | 3 | `Megamind > 1b. Add Chat Panel To Current Scene`: bubble/thumb prefabs + the chat panel, all references wired |
 
@@ -346,16 +349,43 @@ field on `ChatPanel`/`ChatClient`/`PanelAnchor`/`SettingsPanel`, finds `CenterEy
 `FrameUploader`, and adds an `EventSystem` with Meta's `OVRInputModule` + `OVRRaycaster` (right-controller
 ray) when the SDK provides them:
 ```
-MegamindPanel (Canvas + CanvasScaler)  + PanelAnchor + ChatPanel + ChatClient + SettingsPanel + PanelMenu + AudioSource
-  Background, Header (RecDot, ServerDot, StatusLine, Menu button)
+MegamindPanel (Canvas + CanvasScaler)  + PanelAnchor + ChatPanel + ChatClient + SettingsPanel + PanelMenu + PanelControls + PanelHover + AudioSource
+  Background, Header (RecDot, ServerDot, StatusLine, Hide/Show button, Menu button)
   Scroll -> Viewport -> Content (VerticalLayoutGroup)        = ChatPanel.content
-  EmptyHint (push-to-talk + voice phrases), Indicators (ListeningIndicator, ThinkingIndicator)
+  EmptyHint (push-to-talk + voice phrases)
+  Footer: StateLabel, Indicators (ListeningIndicator, ThinkingIndicator), Buttons (RecordButton + Knob, HoldToTalkButton, TypeButton)
   Settings (inactive): ServerUrl, DeviceId, Save / New session / Purge, Reset / Close, Feedback
   Debug (inactive): Title, Close, Scroll -> Viewport -> Text (CaptureHud.FullReport)
-  MenuBackdrop (inactive, click = close), MenuDropdown (inactive): Settings, Debug, Pin panel, Text size, New session, Purge
+  Controls (inactive): Title, Close, Text (controller / hand / panel / voice cheat-sheet)
+  MenuBackdrop (inactive, click = close), MenuDropdown (inactive): Settings, Debug, Pin panel, Text size, Controls, New session, Purge
 ```
 Re-running the menu item replaces a previous `MegamindPanel`; tweak the result in the Inspector and save.
 Push-to-talk: hold the controller trigger (or index pinch); hold B/Y 0.5 s to drag the panel to your gaze.
+
+### Footer controls, Hide/Show, Controls cheat-sheet (verify on device)
+
+- **Record / Pause** (footer, left, with a knob that is red while capturing): toggles continuous frame capture
+  (`CaptureHud.ToggleCapture` → `FrameUploader.SetCapturing`), same as A/X / middle pinch / "pause recording". The line
+  above the buttons reads **Recording continuously** or **Paused** (`Paused · camera starting…` etc. while the camera is
+  not ready).
+- **Hold to talk**: point the ray at it and hold the trigger (controller) or index pinch (hands); release to send. It
+  drives the same `ChatClient.BeginRecording` / `EndRecordingAndSend` path as the bare trigger and turns red while
+  recording. uGUI delivers pointer-up to the pressed button even if the ray drifts off it, and the trigger release in
+  `ChatClient.Update` is a second safety net.
+- **Type**: opens the system on-screen keyboard (`TouchScreenKeyboard.Open`) and sends the text as a typed question
+  (`POST /v1/chat` with `text`), so you can ask without speaking. Typed short commands ("open menu", "pause recording")
+  run like spoken ones. The Quest keyboard renders as a system overlay in front of the app — how it looks next to a
+  World-Space canvas, and whether `TouchScreenKeyboard.Status` reports `Done` on the Quest IME, has **not** been
+  checked here (no device).
+- **Hide / Show** (header, left of Menu): collapses the panel to the header strip — REC dot, status line and the two
+  buttons stay — and closes any open overlay. Show restores it. Not persisted.
+- **Menu → Controls**: a cheat-sheet of every mapping (trigger = talk, trigger on a button = click, A/X = record toggle,
+  B/Y hold = move panel, index pinch = talk, middle pinch = record toggle, the footer buttons, the voice phrases).
+  Voice: "show controls" / "controls" / "help".
+- **No push-to-talk while clicking** (the #146 quirk): `PanelHover` on the panel root receives uGUI pointer enter/exit
+  for every child (the background is a raycast target too), and `ChatClient` skips `BeginRecording` when the ray is over
+  the panel (`ignorePushToTalkOverUi`, plus `EventSystem.current.IsPointerOverGameObject()` as a fallback). A trigger
+  press on a button is now only a click; recording from the panel goes through Hold to talk.
 
 ### Header status strip, Menu dropdown and voice commands (verify on device)
 

@@ -1,7 +1,8 @@
 // Editor-only. Stream 3: adds the voice-first chat panel to the capture scene made by MegamindSceneBuilder
 // (Megamind > 1), creates the bubble/thumbnail prefabs, and wires every public reference on
 // ChatPanel / ChatClient / PanelAnchor / SettingsPanel / PanelMenu (header status strip + REC dot fed by CaptureHud,
-// top-right Menu dropdown: Settings / Debug / Pin / Text size / New session / Purge). Run Megamind > 1, then 1b, then build.
+// top-right Menu dropdown: Settings / Debug / Pin / Text size / Controls / New session / Purge; footer Record|Pause /
+// Hold to talk / Type / Hide controls, PanelControls + PanelHover). Run Megamind > 1, then 1b, then build.
 //
 // Why a script instead of committed .unity/.prefab YAML: hand-written scene YAML with cross-file GUIDs is
 // brittle across Unity versions and nobody can open it here to verify. This is re-runnable (it deletes a
@@ -22,7 +23,7 @@ namespace Megamind.EditorTools
     {
         const string Root = "Assets/Megamind";
         const string PrefabDir = Root + "/Prefabs";
-        const float PanelW = 600f, PanelH = 720f, HeaderH = 56f, FooterH = 56f;
+        const float PanelW = 600f, PanelH = 720f, HeaderH = 56f, FooterH = 100f, FooterButtonsH = 60f;
         // uGUI Text rasterises glyphs at fontSize * dynamicPixelsPerUnit: at 1000 canvas px/m and ~25 px/deg on Quest 3 a
         // 1x glyph is upscaled ~1.4x and looks soft, so render the font atlas at 3x.
         const float DynamicPixelsPerUnit = 3f;
@@ -93,7 +94,9 @@ namespace Megamind.EditorTools
             rt.localScale = Vector3.one * (config.panelWidthMeters / PanelW);
             rt.position = new Vector3(0f, 1.3f, config.panelDistance);
 
-            MakeImage(go.transform, "Background", PanelBg, Rounded).rectTransform.Stretch();
+            var background = MakeImage(go.transform, "Background", PanelBg, Rounded);
+            background.rectTransform.Stretch();
+            background.raycastTarget = true; // the whole panel counts as "ray over UI" (push-to-talk suppression)
 
             // Header: REC dot (always visible, privacy), server dot, one-line status strip (CaptureHud.ShortStatus), Menu
             var header = MakeImage(go.transform, "Header", HeaderBg, Rounded);
@@ -104,9 +107,11 @@ namespace Megamind.EditorTools
             dot.AnchorLeftCentre(36f, 10f, 10f);
             var statusLine = MakeLabel(header.transform, "StatusLine", "connecting…", 18, TextDim, TextAnchor.MiddleLeft);
             statusLine.horizontalOverflow = HorizontalWrapMode.Overflow; statusLine.verticalOverflow = VerticalWrapMode.Truncate;
-            statusLine.rectTransform.Fill(new Vector2(54f, 0f), new Vector2(-96f, 0f));
+            statusLine.rectTransform.Fill(new Vector2(54f, 0f), new Vector2(-172f, 0f));
             var menuButton = MakeButton(header.transform, "MenuButton", "Menu", 17);
             menuButton.GetComponent<RectTransform>().AnchorRightCentre(10f, 80f, 40f);
+            var minimizeButton = MakeButton(header.transform, "MinimizeButton", "Hide", 17);
+            minimizeButton.GetComponent<RectTransform>().AnchorRightCentre(96f, 70f, 40f);
 
             // Scroll view with the transcript
             var scrollGo = new GameObject("Scroll", typeof(RectTransform), typeof(ScrollRect));
@@ -137,18 +142,40 @@ namespace Megamind.EditorTools
                 22, TextDim, TextAnchor.MiddleCenter);
             emptyHint.rectTransform.Fill(new Vector2(40f, FooterH), new Vector2(-40f, -HeaderH));
 
-            // Footer indicators
-            var footer = new GameObject("Indicators", typeof(RectTransform));
-            footer.transform.SetParent(go.transform, false);
-            footer.GetComponent<RectTransform>().AnchorBottom(FooterH);
-            var listening = MakeImage(footer.transform, "ListeningIndicator", new Color(1f, 0.3f, 0.3f), Knob);
-            listening.AnchorLeftCentre(18f, 16f, 16f);
-            var listeningLabel = MakeLabel(listening.transform, "Label", "listening…", 20, TextMain, TextAnchor.MiddleLeft);
+            // Footer: state line ("Recording continuously" / "Paused") + listening/thinking indicators on top,
+            // big Record|Pause / Hold to talk / Type buttons below.
+            var footer = MakeImage(go.transform, "Footer", HeaderBg, Rounded);
+            footer.rectTransform.AnchorBottom(FooterH);
+            var stateLabel = MakeLabel(footer.transform, "StateLabel", "Paused", 18, TextDim, TextAnchor.MiddleLeft);
+            stateLabel.rectTransform.anchorMin = new Vector2(0f, 1f); stateLabel.rectTransform.anchorMax = Vector2.one; stateLabel.rectTransform.pivot = new Vector2(0.5f, 1f);
+            stateLabel.rectTransform.offsetMin = new Vector2(18f, -(FooterH - FooterButtonsH)); stateLabel.rectTransform.offsetMax = new Vector2(-280f, 0f);
+            var indicators = new GameObject("Indicators", typeof(RectTransform));
+            indicators.transform.SetParent(footer.transform, false);
+            var irt = indicators.GetComponent<RectTransform>();
+            irt.anchorMin = new Vector2(1f, 1f); irt.anchorMax = Vector2.one; irt.pivot = new Vector2(1f, 1f);
+            irt.anchoredPosition = new Vector2(-14f, 0f); irt.sizeDelta = new Vector2(260f, FooterH - FooterButtonsH);
+            var listening = MakeImage(indicators.transform, "ListeningIndicator", new Color(1f, 0.3f, 0.3f), Knob);
+            listening.AnchorLeftCentre(0f, 16f, 16f);
+            var listeningLabel = MakeLabel(listening.transform, "Label", "listening…", 18, TextMain, TextAnchor.MiddleLeft);
             listeningLabel.rectTransform.anchorMin = new Vector2(1f, 0.5f); listeningLabel.rectTransform.anchorMax = new Vector2(1f, 0.5f);
             listeningLabel.rectTransform.pivot = new Vector2(0f, 0.5f); listeningLabel.rectTransform.anchoredPosition = new Vector2(8f, 0f);
-            listeningLabel.rectTransform.sizeDelta = new Vector2(240f, 28f);
-            var thinking = MakeLabel(footer.transform, "ThinkingIndicator", "thinking…", 20, TextDim, TextAnchor.MiddleCenter);
+            listeningLabel.rectTransform.sizeDelta = new Vector2(236f, 28f);
+            var thinking = MakeLabel(indicators.transform, "ThinkingIndicator", "thinking…", 18, TextDim, TextAnchor.MiddleRight);
             thinking.rectTransform.Stretch();
+            var buttons = new GameObject("Buttons", typeof(RectTransform), typeof(HorizontalLayoutGroup));
+            buttons.transform.SetParent(footer.transform, false);
+            var brt = buttons.GetComponent<RectTransform>();
+            brt.AnchorBottom(FooterButtonsH); brt.offsetMin = new Vector2(10f, 6f); brt.offsetMax = new Vector2(-10f, FooterButtonsH - 2f);
+            var bhlg = buttons.GetComponent<HorizontalLayoutGroup>();
+            bhlg.spacing = 8f; bhlg.childControlWidth = true; bhlg.childControlHeight = true; bhlg.childForceExpandWidth = true;
+            var recordButton = MakeButton(buttons.transform, "RecordButton", "Record", 21);
+            var recordLabel = recordButton.GetComponentInChildren<Text>();
+            recordLabel.rectTransform.offsetMin = new Vector2(30f, 0f);
+            var recordKnob = MakeImage(recordButton.transform, "Knob", new Color(0.45f, 0.48f, 0.52f), Knob);
+            recordKnob.AnchorLeftCentre(14f, 16f, 16f);
+            var talkButton = MakeButton(buttons.transform, "HoldToTalkButton", "Hold to talk", 21);
+            var typeButton = MakeButton(buttons.transform, "TypeButton", "Type", 21);
+            typeButton.gameObject.AddComponent<LayoutElement>().flexibleWidth = 0.6f;
 
             // Settings sub-panel (inactive by default; SettingsPanel.Awake hides it)
             var settingsRoot = MakeImage(go.transform, "Settings", new Color(0.05f, 0.06f, 0.08f, 0.97f), Rounded);
@@ -201,6 +228,19 @@ namespace Megamind.EditorTools
             debugText.gameObject.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
             debugScroll.viewport = debugViewport.GetComponent<RectTransform>(); debugScroll.content = dtRt;
 
+            // Controls cheat-sheet sub-panel
+            var controlsRoot = MakeImage(go.transform, "Controls", new Color(0.05f, 0.06f, 0.08f, 0.97f), Rounded);
+            controlsRoot.GetComponent<RectTransform>().Fill(new Vector2(0f, 0f), new Vector2(0f, -HeaderH));
+            var controlsTitle = MakeLabel(controlsRoot.transform, "Title", "Controls", 26, TextMain, TextAnchor.MiddleLeft);
+            controlsTitle.rectTransform.AnchorTop(44f); controlsTitle.rectTransform.offsetMin = new Vector2(18f, -44f); controlsTitle.rectTransform.offsetMax = new Vector2(-120f, -4f);
+            var controlsClose = MakeButton(controlsRoot.transform, "Close", "Close", 19);
+            var ccRt = controlsClose.GetComponent<RectTransform>();
+            ccRt.anchorMin = ccRt.anchorMax = new Vector2(1f, 1f); ccRt.pivot = new Vector2(1f, 1f);
+            ccRt.anchoredPosition = new Vector2(-14f, -8f); ccRt.sizeDelta = new Vector2(96f, 40f);
+            var controlsText = MakeLabel(controlsRoot.transform, "Text", ControlsText, 20, TextMain, TextAnchor.UpperLeft);
+            controlsText.rectTransform.Fill(new Vector2(18f, 12f), new Vector2(-18f, -56f));
+            controlsText.verticalOverflow = VerticalWrapMode.Truncate;
+
             // Dropdown: transparent backdrop (click anywhere = close) + list under the Menu button. Built last so it draws on top.
             var backdrop = MakeImage(go.transform, "MenuBackdrop", new Color(0f, 0f, 0f, 0f), null);
             backdrop.raycastTarget = true;
@@ -219,6 +259,7 @@ namespace Megamind.EditorTools
             var miDebug = MenuEntry(menuRoot.transform, "Debug", "Debug");
             var miPin = MenuEntry(menuRoot.transform, "Pin", "Pin panel");
             var miTextSize = MenuEntry(menuRoot.transform, "TextSize", "Text size 1x");
+            var miControls = MenuEntry(menuRoot.transform, "Controls", "Controls");
             var miNewSession = MenuEntry(menuRoot.transform, "NewSession", "New session");
             var miPurge = MenuEntry(menuRoot.transform, "Purge", "Purge memory");
 
@@ -265,15 +306,30 @@ namespace Megamind.EditorTools
 
             var menu = go.AddComponent<PanelMenu>();
             menu.root = menuRoot.gameObject; menu.backdrop = backdrop.gameObject;
-            menu.debugRoot = debugRoot.gameObject; menu.debugText = debugText;
+            menu.debugRoot = debugRoot.gameObject; menu.debugText = debugText; menu.controlsRoot = controlsRoot.gameObject;
             menu.pinLabel = miPin.GetComponentInChildren<Text>(); menu.textSizeLabel = miTextSize.GetComponentInChildren<Text>();
             menu.hud = hud; menu.settings = settings; menu.anchor = anchor; menu.chatPanel = chatPanel;
             client.menu = menu;
+            client.panelHover = go.AddComponent<PanelHover>();
+
+            var controls = go.AddComponent<PanelControls>();
+            controls.hud = hud; controls.client = client; controls.menu = menu; controls.chatPanel = chatPanel;
+            controls.recordLabel = recordLabel; controls.recordKnob = recordKnob; controls.stateLabel = stateLabel;
+            controls.minimizeLabel = minimizeButton.GetComponentInChildren<Text>();
+            controls.hiddenWhenMinimized = new[] { background.gameObject, scrollGo, emptyHint.gameObject, footer.gameObject };
+            var holdToTalk = talkButton.gameObject.AddComponent<HoldToTalkButton>();
+            holdToTalk.client = client; holdToTalk.background = talkButton.GetComponent<Image>();
+            talkButton.transition = Selectable.Transition.None; // HoldToTalkButton colours it (red while recording)
 
             UnityEventTools.AddPersistentListener(menuButton.onClick, new UnityAction(menu.Toggle));
             UnityEventTools.AddPersistentListener(backdropButton.onClick, new UnityAction(menu.Close));
             UnityEventTools.AddPersistentListener(miSettings.onClick, new UnityAction(menu.OpenSettings));
             UnityEventTools.AddPersistentListener(miDebug.onClick, new UnityAction(menu.OpenDebug));
+            UnityEventTools.AddPersistentListener(miControls.onClick, new UnityAction(menu.OpenControls));
+            UnityEventTools.AddPersistentListener(controlsClose.onClick, new UnityAction(menu.CloseControls));
+            UnityEventTools.AddPersistentListener(recordButton.onClick, new UnityAction(controls.ToggleRecord));
+            UnityEventTools.AddPersistentListener(typeButton.onClick, new UnityAction(controls.OpenKeyboard));
+            UnityEventTools.AddPersistentListener(minimizeButton.onClick, new UnityAction(controls.ToggleMinimized));
             UnityEventTools.AddPersistentListener(miPin.onClick, new UnityAction(menu.TogglePin));
             UnityEventTools.AddPersistentListener(miTextSize.onClick, new UnityAction(menu.CycleTextSize));
             UnityEventTools.AddPersistentListener(miNewSession.onClick, new UnityAction(menu.NewSession));
@@ -287,6 +343,7 @@ namespace Megamind.EditorTools
 
             settingsRoot.gameObject.SetActive(false);
             debugRoot.gameObject.SetActive(false);
+            controlsRoot.gameObject.SetActive(false);
             menuRoot.gameObject.SetActive(false);
             backdrop.gameObject.SetActive(false);
             listening.gameObject.SetActive(false);
@@ -451,6 +508,24 @@ namespace Megamind.EditorTools
             label.rectTransform.Stretch();
             return b;
         }
+
+        const string ControlsText =
+            "Controller\n" +
+            "  Trigger (hold)  talk to Megamind; release = send\n" +
+            "  Trigger on a button  click (no recording)\n" +
+            "  A / X  record toggle (continuous capture on/off)\n" +
+            "  B / Y (hold 0.5 s)  move the panel with your gaze\n\n" +
+            "Hands\n" +
+            "  Index pinch (hold)  talk; release = send\n" +
+            "  Middle pinch  record toggle\n" +
+            "  Index pinch on a button  click\n\n" +
+            "Panel\n" +
+            "  Record / Pause  continuous capture on/off\n" +
+            "  Hold to talk  point, hold trigger or pinch, speak, release\n" +
+            "  Type  on-screen keyboard for a typed question\n" +
+            "  Hide / Show  collapse to the header (REC dot stays)\n" +
+            "  Menu  Settings, Debug, Pin, Text size, Controls, New session, Purge\n\n" +
+            "Voice (hold trigger, say):\n  " + VoiceCommands.Hint;
 
         static Button MenuEntry(Transform parent, string name, string caption)
         {

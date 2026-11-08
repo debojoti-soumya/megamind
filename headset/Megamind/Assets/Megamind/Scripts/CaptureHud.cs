@@ -119,6 +119,10 @@ namespace Megamind
         }
 
         /// <summary>True while passthrough frames are being captured and uploaded (drives the REC dot).</summary>
+        public bool IsPaused => uploader != null && uploader.CurrentState == FrameUploader.State.Paused;
+        /// <summary>Short state word for the footer: "camera starting…", "camera permission…", "PAUSED (background)"…</summary>
+        public string StateLabel => uploader == null ? "no FrameUploader" : StateText(uploader);
+
         public bool IsCapturing => uploader != null && uploader.CurrentState == FrameUploader.State.Capturing;
 
         /// <summary>Blink phase for the REC dot (on 70 % of each second); false when not capturing.</summary>
@@ -145,12 +149,10 @@ namespace Megamind
         }
 
         /// <summary>One line for the chat panel header, e.g. "REC 1 fps · 143 sent · mic 9 · url:intent".</summary>
-        public string ShortStatus()
+        static string StateText(FrameUploader u)
         {
-            var u = uploader;
-            if (u == null) return "no FrameUploader";
             var cfg = u.settings;
-            string state = u.CurrentState switch
+            return u.CurrentState switch
             {
                 FrameUploader.State.Capturing => $"REC {cfg.captureFps:0.#} fps" + (u.AppFocused ? "" : " (unfocused)"),
                 FrameUploader.State.WaitingForPermission => "camera permission…",
@@ -160,6 +162,14 @@ namespace Megamind
                 FrameUploader.State.NoCameraComponent => "no camera component",
                 _ => u.CurrentState.ToString(),
             };
+        }
+
+        public string ShortStatus()
+        {
+            var u = uploader;
+            if (u == null) return "no FrameUploader";
+            var cfg = u.settings;
+            string state = StateText(u);
             string sent = u.Accepted == u.Sent ? $"{u.Sent} sent" : $"{u.Accepted}/{u.Sent} sent";
             string mic = audioRecorder != null ? $" · mic {audioRecorder.Sent}" : "";
             string net = u.Failed > 0 && !u.ServerReachable ? " · NET ERR" : "";
