@@ -100,6 +100,39 @@ async def test_speaker_reset_drops_clips_and_mismatch_respeaks(tmp_path):
     assert url == f"/v1/audio/{sp.audio_id}.wav" and tts.calls[-1] == "Sorry, I couldn't find that."
 
 
+async def test_speaker_each_seq_once_when_clips_finish_between_sentences(tmp_path):
+    """Claude pauses between sentences and TTS is instant: the sender drains and restarts; no clip is re-sent."""
+    events = []
+
+    async def emit(name, data):
+        events.append(data["seq"])
+
+    sp = StreamingSpeaker(SlowFirstTTS(tmp_path, delays=(0.0,) * 4), tmp_path, emit)
+    sentences = ["First sentence of the answer is here.", "Second one follows it now.", "Third one closes it all."]
+    for s in sentences:
+        await sp.feed(s + " ")  # completes the previous sentence's boundary -> its clip starts and finishes...
+        await asyncio.sleep(0.03)  # ...before this sentence ends, so the sender drains and has to restart
+    url = await sp.finish(" ".join(sentences))
+    assert events == [0, 1, 2] and url is not None
+
+
+async def test_speaker_failed_clip_respeaks_whole_answer(tmp_path):
+    class FlakyTTS(SlowFirstTTS):
+        async def _render(self, text: str) -> bytes:
+            if len(self.calls) == 1:  # the second clip's provider call fails
+                self.calls.append(text)
+                raise RuntimeError("tts down")
+            return await super()._render(text)
+
+    tts = FlakyTTS(tmp_path, delays=(0.0, 0.0, 0.0))
+    sp = StreamingSpeaker(tts, tmp_path, lambda n, d: asyncio.sleep(0))
+    await sp.feed(TWO)
+    url = await sp.finish(TWO)
+    assert url == f"/v1/audio/{sp.audio_id}.wav" and tts.calls[-1] == TWO  # not a silently shorter file
+    with wave.open(str(tmp_path / f"{sp.audio_id}.wav")) as w:
+        assert w.getnframes() == 10 * len(TWO)
+
+
 async def test_mock_tts_streams_no_audio(tmp_path):
     sp = StreamingSpeaker(tts_mod.MockTTS(), tmp_path, lambda n, d: asyncio.sleep(0))
     await sp.feed(TWO)

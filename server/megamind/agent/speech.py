@@ -93,6 +93,7 @@ class StreamingSpeaker:
         self.texts: list[str] = []
         self.started_ms: list[float] = []  # when each clip's TTS call began (ms since the turn started)
         self.parts: list[asyncio.Task[str | None]] = []
+        self.sent = 0  # clips whose `audio` event went out (the sender's cursor; it survives sender restarts)
         self.sender: asyncio.Task[None] | None = None
 
     async def feed(self, text: str) -> None:
@@ -108,15 +109,15 @@ class StreamingSpeaker:
             self.sender = asyncio.create_task(self._send())
 
     async def _send(self) -> None:
-        """Emit `audio` events strictly in sentence order (a later clip waits for the earlier ones)."""
-        i = 0
-        while i < len(self.parts):
+        """Emit `audio` events strictly in sentence order (a later clip waits for the earlier ones), each once."""
+        while self.sent < len(self.parts):
+            i = self.sent
             url = await self.parts[i]
             if url:
                 if self.first_audio_ms is None:
                     self.first_audio_ms = (time.perf_counter() - self.t0) * 1000
                 await self.emit("audio", {"seq": i, "url": url, "text": self.texts[i]})
-            i += 1
+            self.sent = i + 1
         self.sender = None
 
     async def reset(self) -> None:
@@ -141,13 +142,12 @@ class StreamingSpeaker:
         if self.sender is not None:
             await self.sender
         urls = [await p for p in self.parts]
-        if _words(" ".join(self.texts)) != _words(answer):
-            if self.texts:
-                log.info("tts stream: streamed text != answer; speaking the answer whole")
+        if not any(urls):
+            return None  # TTS disabled (mock) or every clip failed, as `tts.synthesize` would have returned
+        if _words(" ".join(self.texts)) != _words(answer) or not all(urls):
+            log.info("tts stream: streamed text != answer, or a clip failed; speaking the answer whole")
             return await self.tts.synthesize(answer, self.audio_id)
-        paths = [self.audio_dir / Path(u).name for u in urls if u]
-        if not paths:
-            return None
+        paths = [self.audio_dir / Path(u).name for u in urls]
         out = self.audio_dir / f"{self.audio_id}.wav"
         try:
             ok = concat_wavs(paths, out)
