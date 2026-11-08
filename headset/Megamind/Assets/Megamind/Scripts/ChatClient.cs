@@ -38,7 +38,12 @@ namespace Megamind
         public bool IsRecording => _recordingActive;
         public bool IsThinking { get; private set; }
 
+        [Tooltip("Optional: persistent chats; the active chat's id is the server session_id. Without it, a random id per launch.")]
+        public SessionStore sessions;
+
         private string _sessionId;
+        /// <summary>Server session_id for the current turn (active chat when a SessionStore is wired).</summary>
+        public string SessionId => sessions != null && sessions.Active != null ? sessions.Active.id : _sessionId;
         private AudioClip _recording;
         private bool _recordingActive;
         private float _recordStart;
@@ -114,7 +119,7 @@ namespace Megamind
 
             var form = new List<IMultipartFormSection>
             {
-                new MultipartFormDataSection("session_id", _sessionId),
+                new MultipartFormDataSection("session_id", SessionId),
                 new MultipartFormDataSection("device_id", config.deviceId),
                 new MultipartFormFileSection("audio", wav, "q.wav", "audio/wav"),
             };
@@ -131,7 +136,7 @@ namespace Megamind
         private IEnumerator SendTextCo(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) yield break;
-            var body = JsonUtility.ToJson(new ChatRequest { session_id = _sessionId, device_id = config.deviceId, text = text });
+            var body = JsonUtility.ToJson(new ChatRequest { session_id = SessionId, device_id = config.deviceId, text = text });
             using (var req = new UnityWebRequest(config.Url("/v1/chat"), "POST"))
             {
                 req.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
@@ -180,7 +185,11 @@ namespace Megamind
             if (!string.IsNullOrEmpty(resp.audio_url) && config.speakAnswers) StartCoroutine(PlayAudio(config.Url(resp.audio_url)));
         }
 
-        public void NewSession() => _sessionId = Guid.NewGuid().ToString("N");
+        public void NewSession()
+        {
+            if (sessions != null) sessions.NewSession();
+            else _sessionId = Guid.NewGuid().ToString("N");
+        }
 
         private IEnumerator PlayAudio(string url)
         {
