@@ -27,6 +27,18 @@ from megamind.store.consolidate import Consolidator, build_summarizer
 logging.basicConfig(level=logging.INFO)
 
 
+def active_provider(settings: Settings, configured: str, impl: object, active: str) -> str:
+    """Health label for what is really serving a role: `active` when a real backend was built, otherwise
+    e.g. "mock (openai configured, no key)" so an empty key can't masquerade as a live provider."""
+    configured = configured.lower()
+    if not type(impl).__name__.startswith(("Mock", "CaptionOnly")):
+        return active
+    if configured in ("", "mock"):
+        return "mock"
+    why = "no key" if settings.provider_key(configured) == "" else "not implemented"
+    return f"mock ({configured} configured, {why})"
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
@@ -84,9 +96,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             status="ok",
             store_count=await st.store.count(),
             models={
-                "claude": settings.claude_model,
-                "reader": settings.reader_model,
-                "embed": f"{settings.embed_provider}:{settings.embed_model}",
+                "claude": settings.claude_model
+                if st.agent.enabled
+                else f"fallback ({settings.claude_model} configured, no key)",
+                "reader": active_provider(
+                    settings,
+                    "vlm" if settings.reader_provider.lower() == "auto" else settings.reader_provider,
+                    st.reader,
+                    settings.reader_model,
+                ),
+                "embed": active_provider(
+                    settings,
+                    settings.embed_provider,
+                    st.text_embedder,
+                    f"{settings.embed_provider}:{settings.embed_model}",
+                ),
+                "stt": active_provider(settings, settings.stt_provider, st.stt, settings.stt_provider),
+                "tts": active_provider(settings, settings.tts_provider, st.tts, settings.tts_provider),
             },
         )
 

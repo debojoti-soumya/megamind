@@ -3,7 +3,11 @@ import io
 import json
 from datetime import UTC, datetime
 
+from httpx import ASGITransport, AsyncClient
 from PIL import Image
+
+from megamind.config import Settings
+from megamind.main import create_app
 
 
 def _jpeg(color, size=(96, 72)) -> bytes:
@@ -127,3 +131,48 @@ async def test_search_bad_time_param_is_400(client):
     assert r.status_code == 200
     r = await c.get("/v1/health")  # connection still usable after the 400
     assert r.status_code == 200
+
+
+async def _health(tmp_path, **cfg) -> dict:
+    base = dict(thumb_dir=tmp_path / "t", audio_dir=tmp_path / "a", consolidate_enabled=False, _env_file=None)
+    app = create_app(Settings(**{**base, **cfg}))
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            return (await c.get("/v1/health")).json()["models"]
+
+
+async def test_health_reports_mocks_when_keys_are_missing(tmp_path):
+    models = await _health(
+        tmp_path,
+        anthropic_api_key="",
+        reader_api_key="none",
+        embed_provider="openai",
+        openai_api_key="",
+        stt_provider="deepgram",
+        deepgram_api_key="",
+        tts_provider="mock",
+    )
+    assert models == {
+        "claude": "fallback (claude-sonnet-4-6 configured, no key)",
+        "reader": "mock (vlm configured, no key)",
+        "embed": "mock (openai configured, no key)",
+        "stt": "mock (deepgram configured, no key)",
+        "tts": "mock",
+    }
+
+
+async def test_health_reports_live_providers_and_unwired_ones(tmp_path):
+    models = await _health(
+        tmp_path,
+        anthropic_api_key="k",
+        reader_api_key="k",
+        embed_provider="openai",
+        openai_api_key="k",
+        tts_provider="elevenlabs",
+        elevenlabs_api_key="k",
+    )
+    assert models["claude"] == "claude-sonnet-4-6"
+    assert models["reader"] == "google/gemma-4-31B-it"
+    # keyed but the app still builds a mock for these roles: say so rather than claim the provider is live
+    assert models["embed"] == "mock (openai configured, not implemented)"
+    assert models["tts"] == "mock (elevenlabs configured, not implemented)"
