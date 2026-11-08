@@ -42,6 +42,11 @@ WEIGHTS_BY_TYPE: dict[str, Weights] = {
 
 
 TimeFocus = Literal["start", "center", "end"]
+# Which backend may answer. "hybrid": nothing content-bearing to judge (pure time window / anchor-only, e.g.
+# "what was I doing at 11", "what did I do after lunch") -> the answer is "frames from the window", which a
+# relevance model (UCC facets) cannot improve and would only add latency/cost. "ucc": content words exist, so a
+# configured UCC backend ranks them (the hybrid stays its fallback).
+PlanRoute = Literal["ucc", "hybrid"]
 
 
 @dataclass
@@ -57,6 +62,7 @@ class QueryPlan:
     mode: PlanMode = "hybrid"
     explicit_time: bool = False
     time_focus: TimeFocus = "center"  # "after lunch" -> start, "before I left" -> end
+    route: PlanRoute = "ucc"
 
     @property
     def has_time(self) -> bool:
@@ -150,6 +156,7 @@ _RE_REL_AFTER = re.compile(r"\b(?:right |just )?(?:after|since|following)\s+$", 
 _RE_REL_BEFORE = re.compile(r"\b(?:right |just )?(?:before|until|till|prior to)\s+$", re.I)
 _RE_FOCUS_START = re.compile(r"\b(?:after|since|following)\b", re.I)
 _RE_FOCUS_END = re.compile(r"\b(?:before|until|till|prior to)\b", re.I)
+_RE_MEAL = re.compile(r"\b(breakfast|lunch|dinner)\b", re.I)
 _RE_TIME_FILLER = re.compile(r"\b(?:at|around|about|on|in|during|sometime|some time)\s*$", re.I)
 
 
@@ -422,8 +429,8 @@ _EXPAND: dict[str, str] = {
     "park": "parking garage car",
     "parked": "parking garage car",
     "car": "parking",
-    "lunch": "food plate restaurant",
-    "dinner": "food plate restaurant",
+    "lunch": "food plate restaurant menu",
+    "dinner": "food plate restaurant menu",
     "breakfast": "food plate kitchen",
     "phone": "phone screen",
     "glasses": "reading glasses",
@@ -468,6 +475,9 @@ def plan_query(
     if qtype == "people" and not any(w in text.split() for w in ("person", "people")):
         text = f"{text} person".strip()
     focus: TimeFocus = "start" if _RE_FOCUS_START.search(query) else "end" if _RE_FOCUS_END.search(query) else "center"
+    meal = _RE_MEAL.search(win.hint) if win and not text and focus == "center" else None
+    if meal:  # "what did I have for lunch": the meal is the subject, not only the time -> search for food
+        text = rewrite(meal.group(1))
 
     explicit = time_from is not None or time_to is not None
     if explicit:
@@ -477,6 +487,7 @@ def plan_query(
     else:
         tf = tt = hint = None
     has_time = tf is not None or tt is not None
+    mode = _mode_for(qtype, text, has_time)
 
     return QueryPlan(
         query=query,
@@ -487,9 +498,10 @@ def plan_query(
         time_hint=hint,
         anchor_event=anchor,
         weights=WEIGHTS_BY_TYPE[qtype],
-        mode=_mode_for(qtype, text, has_time),
+        mode=mode,
         explicit_time=explicit,
         time_focus=focus,
+        route="hybrid" if mode == "temporal" else "ucc",
     )
 
 
@@ -505,4 +517,5 @@ async def plan_query_async(query: str, *, rewriter: Rewriter | None = None, **kw
         if out:
             plan.search_text = out
             plan.mode = _mode_for(plan.query_type, out, plan.has_time)
+            plan.route = "hybrid" if plan.mode == "temporal" else "ucc"
     return plan

@@ -148,3 +148,19 @@ async def test_async_rewriter_hook():
 
     p = await plan_query_async("where are my keys", rewriter=broken, now=NOW)
     assert p.search_text == "keys"
+
+
+def test_routing_pure_time_questions_stay_on_hybrid():
+    for q in ("what was I doing 10 minutes ago?", "what did I do after lunch", "what was I doing at 9"):
+        assert plan_query(q, now=NOW).route == "hybrid", q
+    for q in ("where are my keys", "what did the whiteboard say this morning", "who did I meet at lunch"):
+        assert plan_query(q, now=NOW).route == "ucc", q
+
+
+def test_meal_as_subject_searches_for_food():
+    p = plan_query("what did I have for lunch", now=NOW)
+    assert p.mode == "hybrid" and p.route == "ucc"
+    assert "lunch" in p.search_text and "food" in p.search_text
+    assert p.time_from == _local(2026, 11, 7, 11, 30)  # 10:30 now: today's lunch hasn't happened yet
+    p = plan_query("what did I do after lunch", now=NOW)
+    assert p.search_text == "" and p.mode == "temporal" and p.time_focus == "start"

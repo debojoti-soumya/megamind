@@ -10,8 +10,10 @@ time window / device as free metadata filters and whose columns are relevance fa
   answers) over httpx, so neither the private `ucc` SDK nor pyarrow is a dependency and tests use `MockTransport`.
 - `UCCIndexer`: periodic sync job (store -> corpus); pushes enriched tokens it has not pushed yet. New documents
   become queryable a few seconds after upload (until then a select just doesn't see them).
-- `UCCRetriever`: the `Retriever`. Pure-time questions, cool-down after an error, timeouts, and an empty corpus all
-  go to the `HybridRetriever` fallback, so a UCC outage never breaks `recall_memory`.
+- `UCCRetriever`: the `Retriever`. The planner decides routing (`QueryPlan.route`): pure-time / anchor-only questions
+  ("what was I doing at 11", "what did I do after lunch") are `route="hybrid"` and never call UCC, since with no
+  content words there is nothing for a facet to judge. Everything else goes to UCC; a cool-down after an error,
+  timeouts, and an empty window/corpus go to the `HybridRetriever` fallback, so an outage never breaks `recall_memory`.
 """
 
 from __future__ import annotations
@@ -204,7 +206,8 @@ def token_document(t: MemoryToken, tz: ZoneInfo | None = None) -> Json:
 
 class UCCIndexer:
     """Store -> corpus sync. `sync_once()` pushes enriched tokens not yet in the corpus; `start()` runs it every
-    `interval_s`. Re-scans `lookback_s` before the newest pushed token so late enrichments are not missed."""
+    `interval_s`. Re-scans `lookback_s` before the newest pushed token so late enrichments are not missed.
+    While UCC is unreachable the wait doubles per consecutive failure, capped at `max_backoff_s`."""
 
     def __init__(
         self,
@@ -215,6 +218,7 @@ class UCCIndexer:
         interval_s: float = 30.0,
         lookback_s: float = 900.0,
         scan_limit: int = 50_000,
+        max_backoff_s: float = 300.0,
     ) -> None:
         self.client = client
         self.store = store
@@ -222,6 +226,8 @@ class UCCIndexer:
         self.interval_s = interval_s
         self.lookback_s = lookback_s
         self.scan_limit = scan_limit
+        self.max_backoff_s = max_backoff_s
+        self.failures = 0
         self.pushed: set[str] | None = None
         self.cursor: float | None = None
         self._task: asyncio.Task | None = None
@@ -247,11 +253,18 @@ class UCCIndexer:
         while True:
             try:
                 await self.sync_once()
+                self.failures = 0
             except asyncio.CancelledError:
                 raise
-            except Exception as e:  # keep syncing through transient API errors
-                log.warning("ucc sync failed: %s", e)
-            await asyncio.sleep(self.interval_s)
+            except Exception as e:  # keep syncing through transient API errors, backing off
+                self.failures += 1
+                log.warning("ucc sync failed (%d in a row): %s", self.failures, e)
+            await asyncio.sleep(self.next_delay())
+
+    def next_delay(self) -> float:
+        if not self.failures:
+            return self.interval_s
+        return min(self.interval_s * 2 ** min(self.failures, 30), max(self.max_backoff_s, self.interval_s))
 
     async def start(self) -> None:
         if self._task is None:
@@ -340,10 +353,10 @@ class UCCRetriever(Retriever):
         device_id: str | None,
         now: datetime,
     ) -> RetrievalResult | None:
-        """None = defer to the hybrid (pure-time question, or nothing indexed in the window)."""
+        """None = defer to the hybrid (planner routed to hybrid, or nothing indexed in the window)."""
         k = max(1, k)
         plan = plan_query(query, now=now, tz=self.tz, time_from=time_from, time_to=time_to)
-        if (plan.mode == "temporal" and not plan.search_text) or not (plan.search_text or plan.query.strip()):
+        if plan.route == "hybrid" or not (plan.search_text or plan.query.strip()):
             return None
         anchor_ts = None
         if plan.anchor_event and not plan.has_time:
