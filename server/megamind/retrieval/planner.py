@@ -420,9 +420,19 @@ def rewrite(query: str, time_span: tuple[int, int] | None = None, anchor: str | 
     q = _SCAFFOLD.sub(" ", q)
     q = _MULTISPACE.sub(" ", q).strip(" .,?!'").lower()
     words = q.split()
+    if all(w in _GENERIC for w in words):  # "seen recently", "my surroundings": a recency question, no subject
+        return ""
     extra = [e for w in words for e in _EXPAND.get(w, "").split() if e not in words]
     return " ".join(words + extra)
 
+
+# Words that say "show me what was there" without naming a subject; a query made only of these is content-free.
+_GENERIC = frozenset(
+    "recent recently latest lately last now moment seen saw see notice noticed observe observed observation "
+    "observations spotted glance glanced view viewed views scene scenes surroundings sight sights visible "
+    "visual visuals around everything nothing happening going on front event events activity activities "
+    "memory memories snapshot snapshots captured".split()
+)
 
 # Query words -> what a caption/OCR is likely to say instead (kept tiny and obvious on purpose).
 _EXPAND: dict[str, str] = {
