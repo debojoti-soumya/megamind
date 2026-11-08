@@ -5,9 +5,10 @@ server, and (2) hosts the voice-first AR chat panel. Both streams share this pro
 (design doc §2, decision D1). The project in `headset/Megamind/` is a complete Unity
 project: open it in Unity Hub, let the packages resolve, run one menu item, build.
 
-> Status: the project has been assembled and compile-checked against the Meta SDK
-> 85 / MRUK 85 API surface, but **not yet built or run on a headset**. Expect to
-> iterate on device; the troubleshooting list below covers the likely failures.
+> Status: the project compiles and builds headless (Unity 6000.0.66f2 + Meta SDK 85 / MRUK 85)
+> into `Builds/megamind.apk`, but the APK has **not yet been playtested on a headset** (needs a
+> Quest 3/3S on a wired adb connection). Expect to iterate on device; the troubleshooting
+> list below covers the likely failures.
 
 New to Quest? Start with the **[Quest 3 guide](../docs/quest3-guide.md)**: headset basics, every physical
 connection (USB/adb, wireless adb, Wi-Fi/Tailscale to the server, casting, power), a test runbook, and a
