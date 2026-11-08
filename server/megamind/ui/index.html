@@ -122,10 +122,32 @@
   .btn.primary { background: var(--user); border-color: transparent; }
   .hint { font-size: 12px; color: var(--muted); }
 
+  /* ---------- streamed retrieval, replay badge, highlight reel ---------- */
+  .bubble:empty { display: none; }
+  .bubble.writing::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .cands { display: flex; flex-direction: column; gap: 6px; }
+  .cands .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .thumb.dim { opacity: 0.75; }
+  .thumb.replay::after { content: "▶"; position: absolute; right: 6px; top: 5px; width: 18px; height: 18px; line-height: 18px; text-align: center;
+    font-size: 9px; border-radius: 50%; background: rgba(0,0,0,0.65); color: #fff; }
+  .reel { width: 100%; max-width: 420px; border-radius: 14px; overflow: hidden; border: 1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.4); }
+  .reel video { width: 100%; display: block; aspect-ratio: 16 / 9; background: #000; }
+  .reel .bar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; font-size: 12px; color: var(--muted); }
+  .reel .bar b { color: var(--fg); font-weight: 600; }
+  .reel .chips { display: flex; gap: 6px; overflow-x: auto; padding: 0 10px 10px; scrollbar-width: none; }
+  .reel .chips::-webkit-scrollbar { display: none; }
+  .reel .chips span { flex: none; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,0.08); white-space: nowrap; }
+  #reel { flex: none; background: rgba(255,255,255,0.1); border: 0; color: var(--fg); border-radius: 12px; padding: 11px; cursor: pointer; display: inline-flex; }
+  #reel:hover { background: rgba(255,255,255,0.18); }
+  #reel:disabled { opacity: 0.4; cursor: not-allowed; }
+
   /* ---------- lightbox ---------- */
   #lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: none; align-items: center; justify-content: center; z-index: 10; cursor: zoom-out; }
   #lightbox.show { display: flex; }
-  #lightbox img { max-width: 80vw; max-height: 70vh; border-radius: 14px; border: 1px solid var(--glass-border); }
+  #lightbox img, #lightbox video { max-width: 80vw; max-height: 70vh; border-radius: 14px; border: 1px solid var(--glass-border); background: #000; }
+  #lightbox video { cursor: default; }
+  #lightbox .hide { display: none; }
   #lightbox .cap { position: absolute; bottom: 8vh; left: 50%; transform: translateX(-50%); max-width: 70vw; text-align: center;
     background: var(--glass); padding: 10px 16px; border-radius: 12px; font-size: 14px; }
 
@@ -155,7 +177,7 @@
   <div id="transcript">
     <div class="empty" id="empty">
       Hold <kbd>Space</kbd> or the mic button and ask about something you saw.<br>
-      <span class="hint">e.g. “where did I leave my keys?”</span>
+      <span class="hint">e.g. “where did I leave my keys?” — or type a topic and press the film button for a highlight reel</span>
     </div>
   </div>
 
@@ -169,6 +191,7 @@
     <button id="ptt" title="hold to talk (Space)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
     <input id="text" placeholder="…or type a question" autocomplete="off">
     <button id="send">Send</button>
+    <button id="reel" title="highlight reel of what you typed (empty = the last hour)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 15h18M8 4v16M16 4v16"/></svg></button>
   </footer>
 
   <div id="settings">
@@ -196,7 +219,7 @@
   </div>
 </section>
 
-<div id="lightbox"><img id="lbimg" alt=""><div class="cap" id="lbcap"></div></div>
+<div id="lightbox"><img id="lbimg" alt=""><video id="lbvid" class="hide" controls autoplay loop playsinline></video><div class="cap" id="lbcap"></div></div>
 
 <script>
 (() => {
@@ -330,21 +353,33 @@
     el.innerHTML = `<div class="bubble"></div><div class="meta"><span>${fmtTime(Date.now() / 1000)}</span></div>`;
     el.querySelector('.bubble').textContent = text; transcript.appendChild(el); scrollEnd();
   }
-  function addAssistant(text, cited, toolCalls, isError, ms) {
-    $('empty')?.remove();
-    const el = document.createElement('div'); el.className = 'msg assistant';
-    const b = document.createElement('div'); b.className = 'bubble' + (isError ? ' error' : ''); b.textContent = text; el.appendChild(b);
-    if (cited && cited.length) {
-      const row = document.createElement('div'); row.className = 'thumbs';
-      for (const c of cited) {
-        const t = document.createElement('div'); t.className = 'thumb'; t.title = c.caption || '';
-        t.innerHTML = `<img alt="" loading="lazy"><span class="ts">${ago(c.ts)}</span>`;
-        t.querySelector('img').src = media(c.thumb_url);
-        t.onclick = () => { $('lbimg').src = media(c.thumb_url); $('lbcap').textContent = `${fmtTime(c.ts)} (${ago(c.ts)}) — ${c.caption || ''}`; $('lightbox').classList.add('show'); };
-        row.appendChild(t);
-      }
-      el.appendChild(row);
+  // Citations with a thumbnail as a row of tiles (transcript tokens have none); a tile with a `replay_url` gets a ▶
+  // badge and opens the moment's replay clip in the lightbox instead of the still.
+  function thumbRow(items, dim) {
+    const row = document.createElement('div'); row.className = 'thumbs';
+    for (const c of items) {
+      if (!c.thumb_url) continue;
+      const t = document.createElement('div'); t.className = 'thumb' + (c.replay_url ? ' replay' : '') + (dim ? ' dim' : ''); t.title = c.caption || '';
+      t.innerHTML = `<img alt="" loading="lazy"><span class="ts">${ago(c.ts)}</span>`;
+      t.querySelector('img').src = media(c.thumb_url);
+      t.onclick = () => openLightbox(c);
+      row.appendChild(t);
     }
+    return row.childElementCount ? row : null;
+  }
+  function openLightbox(c) {
+    const img = $('lbimg'), vid = $('lbvid');
+    if (c.replay_url) { img.classList.add('hide'); vid.classList.remove('hide'); vid.src = media(c.replay_url); vid.play().catch(() => {}); }
+    else { vid.classList.add('hide'); vid.removeAttribute('src'); img.classList.remove('hide'); img.src = media(c.thumb_url); }
+    $('lbcap').textContent = `${fmtTime(c.ts)} (${ago(c.ts)}) — ${c.caption || ''}`; $('lightbox').classList.add('show');
+  }
+  function closeLightbox() { $('lightbox').classList.remove('show'); const v = $('lbvid'); v.pause(); v.removeAttribute('src'); v.load(); }
+  // `into`: the streamed draft bubble of this turn, filled in place so the answer does not flicker on `final`.
+  function addAssistant(text, cited, toolCalls, isError, ms, into) {
+    $('empty')?.remove();
+    const el = into || document.createElement('div'); el.className = 'msg assistant'; el.replaceChildren();
+    const b = document.createElement('div'); b.className = 'bubble' + (isError ? ' error' : ''); b.textContent = text; el.appendChild(b);
+    const row = cited?.length ? thumbRow(cited) : null; if (row) el.appendChild(row);
     const meta = document.createElement('div'); meta.className = 'meta';
     const conf = toolCalls?.find(t => t.confidence)?.confidence;
     meta.innerHTML = `<span>${fmtTime(Date.now() / 1000)}</span>` + (ms ? `<span>${(ms / 1000).toFixed(1)}s</span>` : '') +
@@ -354,27 +389,60 @@
     }
     el.appendChild(meta); transcript.appendChild(el); scrollEnd();
   }
-  $('lightbox').onclick = () => $('lightbox').classList.remove('show');
+  $('lightbox').onclick = (e) => { if (e.target !== $('lbvid')) closeLightbox(); };
 
   // ---------- indicators ----------
   const ind = $('indicator');
   const setListening = (on) => { ind.classList.toggle('listening', on); $('ptt').classList.toggle('on', on); if (on) $('indtext').textContent = 'listening… release to send'; else if (!ind.classList.contains('thinking')) $('indtext').textContent = ''; };
-  const setThinking = (on) => { ind.classList.toggle('thinking', on); $('indtext').textContent = on ? 'thinking…' : ''; };
+  const setThinking = (on, text) => { ind.classList.toggle('thinking', on); $('indtext').textContent = on ? (text || 'thinking…') : ''; };
 
   // ---------- chat ----------
   let speaker = null;
-  // POST /v1/chat/stream: answer text shows in a draft bubble as it is generated; resolves to a Response-like
-  // object for handleResponse (json() = the final event, i.e. the POST /v1/chat body). Plain POST /v1/chat on
-  // servers without the stream endpoint.
+  const stopSpeaker = () => { speaker?.pause(); speaker = null; };
+  // Sentence clips from `audio` stream events (docs/api.md#post-chatstream): queued and played back to back in
+  // `seq` order from the first one, so speech starts after the first sentence instead of after the whole answer.
+  const clips = {
+    q: [], gen: 0, playing: false, played: false,
+    push(d) {
+      const src = d.url ? media(d.url) : null;
+      if (!src || !cfg.autoplay) return;
+      this.q.push(src); if (!this.playing) this.next();
+    },
+    next() {
+      const src = this.q.shift(); if (!src) { this.playing = false; return; }
+      const gen = this.gen; this.playing = this.played = true;
+      stopSpeaker(); speaker = new Audio(src);
+      speaker.onended = speaker.onerror = () => { if (gen === this.gen) this.next(); };
+      speaker.play().catch(() => { if (gen === this.gen) this.next(); });
+    },
+    reset() { this.gen++; this.q = []; this.playing = this.played = false; stopSpeaker(); },
+  };
+  // POST /v1/chat/stream: the turn renders as it happens: `transcript` (voice) echoes the question at once,
+  // `retrieval` shows the moments found before the answer exists, `delta`s type into a draft bubble, `audio`
+  // clips play as sentences finish. Resolves to a Response-like object for handleResponse (json() = the `final`
+  // event, i.e. the POST /v1/chat body; `el` = the draft to fill in place; `spoke` = clips already played;
+  // `echoed` = the transcript was already shown). Plain POST /v1/chat on servers without the stream endpoint.
   async function postChat(init) {
     const r = await fetch(url('/v1/chat/stream'), authed(init));
     if (r.status === 404 || r.status === 405 || !r.body) return fetch(url('/v1/chat'), authed(init));
     if (!r.ok) return r;
-    let draft = null;
-    const setDraft = (t) => {
-      if (!draft) { $('empty')?.remove(); draft = document.createElement('div'); draft.className = 'msg assistant'; draft.innerHTML = '<div class="bubble"></div>'; transcript.appendChild(draft); }
-      draft.firstChild.textContent = t; scrollEnd();
+    let draft = null, strip = null, echoed = false;
+    const ensureDraft = () => {
+      if (!draft) { $('empty')?.remove(); draft = document.createElement('div'); draft.className = 'msg assistant'; draft.innerHTML = '<div class="bubble writing"></div>'; transcript.appendChild(draft); }
+      return draft;
     };
+    const setDraft = (t) => { ensureDraft().querySelector('.bubble').textContent = t; scrollEnd(); };
+    const showCandidates = (d) => {
+      strip?.remove(); strip = null;
+      const n = d.candidates?.length || 0; if (!n) return;
+      const row = thumbRow(d.candidates.slice(0, 8), true);
+      strip = document.createElement('div'); strip.className = 'cands';
+      const label = document.createElement('div'); label.className = 'label';
+      label.textContent = `${n} moment${n === 1 ? '' : 's'} found · ${(d.confidence || '').replace('_', ' ')}`;
+      strip.appendChild(label); if (row) strip.appendChild(row);
+      ensureDraft().prepend(strip); setThinking(true, 'reading those memories…'); scrollEnd();
+    };
+    clips.reset();
     const reader = r.body.getReader(), dec = new TextDecoder();
     let buf = '', text = '', final = null, error = null;
     try {
@@ -388,26 +456,29 @@
           buf = buf.slice(i + 2);
           if (!data) continue;
           const d = JSON.parse(data);
-          if (ev === 'delta') setDraft(text += d.text);
-          else if (ev === 'reset') { text = ''; if (draft) setDraft(''); }
+          if (ev === 'delta') { if (!text) setThinking(true, 'answering…'); setDraft(text += d.text); }
+          else if (ev === 'retrieval') showCandidates(d);
+          else if (ev === 'transcript') { if (d.text && !echoed) { addUser(d.text); echoed = true; } setThinking(true, 'searching your memories…'); }
+          else if (ev === 'audio') clips.push(d);
+          else if (ev === 'reset') { text = ''; if (draft) setDraft(''); strip?.remove(); strip = null; clips.reset(); setThinking(true, 'searching again…'); }
           else if (ev === 'final') final = d;
           else if (ev === 'error') error = d.detail;
         }
       }
-    } finally { draft?.remove(); }
-    if (final) return { ok: true, json: async () => final };
+    } finally { if (!final) draft?.remove(); }
+    if (final) return { ok: true, json: async () => final, el: draft, spoke: clips.played, echoed };
     return { ok: false, status: 'stream', text: async () => error || 'stream ended without an answer' };
   }
   async function handleResponse(r, t0, echoTranscript) {
     const ms = performance.now() - t0;
     if (!r.ok) { addAssistant(`(server error ${r.status}: ${(await r.text()).slice(0, 200)})`, [], null, true); return; }
     const j = await r.json();
-    if (echoTranscript && j.transcript) addUser(j.transcript);
+    if (echoTranscript && j.transcript && !r.echoed) addUser(j.transcript);
     if (j.warning) addAssistant('Note: ' + j.warning, [], null, true);
-    addAssistant(j.answer, j.cited, j.tool_calls, false, ms);
+    addAssistant(j.answer, j.cited, j.tool_calls, false, ms, r.el);
     $('latency').textContent = (ms / 1000).toFixed(1) + 's';
-    if (j.audio_url && cfg.autoplay) {
-      try { speaker?.pause(); speaker = new Audio(media(j.audio_url)); await speaker.play(); } catch (e) { console.warn('audio playback failed', e); }
+    if (j.audio_url && cfg.autoplay && !r.spoke) {  // the clips already spoke a streamed turn
+      try { stopSpeaker(); speaker = new Audio(media(j.audio_url)); await speaker.play(); } catch (e) { console.warn('audio playback failed', e); }
     }
   }
   async function sendText(text) {
@@ -433,6 +504,46 @@
   }
   $('send').onclick = () => { sendText($('text').value); $('text').value = ''; };
   $('text').addEventListener('keydown', (e) => { if (e.key === 'Enter') { sendText($('text').value); $('text').value = ''; } });
+
+  // ---------- highlight reel: POST /v1/montage -> inline video card ----------
+  async function makeReel() {
+    const q = $('text').value.trim(); $('text').value = '';
+    const body = { device_id: cfg.device, max_clips: 6 };
+    if (q) body.query = q; else body.time_from = Date.now() / 1000 - 3600;
+    addUser(q ? `Highlight reel: ${q}` : 'Highlight reel of the last hour');
+    setThinking(true, 'cutting your highlight reel…'); $('reel').disabled = true; const t0 = performance.now();
+    try {
+      const r = await fetch(url('/v1/montage'), authed({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }));
+      if (!r.ok) {
+        const detail = (await r.json().catch(() => ({}))).detail;
+        addAssistant(typeof detail === 'string' && r.status < 500 ? detail : `(montage failed: ${r.status} ${detail || ''})`, [], null, r.status >= 500); return;
+      }
+      addReel(await r.json(), performance.now() - t0);
+    } catch (e) { addAssistant('(network error: ' + e.message + ')', [], null, true); }
+    finally { setThinking(false); $('reel').disabled = false; }
+  }
+  function addReel(m, ms) {
+    $('empty')?.remove();
+    const el = document.createElement('div'); el.className = 'msg assistant';
+    const b = document.createElement('div'); b.className = 'bubble'; b.textContent = m.narration || m.title || ''; el.appendChild(b);
+    const card = document.createElement('div'); card.className = 'reel';
+    const v = document.createElement('video'); v.src = media(m.url); v.controls = true; v.playsInline = true; v.preload = 'metadata';
+    const poster = (m.clips || []).find(c => c.thumb_url)?.thumb_url; if (poster) v.poster = media(poster);
+    card.appendChild(v);
+    const clipsOf = m.clips || [], total = clipsOf.reduce((s, c) => s + (c.duration_s || 0), 0);
+    const bar = document.createElement('div'); bar.className = 'bar';
+    bar.innerHTML = `<b></b><span>${clipsOf.length} moment${clipsOf.length === 1 ? '' : 's'} · ${Math.round(total)} s</span><span style="margin-left:auto">${m.planner === 'claude' ? 'planned by Claude' : 'auto plan'}</span>`;
+    bar.querySelector('b').textContent = m.title || 'Your highlights'; card.appendChild(bar);
+    if (clipsOf.length) {
+      const chips = document.createElement('div'); chips.className = 'chips';
+      for (const c of clipsOf) { const s = document.createElement('span'); s.textContent = `${fmtTime(c.ts)} · ${c.title}`; s.title = `${c.source}, ${c.duration_s} s`; chips.appendChild(s); }
+      card.appendChild(chips);
+    }
+    el.appendChild(card);
+    const meta = document.createElement('div'); meta.className = 'meta'; meta.innerHTML = `<span>${fmtTime(Date.now() / 1000)}</span><span>${(ms / 1000).toFixed(1)}s</span>`; el.appendChild(meta);
+    transcript.appendChild(el); scrollEnd();
+  }
+  $('reel').onclick = makeReel;
 
   // ---------- push-to-talk: mic -> 16 kHz mono PCM -> WAV ----------
   const SR = 16000;
@@ -475,7 +586,7 @@
     if (!(await ensureMic())) return;
     if (ac.state === 'suspended') await ac.resume();
     chunks = []; recording = true; recStart = performance.now(); setListening(true);
-    speaker?.pause();
+    clips.reset();
   }
   async function endRecording() {
     if (!recording) return;
@@ -489,7 +600,7 @@
   ptt.addEventListener('pointercancel', endRecording);
   window.addEventListener('keydown', (e) => {
     if (e.code === 'Space' && !e.repeat && document.activeElement !== $('text') && !$('settings').classList.contains('show')) { e.preventDefault(); beginRecording(); }
-    if (e.key === 'Escape') { $('settings').classList.remove('show'); $('lightbox').classList.remove('show'); }
+    if (e.key === 'Escape') { $('settings').classList.remove('show'); closeLightbox(); }
   });
   window.addEventListener('keyup', (e) => { if (e.code === 'Space' && document.activeElement !== $('text')) { e.preventDefault(); endRecording(); } });
 
