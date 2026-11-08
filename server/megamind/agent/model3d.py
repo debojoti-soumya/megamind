@@ -83,7 +83,11 @@ _FRAMING = re.compile(
     r"(?:of|from|for)?\s+",
     re.I,
 )
-_SUFFIX = re.compile(r"\s+(?:in|into|as)\s+(?:a\s+)?(?:3d|3-d|three[- ]d|hologram|(?:gaussian\s+)?splats?)\b", re.I)
+_SUFFIX = re.compile(
+    r"\s+(?:in|into|as)\s+(?:an?\s+)?"
+    r"(?:(?:3d|3-d|three[- ]d)(?:\s+(?:model|version|view|scan|object|mesh))?|hologram|(?:gaussian\s+)?splats?)\b",
+    re.I,
+)
 
 
 def wants_3d(text: str) -> bool:
