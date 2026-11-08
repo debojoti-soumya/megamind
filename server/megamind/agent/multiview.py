@@ -7,6 +7,7 @@ Weights `facebook/VGGT-1B` are CC-BY-NC-4.0 (non-commercial)."""
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import io
 import threading
@@ -146,6 +147,19 @@ def to_points_ply(points: np.ndarray, colors: np.ndarray) -> bytes:
 def ply_vertex_count(data: bytes) -> int:
     head = data.split(b"end_header\n", 1)[0].decode()
     return next(int(line.split()[2]) for line in head.splitlines() if line.startswith("element vertex"))
+
+
+@functools.cache
+def gpu_available() -> bool:
+    """A CUDA GPU torch can use (multi-view's default: on CPU a reconstruction takes minutes and ~10 GB RAM)."""
+    if importlib.util.find_spec("torch") is None:
+        return False
+    try:
+        import torch
+
+        return bool(torch.cuda.is_available())
+    except Exception:  # noqa: BLE001 - a broken torch install means no GPU path
+        return False
 
 
 class VGGTRunner:

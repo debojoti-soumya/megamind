@@ -128,8 +128,9 @@ class Model3DSettings(BaseSettings):
     cache_dir: Path | None = None  # default <thumb_dir>/../models3d
     cache_max_files: int = 16
     # multi-view: every stored photo from around the matching moments -> VGGT point cloud with a back (full 3D);
-    # used when VGGT is installed and enough photos show the object, else the one-photo relief
-    multiview: bool = True
+    # used when VGGT is installed and enough photos show the object, else the one-photo relief. Unset: only with a
+    # CUDA GPU (on CPU it takes minutes and ~10 GB RAM); true/false forces it on/off
+    multiview: bool | None = None
     vggt_weights: str = "facebook/VGGT-1B"  # HF repo or a local model.pt; CC-BY-NC-4.0
     mv_window_s: float = 120.0  # photos within this many seconds of a matching moment
     mv_visit_s: float = 1800.0  # matching moments this close to the best one are the same visit
@@ -138,6 +139,7 @@ class Model3DSettings(BaseSettings):
     mv_max_frames: int = 16  # into VGGT; ~4 min and ~10 GB RAM for 16 on CPU, seconds on a GPU
     mv_conf_pct: float = 50.0  # drop the least confident half of the points
     mv_max_points: int = 300_000
+    mv_timeout_s: float = 900.0  # a reconstruction still running after this is reported as failed
 
 
 # ---- geometry (pure numpy) ----
@@ -501,7 +503,7 @@ async def make_model3d(
     gen = cache.generation
 
     runner: mv.VGGTRunner = st.model3d_mv
-    if not remote and cfg.multiview and not missing and runner.missing() is None:
+    if not remote and not missing and runner.missing() is None and await _multiview_on(cfg):
         views = await gather_views(st, found.picks, cfg, t0, t1)
         if len(views) >= cfg.mv_min_frames:
             return await start_multiview(st, found, phrase, prompt, views)
@@ -623,6 +625,10 @@ def reconstruct_views(
     return mv.to_points_ply(q, c), info
 
 
+async def _multiview_on(cfg: Model3DSettings) -> bool:
+    return cfg.multiview if cfg.multiview is not None else await asyncio.to_thread(mv.gpu_available)
+
+
 async def start_multiview(st, found, phrase: str, prompt: str, views: list[MemoryToken]) -> Model3DResponse:
     """Starts (or joins) the background reconstruction; the model URL answers 202 until it's ready."""
     cache: Model3DCache = st.model3d_cache
@@ -664,9 +670,13 @@ async def start_multiview(st, found, phrase: str, prompt: str, views: list[Memor
     async def job() -> None:
         try:
             images = [d for t in views if (d := await _load_image(st, t))]
-            data, info = await asyncio.to_thread(
-                reconstruct_views, st.model3d_models, st.model3d_mv, cfg, images, prompt
-            )
+            try:  # the thread can't be cancelled, but the viewer gets an answer
+                data, info = await asyncio.wait_for(
+                    asyncio.to_thread(reconstruct_views, st.model3d_models, st.model3d_mv, cfg, images, prompt),
+                    cfg.mv_timeout_s,
+                )
+            except TimeoutError:
+                raise ValueError(f"it took longer than {cfg.mv_timeout_s:.0f} s") from None
             if cache.generation != gen:
                 raise ValueError("memories were deleted while the model was being made; try again")
             cache.put(key, "ply", data)

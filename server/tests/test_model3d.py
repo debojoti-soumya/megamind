@@ -161,7 +161,7 @@ def app3d(tmp_path, monkeypatch):
         wearer_tz = "UTC"
 
     app.state.settings = S()
-    model3d.install(app, S(), model3d.Model3DSettings(cache_dir=tmp_path / "m3d", max_side=64))
+    model3d.install(app, S(), model3d.Model3DSettings(cache_dir=tmp_path / "m3d", max_side=64, multiview=True))
     FakeModels.calls = []
     return app
 
@@ -375,6 +375,71 @@ def test_model3d_multiview_failure_is_reported(app3d, tmp_path):
                 break
             time.sleep(0.05)
         assert r.status_code == 422 and "photos clearly show it" in r.json()["detail"]
+
+
+def _walk_around(tmp_path, n=7):
+    import io
+
+    from PIL import Image
+
+    from megamind.models import MemoryToken
+
+    near = []
+    for i in range(n):
+        p = tmp_path / f"w{i}.jpg"
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 48), (30 * i, 60, 30)).save(buf, format="JPEG")
+        p.write_bytes(buf.getvalue())
+        near.append(
+            MemoryToken(
+                id=f"w{i}",
+                device_id="d",
+                ts=1731000000.0 + 5 * i,
+                caption="",
+                thumb_path=str(p),
+                frame_hash=f"{i:016x}",
+            )
+        )
+
+    class Store:
+        async def range(self, t0, t1, limit=100, *, device_id=None, kinds=None):
+            return [t for t in near if t0 <= t.ts <= t1]
+
+    return Store()
+
+
+def test_model3d_multiview_that_runs_too_long_is_reported(app3d, tmp_path):
+    import time
+
+    class SlowRunner(FakeRunner):
+        def run(self, images):
+            time.sleep(0.5)
+            return super().run(images)
+
+    app3d.state.store = _walk_around(tmp_path)
+    app3d.state.model3d_mv = SlowRunner()
+    app3d.state.model3d_settings.mv_timeout_s = 0.05
+    with TestClient(app3d) as c:
+        body = c.post("/v1/model3d", json={"query": "make a 3D model of my mug"}).json()
+        assert body["status"] == "building"
+        for _ in range(100):
+            r = c.get(body["url"])
+            if r.status_code != 202:
+                break
+            time.sleep(0.05)
+        assert r.status_code == 422 and "took longer than" in r.json()["detail"]
+
+
+def test_model3d_multiview_defaults_to_gpu_only(app3d, tmp_path, monkeypatch):
+    app3d.state.store = _walk_around(tmp_path)
+    app3d.state.model3d_mv = FakeRunner()
+    app3d.state.model3d_settings.multiview = None
+    monkeypatch.setattr(model3d.mv, "gpu_available", lambda: False)
+    with TestClient(app3d) as c:
+        body = c.post("/v1/model3d", json={"query": "make a 3D model of my mug"}).json()
+        assert body["kind"] == "mesh" and body["status"] == "ready"  # the one-photo relief, no CPU VGGT job
+        monkeypatch.setattr(model3d.mv, "gpu_available", lambda: True)
+        assert c.post("/v1/model3d", json={"query": "make a 3D model of my mug"}).json()["kind"] == "points"
 
 
 def test_model3d_multiview_purged_while_building_keeps_nothing(app3d, tmp_path):

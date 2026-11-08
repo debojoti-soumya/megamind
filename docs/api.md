@@ -473,14 +473,15 @@ Also the chat tool `make_3d_model` ("make a 3D model of my mug"; `ChatResponse.m
 - `MODEL3D_BACKEND=remote`: `POST MODEL3D_REMOTE_URL` multipart `image` (jpeg), `mask` (png, white = object; sent
   when the local models are installed) and `prompt`, `Authorization: Bearer MODEL3D_REMOTE_TOKEN`; it answers with a
   binary glTF or a .ply (splat when it has `f_dc_0`, else points), e.g. SAM 3D Objects on a GPU. `full_3d` true.
-- Multi-view (default when VGGT is installed: `pip install git+https://github.com/facebookresearch/vggt`; local
-  backend only, `MODEL3D_MULTIVIEW=false` to turn off): every stored photo within `MODEL3D_MV_WINDOW_S` (120 s) of
+- Multi-view (needs VGGT: `pip install git+https://github.com/facebookresearch/vggt`; local backend only; by
+  default only with a CUDA GPU, `MODEL3D_MULTIVIEW=true`/`false` forces it on/off): every stored photo within `MODEL3D_MV_WINDOW_S` (120 s) of
   the best 4 matching moments of one visit (those within `MODEL3D_MV_VISIT_S`, 1800 s, of the best one; the walk
   around the exhibit) and inside `time_from`/`time_to`, spread over time up to `MODEL3D_MV_CANDIDATES` (48).
   With at least `MODEL3D_MV_MIN_FRAMES` (5) of them, the answer is immediate with `status` `building` and the work
   runs in the background: Grounding DINO keeps the photos that show the object (and its box), up to
   `MODEL3D_MV_MAX_FRAMES` (16) go through VGGT (`MODEL3D_VGGT_WEIGHTS`, `facebook/VGGT-1B` or a local `model.pt`;
-  pretrained, no per-object fitting; ~4 min and ~10 GB RAM for 16 photos on CPU), and the per-pixel points are
+  pretrained, no per-object fitting; ~4 min and ~10 GB RAM for 16 photos on CPU; reported as failed after
+  `MODEL3D_MV_TIMEOUT_S`, 900 s), and the per-pixel points are
   cleaned: the least confident `MODEL3D_MV_CONF_PCT` (50) % dropped, only pixels inside each photo's box kept, the
   support plane (table, plinth, floor) removed by RANSAC, strays trimmed, the object stood upright on y=0. Result:
   a coloured point cloud (`format` ply, `kind` points, `backend` vggt, `full_3d` true, `views` photos used,
