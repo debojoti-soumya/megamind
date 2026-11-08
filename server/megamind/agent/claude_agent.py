@@ -44,7 +44,7 @@ from ulid import ULID
 
 from megamind.agent.tools import OCR_MATCH_PREFIX, RECALL_MEMORY_TOOL, RecallMemory, keywords
 from megamind.config import Settings
-from megamind.live import live_question
+from megamind.live import is_now_question, live_question
 from megamind.models import ChatResponse, Citation, RecallResult, ToolCallRecord
 from megamind.retrieval.planner import QueryPlan, plan_query
 
@@ -244,23 +244,91 @@ def prefetch_reusable(args: dict, question: str, plan: QueryPlan | None = None) 
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 _QUESTION_STARTS = frozenset(
-    "where what when who whom whose which how did do does is are was were have has had can could remind".split()
+    "where what when who whom whose which how did do does is are was were have has had can could remind "
+    "summarize summarise recap list describe find".split()
 )
+_ASK_ME = frozenset("tell show give".split())  # "tell me where ...", "show me what ...", "tell me about ..."
 # pronouns / sequencing words that point at an earlier turn: let Claude read the history first
 _FOLLOW_UP_CUES = frozenset(
     "it its that them those they there he she him her after before then also else again".split()
 )
 
 
-def recall_first(question: str, plan: QueryPlan | None) -> bool:
-    """True when the question plainly asks about something seen and stands on its own: starts like a question,
-    has search terms after planning, and has no follow-up cue ("and ...", "what about ...", "it", "after that")."""
+def recall_first(question: str, plan: QueryPlan | None, prior_args: dict | None = None) -> bool:
+    """True when the question plainly asks about something seen and stands on its own: starts like a question
+    (or "summarize/recap/list/describe/find ...", "tell/show/give me <wh-word|about> ..."), has search terms
+    after planning, and has no follow-up cue ("and ...", "it", "after that"). "what/how about <thing>" counts
+    too (Claude still sees the history), unless the previous search (`prior_args`, Claude's last recall_memory
+    input in this session) was time-bounded: the new search would drop that window."""
     words = _WORD_RE.findall(question.lower())
     if not words or plan is None or not plan.search_text.strip():
         return False
-    if words[0] not in _QUESTION_STARTS or words[:2] in (["what", "about"], ["how", "about"]):
+    if words[:2] in (["what", "about"], ["how", "about"]):
+        if prior_args and (prior_args.get("time_from") or prior_args.get("time_to")):
+            return False
+        words = words[2:]
+        if not words:
+            return False
+    elif words[0] in _ASK_ME:
+        if words[1:2] != ["me"] or len(words) < 3 or words[2] not in _QUESTION_STARTS | {"about"}:
+            return False
+        if "yourself" in words or "you" in words:
+            return False
+    elif words[0] not in _QUESTION_STARTS:
         return False
     return not set(words) & _FOLLOW_UP_CUES
+
+
+def last_recall_args(messages: list[dict]) -> dict | None:
+    """Input of the newest recall_memory tool_use in `messages` (the session history), or None."""
+    for msg in reversed(messages):
+        content = msg.get("content")
+        if msg.get("role") != "assistant" or not isinstance(content, list):
+            continue
+        for b in reversed(content):
+            if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "recall_memory":
+                return b.get("input") if isinstance(b.get("input"), dict) else {}
+    return None
+
+
+_TRAILING_NOW = re.compile(r"\bnow\s*[?.!]*$", re.I)
+# a "now" question that also points at the past or asks for a comparison needs retrieval, not just the live view
+_NOT_JUST_NOW = frozenset(
+    "still earlier before yesterday morning afternoon evening tonight today last again since changed change "
+    "different difference compare minute minutes hour hours day days week".split()
+)
+LIVE_HORIZON_S = 120.0  # a planner window ending earlier than this before `now` is not about the present
+
+
+def now_fast_path(question: str, plan: QueryPlan | None, now: float) -> bool:
+    """True for questions purely about the present ("what am I looking at right now?", "what does the sign in
+    front of me say?"): the newest live frames + speech answer them without a memory search. Not when the only
+    "now" cue is a trailing "now" ("where are my keys now?"), for object-location questions (the object may have
+    left the view), or when the question also mentions the past / a change ("is it still there now?")."""
+    q = _TRAILING_NOW.sub("", question.strip())
+    if not is_now_question(q):
+        return False
+    if set(_WORD_RE.findall(question.lower())) & _NOT_JUST_NOW:
+        return False
+    if plan is not None:
+        if plan.query_type == "locate_object":
+            return False
+        if plan.time_to is not None and plan.time_to < now - LIVE_HORIZON_S:
+            return False
+    return True
+
+
+_COMPLEX_WORDS = frozenset(
+    "summarize summarise summary recap list describe compare why everything all day week".split()
+)
+
+
+def fast_model_ok(question: str, plan: QueryPlan | None) -> bool:
+    """Short standalone lookups (where / what did it say / who) that a smaller model answers as well."""
+    words = _WORD_RE.findall(question.lower())
+    if plan is None or len(words) > 12 or set(words) & _COMPLEX_WORDS or plan.has_time:
+        return False
+    return plan.query_type in ("locate_object", "read_text", "people", "generic") and recall_first(question, plan)
 
 
 async def _cancel(task: asyncio.Task | None) -> None:
@@ -441,14 +509,23 @@ class ClaudeAgent:
 
         prefetch: asyncio.Task[RecallResult] | None = None
         plan: QueryPlan | None = None
-        if self.settings.recall_prefetch:
+        try:  # rule-based, microseconds
+            plan = plan_query(text, now=datetime.fromtimestamp(now, UTC), tz=self.settings.wearer_tz)
+        except Exception as e:  # noqa: BLE001 - the plan only widens reuse / picks fast paths; never fail the turn
+            log.warning("req=%s prefetch plan failed: %r", stats.request_id, e)
+        live: RecallResult | None = None
+        t_live = time.perf_counter()
+        if self.settings.now_fast_path and now_fast_path(text, plan, now):
+            live = await self._recall_now(text, device_id, now, stats)  # None: no live frames, search as usual
+        if live is None and self.settings.recall_prefetch:
             # overlap retrieval + reader with Claude's first call; most first tool calls are the question's keywords
             prefetch = asyncio.create_task(self._run_tool("recall_memory", {"query": text}, device_id, now))
             stats.extra["prefetch"] = "unused"
-            try:
-                plan = plan_query(text, now=datetime.fromtimestamp(now, UTC), tz=self.settings.wearer_tz)
-            except Exception as e:  # noqa: BLE001 - the plan only widens reuse; never fail the turn on it
-                log.warning("req=%s prefetch plan failed: %r", stats.request_id, e)
+        model = self.settings.claude_model
+        if self.settings.claude_route_fast and self.settings.claude_fast_model:
+            if live is not None or (self.settings.recall_first and fast_model_ok(text, plan)):
+                model = self.settings.claude_fast_model
+        stats.extra["model"] = model
 
         def record(use_id: str, name: str, args: dict, r: RecallResult, t_tool: float) -> dict:
             if r.evidence.startswith(OCR_MATCH_PREFIX):
@@ -474,23 +551,35 @@ class ClaudeAgent:
             payload = _tool_result_payload(r, now, _zone(self.settings.wearer_tz))
             return {"type": "tool_result", "tool_use_id": use_id, "content": _with_images(payload, r)}
 
+        async def first_result(r: RecallResult, t_tool: float) -> None:
+            # a synthetic recall_memory call + its result, as if Claude had picked it; it can still re-query
+            args = {"query": text}
+            use_id = f"toolu_recall_{stats.request_id}"
+            turn.append(
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": use_id, "name": "recall_memory", "input": args}],
+                }
+            )
+            turn.append({"role": "user", "content": [record(use_id, "recall_memory", args, r, t_tool)]})
+            if emit is not None:
+                await emit.retrieval(r)
+
         try:
-            if prefetch is not None and self.settings.recall_first and recall_first(text, plan):
+            if live is not None:
+                # "right now" question: the newest live frames + speech are the evidence; no embedding/search
+                stats.extra["fast_path"] = "now"
+                await first_result(live, t_live)
+            elif (
+                prefetch is not None
+                and self.settings.recall_first
+                and recall_first(text, plan, last_recall_args(prior))
+            ):
                 # the question plainly needs recall: hand Claude the prefetch as its first tool result instead of
                 # paying a Claude round-trip to pick (almost always) the same call; it can still re-query
                 t_tool = time.perf_counter()
-                args = {"query": text}
                 r, prefetch, stats.extra["prefetch"] = await prefetch, None, "first"
-                use_id = f"toolu_recall_{stats.request_id}"
-                turn.append(
-                    {
-                        "role": "assistant",
-                        "content": [{"type": "tool_use", "id": use_id, "name": "recall_memory", "input": args}],
-                    }
-                )
-                turn.append({"role": "user", "content": [record(use_id, "recall_memory", args, r, t_tool)]})
-                if emit is not None:
-                    await emit.retrieval(r)
+                await first_result(r, t_tool)
             # opt-in prompt caching when the turn opens with Claude's tool-picking call: a breakpoint on the question
             # block on every call of the turn, so call 1 writes tools + system + history + question and the tool
             # round(s) read it back (a cache read needs a breakpoint in the reading request too). The system prompt
@@ -503,7 +592,7 @@ class ClaudeAgent:
                     question = {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}
                     messages = [*prior, {"role": "user", "content": [question]}, *turn[1:]]
                 req = {
-                    "model": self.settings.claude_model,
+                    "model": model,
                     "max_tokens": MAX_TOKENS,
                     "system": self.system_prompt(now),
                     "tools": [RECALL_MEMORY_TOOL],
@@ -586,6 +675,17 @@ class ClaudeAgent:
             msg = await stream.get_final_message()
         await emit.delta(filt.flush())
         return msg
+
+    async def _recall_now(self, text: str, device_id: str | None, now: float, stats: TurnStats) -> RecallResult | None:
+        """Live-only evidence for a "right now" question (`RecallMemory.recall_now`), or None to search as usual."""
+        fn = getattr(self.recall, "recall_now", None)
+        if fn is None:
+            return None
+        try:
+            return await fn(text, device_id=device_id, now=now)
+        except Exception as e:  # noqa: BLE001 - the fast path is an optimisation: fall back to the normal search
+            log.warning("req=%s live fast path failed: %r", stats.request_id, e)
+            return None
 
     async def _run_tool(self, name: str, args: dict, device_id: str | None, now: float | None = None) -> RecallResult:
         if name != "recall_memory":

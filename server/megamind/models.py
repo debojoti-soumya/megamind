@@ -246,6 +246,13 @@ class ChatStreamDelta(BaseModel):
     text: str
 
 
+class ChatStreamTranscript(BaseModel):
+    """`POST /v1/chat/stream` event `transcript`: what the voice question was heard as, right after speech-to-text
+    (first event of a multipart/voice turn; never sent for typed questions). Same text as `final.transcript`."""
+
+    text: str
+
+
 class ChatStreamError(BaseModel):
     """`POST /v1/chat/stream` event `error`: the turn failed after the stream started; no `final` follows."""
 

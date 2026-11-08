@@ -353,15 +353,20 @@ def merge_outputs(outs: list[ReaderOutput]) -> ReaderOutput:
 
 
 async def load_images(
-    loader: ImageLoader, tokens: list[MemoryToken], max_px: int, budget_s: float
+    loader: ImageLoader,
+    tokens: list[MemoryToken],
+    max_px: int,
+    budget_s: float,
+    sizes: dict[str, int] | None = None,
 ) -> dict[str, str | None]:
     """Data URIs via `loader`, concurrently, within `budget_s` (cold decodes are the slow case); whatever is not
-    ready by then maps to None ("(image unavailable)")."""
+    ready by then maps to None ("(image unavailable)"). `sizes` (token id -> long side) overrides `max_px`."""
 
     async def one(t: MemoryToken) -> tuple[str, str | None]:
+        px = sizes.get(t.id, max_px) if sizes else max_px
         try:
             data = await loader(t)
-            return t.id, await asyncio.to_thread(encode_jpeg, data, max_px) if data else None
+            return t.id, await asyncio.to_thread(encode_jpeg, data, px) if data else None
         except (OSError, ValueError) as e:
             log.warning("image for %s unreadable: %s", t.id, e)
             return t.id, None
@@ -383,24 +388,44 @@ async def load_images(
 
 class ClaudeVisionReader(Reader):
     """No reader model: the top hits' captions/OCR as evidence plus their images, which the orchestrator (Claude)
-    looks at itself in the tool result. Saves the reader round trip (~3 s on Sail) per recall."""
+    looks at itself in the tool result. Saves the reader round trip (~3 s on Sail) per recall.
+
+    Payload: the best `reader_full_images` hits at `reader_thumb_max_px`, the rest at `reader_small_px` (or no image
+    when that is 0). Claude bills ~w*h/750 tokens per image, so 960 -> 512 px cuts a 4:3 frame from ~922 to ~262
+    tokens; the tail of the ranked list is mostly temporal context, and every caption/OCR line is still sent."""
 
     def __init__(self, settings: Settings, image_loader: ImageLoader | None = None) -> None:
         self.image_loader = image_loader
         self.max_images = max(1, settings.reader_max_images)
         self.thumb_max_px = settings.reader_thumb_max_px
+        self.full_images = settings.reader_full_images
+        self.small_px = settings.reader_small_px
         self.budget_s = settings.reader_deadline_s * _IMAGE_LOAD_SHARE
         self.captions = CaptionOnlyReader(top=None, zone=_wearer_zone(settings.wearer_tz))
+
+    def image_sizes(self, tokens: list[MemoryToken]) -> dict[str, int]:
+        """token id -> long side for the tokens that get an image (best first; absent = captions only)."""
+        shown = tokens[: self.max_images]
+        full = len(shown) if self.full_images <= 0 else self.full_images
+        small = min(self.small_px, self.thumb_max_px)
+        out: dict[str, int] = {}
+        for i, t in enumerate(shown):
+            if i < full:
+                out[t.id] = self.thumb_max_px
+            elif small > 0:
+                out[t.id] = small
+        return out
 
     async def read(self, query: str, tokens: list[MemoryToken], *, now: float | None = None) -> ReaderOutput:
         if not tokens:
             return ReaderOutput(evidence="No matching memory.", confidence="not_found")
         t0 = time.perf_counter()
-        shown = tokens[: self.max_images]
+        sizes = self.image_sizes(tokens)
+        shown = [t for t in tokens if t.id in sizes]
         if self.image_loader is not None:
-            uris = await load_images(self.image_loader, shown, self.thumb_max_px, self.budget_s)
+            uris = await load_images(self.image_loader, shown, self.thumb_max_px, self.budget_s, sizes)
         else:
-            uris = {t.id: await asyncio.to_thread(encode_thumb, t.thumb_path, self.thumb_max_px) for t in shown}
+            uris = {t.id: await asyncio.to_thread(encode_thumb, t.thumb_path, sizes[t.id]) for t in shown}
         out = await self.captions.read(query, tokens, now=now)
         out.confidence = "medium"
         out.images = [(t.id, u) for t in shown if (u := uris.get(t.id))]
