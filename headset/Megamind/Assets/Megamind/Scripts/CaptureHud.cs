@@ -113,10 +113,15 @@ namespace Megamind
             var cfg = u.settings;
             string line1 = u.CurrentState switch
             {
-                FrameUploader.State.Capturing => $"REC {cfg.captureFps:0.#} fps  {res.x}x{res.y}  head {u.HeadDegPerSec:0}°/s",
+                FrameUploader.State.Capturing => $"REC {cfg.captureFps:0.#} fps  {res.x}x{res.y}  head {u.HeadDegPerSec:0}°/s" + (u.AppFocused ? "" : "  (unfocused)"),
                 FrameUploader.State.WaitingForPermission => "waiting for camera permission…",
                 FrameUploader.State.WaitingForCamera => "starting passthrough camera…",
-                FrameUploader.State.Paused => "capture PAUSED (press A/X)",
+                FrameUploader.State.Paused => u.PauseReason switch
+                {
+                    "background" => "capture PAUSED (app backgrounded)",
+                    "focus lost" => "capture PAUSED (focus lost: system menu / boundary)",
+                    _ => "capture PAUSED (press A/X)",
+                },
                 FrameUploader.State.Unsupported => "Passthrough Camera API unsupported (Quest 3 + v74 required)",
                 FrameUploader.State.NoCameraComponent => "no PassthroughCameraAccess in scene",
                 _ => u.CurrentState.ToString(),
@@ -125,7 +130,8 @@ namespace Megamind
             target.text =
                 $"{line1}\n" +
                 $"sent {u.Sent}  accepted {u.Accepted}  last {u.LastReason}  {u.LastLatencyMs:0} ms  {u.LastJpegBytes / 1024} KB" +
-                (u.SkippedMotion + u.SkippedBacklog + u.SkippedBackoff > 0 ? $"  skipped m{u.SkippedMotion}/b{u.SkippedBacklog}/r{u.SkippedBackoff}" : "") + "\n" +
+                (u.SkippedMotion + u.SkippedBacklog + u.SkippedBackoff > 0 ? $"  skipped m{u.SkippedMotion}/b{u.SkippedBacklog}/r{u.SkippedBackoff}" : "") +
+                (u.BackgroundCount + u.FocusLossCount > 0 ? $"  bg {u.BackgroundCount} unfocus {u.FocusLossCount}" : "") + "\n" +
                 MicLine() +
                 $"{u.ServerBaseUrl}  [{u.DeviceId}, url:{cfg.overrideSource}]{net}";
             if (_dot != null)
