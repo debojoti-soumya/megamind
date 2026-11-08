@@ -413,3 +413,23 @@ async def test_ocr_search_cache_sees_new_late_enriched_and_purged_tokens():
     assert [i for i, _ in await ad.ocr_search("wifi", 5, time_to=base + 90)] == ["b"]
     await store.purge("dev", since_ts=base + 100)  # count drops -> full re-read
     assert [i for i, _ in await ad.ocr_search("wifi", 5)] == ["b"]
+
+
+async def test_query_embedding_is_cached_across_retrieves():
+    class CountingEmbedder(MockTextEmbedder):
+        calls = 0
+
+        async def embed(self, text: str) -> list[float]:
+            CountingEmbedder.calls += 1
+            return await super().embed(text)
+
+    store, _ = await _store()
+    r = HybridRetriever(store, CountingEmbedder(), tz="UTC")
+    first = await r.retrieve("where are my keys", k=4, now=NOW)
+    again = await r.retrieve("where are my keys", k=4, now=NOW)
+    assert CountingEmbedder.calls == 1
+    assert [t.token.id for t in again.tokens] == [t.token.id for t in first.tokens]
+    r.qvec_cache_size = 1
+    await r.retrieve("oat milk price", k=4, now=NOW)
+    await r.retrieve("where are my keys", k=4, now=NOW)  # evicted by the LRU bound
+    assert CountingEmbedder.calls == 3
