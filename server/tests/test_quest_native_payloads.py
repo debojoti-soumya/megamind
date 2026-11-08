@@ -1,4 +1,4 @@
-"""The native Quest 3 app (headset-android/) talks to /v1/frames and /v1/audio with hand-built multipart.
+"""The native Quest 3 app (headset-android/) talks to /v1/frames, /v1/audio and /v1/video with hand-built multipart.
 
 These tests replay byte-for-byte what `MegamindApi.kt` writes (part order, headers, meta JSON formatting,
 a 44-byte WAV header around raw PCM16) so a server-side contract change that would break the app fails here.
@@ -9,10 +9,16 @@ import json
 import math
 import struct
 import uuid
+from pathlib import Path
 
+import pytest
 from PIL import Image, ImageDraw
 
+from megamind.replay import find_ffmpeg
+
 T0 = 1_762_000_000.25
+# the app's own test clip (MegamindApiTest): 1 s, 160x120, 30 fps H.264 mp4, shaped like a chunk's video.mp4
+APP_CLIP = Path(__file__).resolve().parents[2] / "headset-android/app/src/test/resources/clip.mp4"
 
 
 def _checkerboard_jpeg(w: int = 640, h: int = 480) -> bytes:
@@ -72,6 +78,11 @@ def _audio_body(device: str, ts_start: float, pcm: bytes, filename: str = "20261
     return _multipart([("meta", None, None, meta.encode()), ("audio", filename, "audio/wav", wav)])
 
 
+def _video_body(device: str, ts_start: float, mp4: bytes, filename: str = "20261107_170000_000.mp4"):
+    meta = f'{{"device_id":{json.dumps(device)},"ts_start":{ts_start:.3f}}}'  # MegamindApi.videoMetaJson
+    return _multipart([("meta", None, None, meta.encode()), ("video", filename, "video/mp4", mp4)])
+
+
 async def test_native_app_frame_payload_accepted(client):
     c, app = client
     body, ctype = _frame_body("quest3-native", T0, _checkerboard_jpeg())
@@ -124,3 +135,18 @@ async def test_native_app_corrupt_jpeg_detail_is_stable(client):
     r = await c.post("/v1/frames", content=body, headers={"Content-Type": ctype})
     assert r.status_code == 400
     assert "not a decodable JPEG" in r.json()["detail"]
+
+
+@pytest.mark.skipif(find_ffmpeg() is None, reason="ffmpeg not available")
+async def test_native_app_video_payload_accepted(client):
+    c, app = client
+    body, ctype = _video_body("quest3-native", T0, APP_CLIP.read_bytes())
+    r = await c.post("/v1/video", content=body, headers={"Content-Type": ctype, "Connection": "close"})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["accepted"] is True and j["video_id"] and abs(j["duration_s"] - 1.0) < 0.1
+    assert len(app.state.video.clips("quest3-native")) == 1
+    # Uploader.uploadVideo looks for this exact substring when face blur makes the server discard video
+    app.state.settings.privacy_blur_faces = True
+    r = await c.post("/v1/video", content=body, headers={"Content-Type": ctype})
+    assert r.status_code == 200 and '"reason":"privacy"' in r.text

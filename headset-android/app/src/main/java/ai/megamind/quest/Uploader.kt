@@ -12,7 +12,8 @@ import org.json.JSONObject
 
 /**
  * Persistent upload queue (ported from Recall's Quest app): uploads closed chunks oldest-first to
- * Megamind (`POST /v1/frames` per frame, `POST /v1/audio` per chunk; see [MegamindApi]), deletes a
+ * Megamind (`POST /v1/frames` per frame, `POST /v1/audio` per chunk, `POST /v1/video` per chunk when
+ * the chunk has a video.mp4; see [MegamindApi]), deletes a
  * chunk once every part got a 2xx, retries with exponential backoff while the backend is
  * unreachable. The queue *is* the directory, so it survives restarts.
  */
@@ -24,6 +25,11 @@ object Uploader {
   private const val SENT_NAME = "sent.txt"
   private const val AUDIO_PART = "audio"
   private const val MAX_AUDIO_RETRIES = 3
+  private const val VIDEO_PART = "video"
+  private const val MAX_VIDEO_RETRIES = 3
+
+  /** False once the server answered 404/405 to /v1/video (older server or VIDEO_ENABLED=false); reset by [retryNow]. */
+  @Volatile private var serverTakesVideo = true
 
   private val wake = LinkedBlockingQueue<Unit>()
   /** Only [retryNow] cuts a backoff short; new chunks ([kick]) don't, so backoff really backs off. */
@@ -45,6 +51,7 @@ object Uploader {
 
   fun retryNow() {
     backoffMs = BACKOFF_INITIAL_MS
+    serverTakesVideo = true
     retryWake.offer(Unit)
     kick()
   }
@@ -125,6 +132,62 @@ object Uploader {
 
   /** Consecutive 5xx failures of a chunk's audio part (in memory; reset on restart). */
   private val audioFailures = HashMap<String, Int>()
+  /** Same for the video part. */
+  private val videoFailures = HashMap<String, Int>()
+
+  private sealed interface PartResult {
+    data class Done(val note: String) : PartResult
+    data class Retry(val message: String) : PartResult
+  }
+
+  /**
+   * The chunk's real video (`video.mp4`, described by `meta.video`) as one `POST /v1/video`, `ts_start` =
+   * chunk start + `meta.video.offset`. Never blocks frames or audio: a server without `/v1/video`, a
+   * rejected clip or 3 consecutive 5xx skip the chunk's video only.
+   */
+  private fun uploadVideo(base: String, deviceId: String, dir: File, startMs: Long, info: JSONObject, mp4: File): PartResult {
+    if (!serverTakesVideo) {
+      markSent(dir, VIDEO_PART)
+      return PartResult.Done(" video skipped (server has no /v1/video)")
+    }
+    val ts = startMs / 1000.0 + info.optDouble("offset", 0.0)
+    val r =
+        MegamindApi.post(
+            base, MegamindApi.VIDEO_PATH, MegamindApi.videoRequest(deviceId, ts, MegamindApi.Body.FileBody(mp4), dir.name + ".mp4"))
+    return when {
+      r.code in 200..299 -> {
+        markSent(dir, VIDEO_PART)
+        videoFailures.remove(dir.name)
+        if (r.body.contains("\"reason\":\"privacy\"")) {
+          Status.videoInfo = "video: server discards it (face blur is on); uploads continue"
+          PartResult.Done(" video not kept (server face blur on)")
+        } else {
+          Status.videoSent++
+          PartResult.Done(" video: ${mp4.length() / 1024} KB")
+        }
+      }
+      r.code == 404 || r.code == 405 -> {
+        serverTakesVideo = false
+        markSent(dir, VIDEO_PART)
+        Status.error("Backend has no /v1/video (HTTP ${r.code}); uploading frames + audio only")
+        PartResult.Done(" video skipped (server has no /v1/video)")
+      }
+      r.code == 400 || r.code == 409 || r.code == 413 || r.code == 415 || r.code == 422 -> {
+        markSent(dir, VIDEO_PART)
+        Status.error("Video rejected: HTTP ${r.code}: ${r.body.take(160)}")
+        PartResult.Done(" video rejected (HTTP ${r.code})")
+      }
+      else -> {
+        val n = (videoFailures[dir.name] ?: 0) + 1
+        videoFailures[dir.name] = n
+        if (n < MAX_VIDEO_RETRIES) return PartResult.Retry("/v1/video HTTP ${r.code} from backend")
+        markSent(dir, VIDEO_PART)
+        videoFailures.remove(dir.name)
+        Status.error("Video dropped after $n failed attempts (HTTP ${r.code})")
+        PartResult.Done(" video dropped after $n x HTTP ${r.code}")
+      }
+    }
+  }
 
   /**
    * Uploads one closed chunk to Megamind: each frame as its own `POST /v1/frames` (ts = chunk start +
@@ -215,7 +278,16 @@ object Uploader {
           }
         }
       }
-      Outcome.Ok("frames accepted=$accepted filtered=$dropped" + (if (rejected > 0) " undecodable=$rejected" else "") + audioNote)
+      var videoNote = ""
+      val videoInfo = meta.optJSONObject("video")
+      val mp4 = File(dir, VideoRecorder.FILE_NAME)
+      if (videoInfo != null && VIDEO_PART !in sent && mp4.exists() && mp4.length() > 0) {
+        when (val v = uploadVideo(base, deviceId, dir, startMs, videoInfo, mp4)) {
+          is PartResult.Done -> videoNote = v.note
+          is PartResult.Retry -> return Outcome.Retry(v.message)
+        }
+      }
+      Outcome.Ok("frames accepted=$accepted filtered=$dropped" + (if (rejected > 0) " undecodable=$rejected" else "") + audioNote + videoNote)
     } catch (e: IOException) {
       Outcome.Retry("Backend unreachable ($base): ${e.message ?: e.javaClass.simpleName}")
     } catch (e: Exception) {

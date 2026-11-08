@@ -16,12 +16,14 @@ import java.util.UUID
  *
  * - `/v1/frames`: multipart `image` (JPEG) + `meta` = `{"device_id": ..., "ts": <unix s>}`.
  * - `/v1/audio`: multipart `audio` (16-bit PCM mono WAV) + `meta` = `{"device_id": ..., "ts_start": <unix s>}`.
+ * - `/v1/video`: multipart `video` (H.264 mp4) + `meta` = `{"device_id": ..., "ts_start": <unix s of the first frame>}`.
  *
  * `pose` is optional in both and omitted: a 2D panel app has no head pose without OpenXR.
  */
 object MegamindApi {
   const val FRAMES_PATH = "/v1/frames"
   const val AUDIO_PATH = "/v1/audio"
+  const val VIDEO_PATH = "/v1/video"
   const val HEALTH_PATH = "/v1/health"
 
   /** `detail` of the server's 400 for a corrupt JPEG (server/megamind/ingest/router.py): skip that frame only. */
@@ -32,6 +34,17 @@ object MegamindApi {
 
   fun audioMetaJson(deviceId: String, tsStartSec: Double): String =
       "{\"device_id\":${jsonString(deviceId)},\"ts_start\":${jsonNumber(tsStartSec)}}"
+
+  fun videoMetaJson(deviceId: String, tsStartSec: Double): String =
+      "{\"device_id\":${jsonString(deviceId)},\"ts_start\":${jsonNumber(tsStartSec)}}"
+
+  /** One `/v1/video` request body: [mp4] is a chunk's video.mp4. */
+  fun videoRequest(deviceId: String, tsStartSec: Double, mp4: Body, filename: String = "video.mp4"): Multipart =
+      Multipart(
+          listOf(
+              Part("meta", null, null, Body.Bytes(videoMetaJson(deviceId, tsStartSec).toByteArray(Charsets.UTF_8))),
+              Part("video", filename, "video/mp4", mp4),
+          ))
 
   /** One `/v1/frames` request body. */
   fun frameRequest(deviceId: String, tsSec: Double, jpeg: Body, filename: String = "frame.jpg"): Multipart =

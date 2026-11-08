@@ -8,13 +8,19 @@ with HTTP Range.
 - Planner: Claude (forced `montage_plan` tool call, same key/model/timeout settings as the chat agent) when
   `ANTHROPIC_API_KEY` is set and `MONTAGE_PLANNER` is not `offline`; otherwise, or when the call fails, the
   deterministic offline plan (evenly spaced informative moments, de-duplicated).
-- Clip sources: the #58 replay ring buffer when it still holds frames around the moment (`source="replay"`,
-  real frame rate; skipped when `PRIVACY_BLUR_FACES` is on, since buffered frames are not blurred), else a
+- Clip sources: real headset video (`POST /v1/video`, `megamind.video`) when stored clips cover at least
+  `VIDEO_MIN_COVERAGE` of the clip (`source="video"`), else the #58 replay ring buffer when it still holds frames
+  around the moment (`source="replay"`, real frame rate; both skipped when `PRIVACY_BLUR_FACES` is on, since
+  neither is blurred), else a
   timelapse of the stored keyframe thumbnails from that moment on, each held `MONTAGE_TIMELAPSE_STEP_S`
   (`source="timelapse"`, ~1 fps; keyframes are seconds apart).
 - Rendering reuses #58: `render_mp4` (with `extra_vf` for captions/fades) per clip, `ReplayCache` for the
   per-key lock, ffmpeg semaphore (montage's own, `MONTAGE_MAX_CONCURRENT_RENDERS`) and pruning, and
   `ranged_file_response` for Range. The cache key is a hash of the plan, so the same plan is rendered once.
+
+Content-filtered ("smart") montages ("montage of all shots of the guy in the black coat") take a separate,
+additive path in `smart_montage.py` (gather across history -> Haiku vision check -> one clip per matching moment)
+when the query names a subject; time-range montages and subject-less queries keep the path above unchanged.
 
 Wiring (`install`) is additive: the router plus a middleware that clears the montage cache after a
 successful `DELETE /v1/memories`. Settings: `MONTAGE_*` env vars (see `.env.example`).
@@ -39,9 +45,12 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from megamind.agent import smart_montage as smart
 from megamind.models import MemoryToken, MontageClip, MontageRequest, MontageResponse
 from megamind.replay.render import FFMPEG_HINT, ReplayCache, find_ffmpeg, render_mp4
 from megamind.replay.routes import parse_ts, ranged_file_response
+from megamind.video.render import render_video, timeline_s
+from megamind.video.store import Segment, covered_s
 
 log = logging.getLogger("megamind.montage")
 
@@ -76,6 +85,17 @@ class MontageSettings(BaseSettings):
     cache_dir: Path | None = None  # default <thumb_dir>/../montages
     cache_max_files: int = 16
     max_concurrent_renders: int = 1
+    # content-filtered ("smart") montages, see `smart_montage.py`: "montage of all shots of the guy in the black coat"
+    smart: str = "auto"  # auto (subject found AND collection cue: "all/every ...", "shots of") | off (mode="smart")
+    smart_max_candidates: int = 60  # retriever candidates sent to the verifier
+    smart_max_clips: int = 12
+    verifier: str = "auto"  # auto (Claude iff ANTHROPIC_API_KEY) | offline (keep retrieval order, no check)
+    verify_model: str = "claude-haiku-5-5"
+    verify_batch: int = 8  # candidates (thumbnails) per verifier call
+    verify_concurrency: int = 4
+    verify_image_px: int = 384
+    verify_min_confidence: float = 0.5
+    moment_gap_s: float = 90.0  # matches closer than this (same device) are one moment -> one clip
 
 
 # ---- plan ----
@@ -260,13 +280,19 @@ class ClipSpec:
     when: str  # burned-in time label
     frames: tuple[tuple[float, bytes], ...]  # (ts, jpeg); held until the next frame
     tail_s: float
-    source: str  # "replay" | "timelapse"
+    source: str  # "video" | "replay" | "timelapse"
+    video: tuple[Segment, ...] = ()  # source="video": pieces of stored clips (frames is empty)
 
     @property
     def duration(self) -> float:
+        if self.video:
+            return timeline_s(self.video)
         return self.frames[-1][0] - self.frames[0][0] + self.tail_s
 
     def key(self) -> tuple:
+        if self.video:
+            segs = tuple((s.clip.id, round(s.start, 3), round(s.end, 3)) for s in self.video)
+            return (self.token.id, self.source, self.title, self.when, segs)
         return (self.token.id, self.source, self.title, self.when, self.frames[0][0], self.frames[-1][0],
                 len(self.frames), round(self.tail_s, 3))  # fmt: skip
 
@@ -317,12 +343,21 @@ def render_montage(clips: list[ClipSpec], out: Path, *, ffmpeg: str, cfg: Montag
         parts = []
         for i, c in enumerate(clips):
             part = tmp / f"p{i:03d}.mp4"
-            kw = dict(ffmpeg=ffmpeg, fps=cfg.fps, max_width=cfg.width, tail_s=c.tail_s)
+            if c.video:  # same size/fps/codec as render_mp4's parts, so the stream-copy concat still works
+
+                def draw(vf: str, c: ClipSpec = c, part: Path = part) -> None:
+                    render_video(c.video, part, ffmpeg=ffmpeg, fps=cfg.fps, max_width=cfg.width, extra_vf=vf)
+            else:
+                kw = dict(ffmpeg=ffmpeg, fps=cfg.fps, max_width=cfg.width, tail_s=c.tail_s)
+
+                def draw(vf: str, c: ClipSpec = c, part: Path = part, kw: dict = kw) -> None:
+                    render_mp4(c.frames, part, extra_vf=vf, **kw)
+
             try:
-                render_mp4(c.frames, part, extra_vf=overlay_vf(c, cfg), **kw)
+                draw(overlay_vf(c, cfg))
             except RuntimeError as e:  # e.g. ffmpeg built without libfreetype (no drawtext): uncaptioned clip
                 log.warning("montage: captions failed (%s); rendering clip %d without text", e, i)
-                render_mp4(c.frames, part, extra_vf=overlay_vf(c, cfg, text=False), **kw)
+                draw(overlay_vf(c, cfg, text=False))
             parts.append(part)
         (tmp / "list.txt").write_text("".join(f"file '{p.name}'\n" for p in parts))
         tmp_out = tmp / "montage.mp4"
@@ -368,8 +403,15 @@ async def _timelapse_frames(store, t: MemoryToken, n: int) -> list[MemoryToken]:
 async def build_clip(
     st, t: MemoryToken, title: str, duration: float, cfg: MontageSettings, zone: ZoneInfo, *, use_replay=True
 ):
-    """Clip frames for one moment: buffered replay frames if any, else a timelapse of stored keyframes."""
+    """Clip for one moment: stored real video if it covers the clip, else buffered replay frames if any, else a
+    timelapse of stored keyframes. `use_replay=False` (face blur on) skips both unblurred sources."""
     dur = min(max(float(duration or cfg.clip_s), 2.5), 6.0)
+    video = getattr(st, "video", None) if use_replay else None
+    if video is not None:
+        t0 = t.ts - cfg.pre_s
+        segs = video.segments(t.device_id, t0, t0 + dur)
+        if segs and covered_s(segs) >= st.video_settings.min_coverage * dur:
+            return ClipSpec(t, title, _clock(t.ts, zone), (), 0.0, "video", video=tuple(segs))
     buf = getattr(st, "replay", None) if use_replay else None
     if buf is not None:
         t0 = t.ts - cfg.pre_s
@@ -441,6 +483,9 @@ async def create_montage(request: Request, body: MontageRequest):
         raise HTTPException(503, FFMPEG_HINT)
 
     gen = cache.generation
+    subj = smart.select_mode(body.mode or "", query, cfg.smart, tz=st.settings.wearer_tz)
+    if subj is not None:
+        return await _smart_montage(st, cache, cfg, ffmpeg, gen, body, subj, t0, t1)
     cands = await candidates(st, query, t0, t1, body.device_id or None, cfg.max_candidates)
     if not cands:
         raise HTTPException(404, "no memories match that query / time range")
@@ -449,22 +494,36 @@ async def create_montage(request: Request, body: MontageRequest):
     plan, planner = await st.montage_planner.plan(request_text, cands, n_clips)
 
     labels = _labels(cands)
-    zone = _zone(st.settings.wearer_tz)
+    moments = [(labels[c.label], c.title, c.duration) for c in plan.clips]
+    clips = await _build_clips(st, cfg, moments)
+    title = _short(plan.title, 60) or "Your highlights"
+    return await _render_response(st, cache, cfg, ffmpeg, gen, clips, title, plan.narration, planner)
+
+
+def _use_replay(st) -> bool:
     # buffered replay frames are the raw upload; with face blur on only the (blurred) stored thumbnails are used
-    use_replay = not (st.settings.privacy_blur_faces or st.settings.privacy_blur_faces_vlm)
+    return not (st.settings.privacy_blur_faces or st.settings.privacy_blur_faces_vlm)
+
+
+async def _build_clips(st, cfg: MontageSettings, moments: list[tuple[MemoryToken, str, float]]) -> list[ClipSpec]:
+    zone = _zone(st.settings.wearer_tz)
     clips: list[ClipSpec] = []
-    for c in plan.clips:
-        spec = await build_clip(st, labels[c.label], _short(c.title, 60), c.duration, cfg, zone, use_replay=use_replay)
+    for t, title, duration in moments:
+        spec = await build_clip(st, t, _short(title, 60), duration, cfg, zone, use_replay=_use_replay(st))
         if spec is not None:
             clips.append(spec)
     if not clips:
-        raise HTTPException(404, "no buffered frames or stored thumbnails for the chosen moments")
+        raise HTTPException(404, "no stored video, buffered frames or stored thumbnails for the chosen moments")
+    return clips
 
-    title = _short(plan.title, 60) or "Your highlights"
+
+async def _render_response(st, cache, cfg, ffmpeg, gen, clips, title, narration, planner, **extra) -> MontageResponse:
     key = plan_key(title, clips, cfg)
     try:
         await cache.get_or_render(key, clips, ffmpeg=ffmpeg, fps=cfg.fps, max_width=cfg.width)
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as e:
+        if cache.generation != gen:  # a purge deleted a stored video clip mid-render: same answer as below
+            raise HTTPException(409, "memories were deleted while the montage was being made; try again") from None
         raise HTTPException(500, f"montage render failed: {e}") from None
     if cache.generation != gen:  # DELETE /v1/memories ran meanwhile: the reel may show deleted moments
         cache.path(key).unlink(missing_ok=True)
@@ -473,7 +532,7 @@ async def create_montage(request: Request, body: MontageRequest):
         id=key,
         url=f"/v1/montages/{key}.mp4",
         title=title,
-        narration=plan.narration,
+        narration=narration,
         planner=planner,
         clips=[
             MontageClip(
@@ -486,7 +545,65 @@ async def create_montage(request: Request, body: MontageRequest):
             )
             for c in clips
         ],
+        **extra,
     )
+
+
+async def _smart_montage(st, cache, cfg, ffmpeg, gen, body: MontageRequest, subj, t0, t1) -> MontageResponse:
+    """Content-filtered montage (`smart_montage.py`): gather -> verify -> one clip per matching moment."""
+    cands = await smart.gather(st, subj, t0, t1, body.device_id or None, cfg)
+    verifier = getattr(st, "montage_verifier", None)
+    stats = {"verify_errors": 0}
+    if verifier is not None:
+        verdicts, stats = await verifier.verify(subj.phrase, cands, lambda t: _load_image(st, t))
+    else:
+        verdicts = [None] * len(cands)
+    picks = smart.keep_matches(cands, verdicts, cfg.verify_min_confidence)
+    if not picks:
+        if stats.get("verify_errors"):  # some batches failed, the checked ones found nothing: not a real "no"
+            raise HTTPException(503, smart.unfinished_message(subj.phrase))
+        ranged = t0 is not None or t1 is not None or subj.timed
+        raise HTTPException(404, smart.no_match_message(subj.phrase, len(cands), ranged))
+    cap = max(cfg.smart_max_clips, 1)
+    chosen, n_moments = smart.pick_moments(picks, min(body.max_clips or cap, cap), cfg.moment_gap_s)
+    zone = _zone(st.settings.wearer_tz)
+    moments = []
+    for p in chosen:
+        caption = "" if p.token.caption.lstrip().startswith("(") else p.token.caption
+        title = p.title or caption or p.token.ocr_text or f"Moment at {_clock(p.token.ts, zone)}"
+        moments.append((p.token, title, cfg.clip_s))
+    clips = await _build_clips(st, cfg, moments)
+    verified = any(p.verified for p in picks)
+    days = len({datetime.fromtimestamp(p.token.ts, zone).date() for p in picks})
+    phrase = subj.phrase
+    said = smart.spoken(phrase)
+    title = _short(said[:1].upper() + said[1:], 60)
+    return await _render_response(
+        st,
+        cache,
+        cfg,
+        ffmpeg,
+        gen,
+        clips,
+        title,
+        smart.narration(phrase, n_moments, len(clips), days, verified),
+        "claude" if verified else "offline",
+        mode="smart",
+        subject=phrase,
+        candidates=len(cands),
+        matches=n_moments if verified else 0,
+    )
+
+
+async def _load_image(st, t: MemoryToken) -> bytes | None:
+    """JPEG for the verifier: any media tier via `MediaStore.read` (stored thumbnails are already blurred)."""
+    media = getattr(st, "media", None)
+    if media is not None:
+        return await media.read(t)
+    try:
+        return Path(t.thumb_path).read_bytes() if t.has_image else None
+    except OSError:
+        return None
 
 
 @router.api_route("/montages/{montage_id}.mp4", methods=["GET", "HEAD"])
@@ -531,5 +648,6 @@ def install(app: FastAPI, settings, montage_settings: MontageSettings | None = N
     if cfg.enabled:
         st.montage_cache = MontageCache(cfg.cache_dir or Path(settings.thumb_dir).parent / "montages", cfg)
         st.montage_planner = MontagePlanner(settings, cfg)
+        st.montage_verifier = smart.MontageVerifier(settings, cfg)
     app.include_router(router, prefix="/v1")
     app.add_middleware(_PurgeMirror, state=st)

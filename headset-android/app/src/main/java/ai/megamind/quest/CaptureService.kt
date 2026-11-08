@@ -16,8 +16,9 @@ import android.util.Log
 
 /**
  * Foreground service (camera|microphone) that owns capture: passthrough camera frames + headset
- * mic PCM go into the current [ChunkWriter]; every chunk-length seconds the chunk is closed and
- * handed to the persistent [Uploader] queue.
+ * mic PCM (+ the [VideoRecorder]'s per-chunk H.264 when video is on) go into the current
+ * [ChunkWriter]; every chunk-length seconds the chunk is closed and handed to the persistent
+ * [Uploader] queue.
  */
 class CaptureService : Service() {
   companion object {
@@ -37,6 +38,7 @@ class CaptureService : Service() {
   private val main = Handler(Looper.getMainLooper())
   private lateinit var writer: ChunkWriter
   private var camera: PassthroughCamera? = null
+  private val video = VideoRecorder()
   private var audio: AudioCapture? = null
   private var wakeLock: PowerManager.WakeLock? = null
   private var foreground = false
@@ -61,7 +63,10 @@ class CaptureService : Service() {
 
   override fun onCreate() {
     super.onCreate()
-    writer = ChunkWriter(ChunkStore.root(this)).apply { audioSampleRate = AudioCapture.SAMPLE_RATE }
+    writer = ChunkWriter(ChunkStore.root(this)).apply {
+      audioSampleRate = AudioCapture.SAMPLE_RATE
+      video = this@CaptureService.video
+    }
     ChunkStore.recoverStale(this)
     Uploader.start(this)
     Uploader.kick()
@@ -155,7 +160,12 @@ class CaptureService : Service() {
     Status.state = CaptureState.RECORDING
     val cam =
         camera
-            ?: PassthroughCamera(this, { SettingsStore.get(this).frameIntervalMs }) { jpeg, wallMs, luma ->
+            ?: PassthroughCamera(
+                    this,
+                    { SettingsStore.get(this).frameIntervalMs },
+                    video,
+                    { SettingsStore.get(this).recordVideo },
+                ) { jpeg, wallMs, luma ->
                   if (Status.state != CaptureState.RECORDING) return@PassthroughCamera
                   if (writer.addFrame(jpeg, wallMs)) {
                     Status.framesKept++
@@ -235,6 +245,7 @@ class CaptureService : Service() {
     Status.state = CaptureState.IDLE
     camera?.release()
     camera = null
+    video.release()
     audio?.stop()
     wakeLock?.release()
     super.onDestroy()
