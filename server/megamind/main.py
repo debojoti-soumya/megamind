@@ -128,7 +128,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.worker.media = st.media
         st.reader = build_reader(settings, image_loader=st.media.read)
         st.retriever, st.ucc_indexer = build_retriever(settings, st.store, st.text_embedder, st.image_embedder)
-        hier = st.retriever if isinstance(st.retriever, HierRetriever) else None
+        hier = st.retriever if isinstance(st.retriever, HierRetriever) else getattr(st.retriever, "hier", None)
         st.retriever = wrap_live_retriever(st, settings, st.retriever)  # NOW items for "right now" questions
         st.recall = RecallMemory(
             st.store, st.text_embedder, st.image_embedder, st.reader, retriever=st.retriever, tz=settings.wearer_tz
@@ -207,7 +207,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "claude": settings.claude_model
                 if st.agent.enabled
                 else f"fallback ({settings.claude_model} configured, no key)",
-                "reader": active_provider(
+                "reader": f"claude ({settings.claude_model} reads the snapshots)"
+                if type(st.reader).__name__ == "ClaudeVisionReader"
+                else active_provider(
                     settings,
                     "vlm" if settings.reader_provider.lower() == "auto" else settings.reader_provider,
                     st.reader,

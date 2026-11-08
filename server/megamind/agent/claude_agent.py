@@ -79,7 +79,9 @@ the relative times in the tool result (for example "about twenty minutes ago"). 
 returns not_found, or the evidence does not actually answer the question, say
 "I don't have a memory of that." and never guess or invent details. Never claim to identify
 people; describe them neutrally. If the evidence is marked "reader unavailable", answer from
-the captions but add that you could not check the images.
+the captions but add that you could not check the images. When a tool result includes the
+snapshots themselves, look at them: they override the captions when they disagree, and read
+any text (signs, screens, labels, receipts) from the image.
 
 After your spoken answer, on the same message, append the token ids of the evidence your
 answer relies on inside a trailer like <cites>id1,id2</cites>, including ids from tool results
@@ -158,6 +160,41 @@ def _tool_result_payload(r: RecallResult, now: float, zone: ZoneInfo) -> str:
         "other_retrieved": [cite(c) for c in r.all_retrieved if c.id not in {x.id for x in r.cited}][:8],
     }
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _with_images(payload: str, r: RecallResult) -> str | list[dict]:
+    """Tool result content: the JSON payload, then each snapshot (best match first) as a labelled image block."""
+    if not r.images:
+        return payload
+    blocks: list[dict] = [{"type": "text", "text": payload}]
+    for tid, uri in r.images:
+        media_type, _, data = uri.removeprefix("data:").partition(";base64,")
+        blocks.append({"type": "text", "text": f"snapshot {tid}:"})
+        blocks.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}})
+    return blocks
+
+
+def _strip_images(turn: list[dict]) -> list[dict]:
+    """`turn` with every image block inside tool results replaced by a short text placeholder."""
+    out: list[dict] = []
+    for msg in turn:
+        content = msg.get("content")
+        if not isinstance(content, list) or not any(
+            isinstance(b, dict) and b.get("type") == "tool_result" and isinstance(b.get("content"), list)
+            for b in content
+        ):
+            out.append(msg)
+            continue
+        blocks = []
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "tool_result" and isinstance(b.get("content"), list):
+                inner = [
+                    x if x.get("type") != "image" else {"type": "text", "text": "(image omitted)"} for x in b["content"]
+                ]
+                b = {**b, "content": inner}
+            blocks.append(b)
+        out.append({**msg, "content": blocks})
+    return out
 
 
 def _stem(w: str) -> str:
@@ -435,7 +472,7 @@ class ClaudeAgent:
                 len(r.all_retrieved),
             )
             payload = _tool_result_payload(r, now, _zone(self.settings.wearer_tz))
-            return {"type": "tool_result", "tool_use_id": use_id, "content": payload}
+            return {"type": "tool_result", "tool_use_id": use_id, "content": _with_images(payload, r)}
 
         try:
             if prefetch is not None and self.settings.recall_first and recall_first(text, plan):
@@ -524,7 +561,7 @@ class ClaudeAgent:
             cited = []
 
         hist = self.histories.setdefault(session_id, [])
-        hist.append(turn)
+        hist.append(_strip_images(turn))  # follow-ups re-send history: keep the turn's text, not its images
         del hist[:-MAX_TURNS]
         cite_hist = self.cite_histories.setdefault(session_id, [])
         cite_hist.append(turn_cites)

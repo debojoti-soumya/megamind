@@ -40,6 +40,7 @@ PROFILE_ENV = {
     # mirrors server/.env.example; keys come from the megamind-providers secret
     "live": {
         "EMBED_PROVIDER": "openai",
+        "RETRIEVER_BACKEND": "hybrid",  # combo/hier are opt-in: on a 9k-memory week UCC timed out and hier took 16 s p50
         "READER_PROVIDER": "auto",
         "READER_BASE_URL": "https://api.sailresearch.com/v1",
         "ENRICH_PROVIDER": "auto",
@@ -50,6 +51,7 @@ PROFILE_ENV = {
     # no paid calls at all, even if a key leaks into the environment
     "mock": {
         "EMBED_PROVIDER": "mock",
+        "RETRIEVER_BACKEND": "hybrid",
         "READER_PROVIDER": "mock",
         "ENRICH_PROVIDER": "mock",
         "STT_PROVIDER": "mock",

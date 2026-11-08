@@ -192,6 +192,7 @@ class RecallResult(BaseModel):
     confidence: Confidence
     cited: list[Citation]
     all_retrieved: list[Citation]
+    images: list[tuple[str, str]] = Field(default_factory=list, exclude=True)  # (token id, data URI), best first
 
 
 class ToolCallRecord(BaseModel):
