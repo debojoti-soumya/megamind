@@ -72,6 +72,19 @@ async def test_chat_json_fallback(client):
     assert body["cited"]
 
 
+async def test_chat_json_bad_body_is_422_not_500(client):
+    c, _ = client
+    r = await c.post("/v1/chat", json={"text": "hi"})  # missing session_id (issue #49)
+    assert r.status_code == 422
+    assert any(err["loc"] == ["session_id"] for err in r.json()["detail"])
+    r = await c.post("/v1/chat", content=b"{not json", headers={"content-type": "application/json"})
+    assert r.status_code == 422 and "invalid JSON" in r.json()["detail"]
+    r = await c.post("/v1/chat", json=["hi"])
+    assert r.status_code == 422
+    # the connection is still usable afterwards (no unhandled exception)
+    assert (await c.get("/v1/health")).status_code == 200
+
+
 async def test_purge(client):
     c, app = client
     await _post_frame(c, _noisy_jpeg(4), 3000.0)

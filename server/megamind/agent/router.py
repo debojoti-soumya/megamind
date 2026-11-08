@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
+from pydantic import ValidationError
 from ulid import ULID
 
 from megamind.models import ChatRequest, ChatResponse
@@ -14,7 +16,11 @@ async def chat(request: Request):
     app = request.app.state
     ctype = request.headers.get("content-type", "")
     if ctype.startswith("application/json"):
-        body = ChatRequest.model_validate(await request.json())
+        try:
+            body = ChatRequest.model_validate(await request.json())
+        except ValueError as e:  # malformed JSON (JSONDecodeError) or schema mismatch (ValidationError)
+            detail = e.errors(include_url=False) if isinstance(e, ValidationError) else f"invalid JSON: {e}"
+            raise HTTPException(422, jsonable_encoder(detail)) from None
         if not body.text:
             raise HTTPException(400, "text is required for JSON requests")
         text, session_id, device_id = body.text, body.session_id, body.device_id
