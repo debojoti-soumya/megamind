@@ -146,11 +146,11 @@ async def test_layout_is_chronological_interleaved_and_cited(tmp_path):
     assert texts[-1].startswith("Question: which locker did I use?")
     uri = images[0]["image_url"]["url"]
     assert uri.startswith("data:image/jpeg;base64,")
-    # thumbnail downscaled to <= 512 px
+    # thumbnail downscaled to <= reader_thumb_max_px (960: the headset upload width)
     import base64
 
     im = Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1])))
-    assert max(im.size) <= 512
+    assert max(im.size) <= 960
 
 
 async def test_missing_thumb_sends_text_only(tmp_path):
@@ -547,3 +547,35 @@ def test_encode_jpeg_is_cached_by_content(tmp_path):
     assert b not in (None, a) and len(_ENC_CACHE) == 2
     p.unlink()  # purge: never served from the cache
     assert encode_thumb(str(p), 512) is None
+
+
+async def test_claude_vision_reader_returns_images_best_first(tmp_path):
+    from megamind.agent.reader import ClaudeVisionReader, build_reader
+
+    def jpg(name: str, size=(1280, 960)) -> str:
+        p = tmp_path / f"{name}.jpg"
+        Image.new("RGB", size, (40, 90, 160)).save(p, format="JPEG")
+        return str(p)
+
+    tokens = [
+        MemoryToken(
+            id=f"v{i}",
+            device_id="d",
+            ts=1000.0 + i,
+            caption=f"cap {i}",
+            ocr_text="EXIT" if i == 0 else "",
+            thumb_path=jpg(f"v{i}") if i != 1 else "",
+            frame_hash="0" * 16,
+        )
+        for i in range(4)
+    ]
+    settings = Settings(_env_file=None, reader_provider="claude", reader_max_images=3)
+    reader = build_reader(settings)
+    assert isinstance(reader, ClaudeVisionReader)
+    out = await reader.read("exit sign", tokens, now=2000.0)
+    assert [i for i, _ in out.images] == ["v0", "v2"]  # rank order, capped at 3, unreadable v1 skipped
+    with Image.open(io.BytesIO(base64.b64decode(out.images[0][1].split(",", 1)[1]))) as im:
+        assert max(im.size) == 960
+    assert out.confidence == "medium" and out.cited_ids == ["v0", "v1", "v2"] and "EXIT" in out.evidence
+    empty = await reader.read("x", [])
+    assert empty.confidence == "not_found" and not empty.images

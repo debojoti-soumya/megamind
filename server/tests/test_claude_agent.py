@@ -144,7 +144,7 @@ async def test_single_tool_call_with_claude_cites(recall):
 
     # request shape: system prompt, tool schema, tool_result fed back
     first, second = script.requests
-    assert first["model"] == "claude-sonnet-4-6"
+    assert first["model"] == "claude-haiku-4-5"
     assert first["tools"][0]["name"] == "recall_memory"
     assert "in UTC that is" in first["system"] and "America/Los_Angeles" in first["system"]
     assert "Pass short keywords as query" in first["system"]
@@ -271,7 +271,7 @@ def test_claude_model_default_is_not_the_retiring_sonnet_4_5_and_is_overridable(
     from megamind.config import Settings
 
     monkeypatch.delenv("CLAUDE_MODEL", raising=False)
-    assert Settings(_env_file=None).claude_model == "claude-sonnet-4-6"
+    assert Settings(_env_file=None).claude_model == "claude-haiku-4-5"
     monkeypatch.setenv("CLAUDE_MODEL", "claude-sonnet-5-5")
     assert Settings(_env_file=None).claude_model == "claude-sonnet-5-5"
 
@@ -511,3 +511,34 @@ async def test_recall_first_lets_claude_re_query(recall):
     assert len(script.requests) == 2 and stats.tool_calls == 2
     assert [c["query"] for c in spy.calls] == ["what colour was my mug?", "mug"]
     assert [c.id for c in resp.cited] == ["t_mug"]
+
+
+async def test_vision_reader_sends_images_to_claude_and_strips_them_from_history(tmp_path):
+    from PIL import Image
+
+    from megamind.agent.reader import ClaudeVisionReader
+
+    store = await _store_with_tokens()
+    for tid in ("t_keys", "t_board", "t_mug"):
+        Image.new("RGB", (960, 720), (200, 30, 30)).save(f"/tmp/{tid}.jpg", format="JPEG")
+    reader = ClaudeVisionReader(_settings(reader_provider="claude"))
+    recall = RecallMemory(store, MockTextEmbedder(), None, reader)
+    script = ScriptedAnthropic(
+        [
+            _message([text("On the kitchen counter. <cites>t_keys</cites>")]),
+            _message([text("Next to the coffee machine. <cites>t_keys</cites>")]),
+        ]
+    )
+    agent = ClaudeAgent(_settings(anthropic_api_key="k", recall_first=True), recall, client=script.client())
+    resp = await agent.chat("s", "where did I leave my keys?", "dev1")
+    assert [c.id for c in resp.cited] == ["t_keys"]
+    content = script.requests[0]["messages"][2]["content"][0]["content"]
+    kinds = [b["type"] for b in content]
+    assert kinds[0] == "text" and kinds.count("image") >= 1
+    img = next(b for b in content if b["type"] == "image")
+    assert img["source"]["media_type"] == "image/jpeg" and img["source"]["data"]
+    assert "look at them" in script.requests[0]["system"]
+
+    await agent.chat("s", "and what was next to them?", "dev1")
+    history = json.dumps(script.requests[1]["messages"])
+    assert '"type": "image"' not in history and "(image omitted)" in history

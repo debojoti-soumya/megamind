@@ -205,7 +205,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "claude": settings.claude_model
                 if st.agent.enabled
                 else f"fallback ({settings.claude_model} configured, no key)",
-                "reader": active_provider(
+                "reader": f"claude ({settings.claude_model} reads the snapshots)"
+                if type(st.reader).__name__ == "ClaudeVisionReader"
+                else active_provider(
                     settings,
                     "vlm" if settings.reader_provider.lower() == "auto" else settings.reader_provider,
                     st.reader,

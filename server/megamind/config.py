@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     api_token: str = ""  # shared secret for a public deployment; empty = no auth (megamind/auth.py)
 
     anthropic_api_key: str = ""
-    claude_model: str = "claude-sonnet-4-6"  # claude-sonnet-4-5* retires 2026-11-30; override via CLAUDE_MODEL
+    claude_model: str = "claude-haiku-4-5"  # 1.3 s/turn vs 2.9 s Sonnet 4.6 (deploy/bench_modal.py); CLAUDE_MODEL
     claude_timeout_s: float = 30.0
     claude_max_retries: int = 2
 
@@ -20,13 +20,15 @@ class Settings(BaseSettings):
     reader_api_key: str = "none"
     reader_model: str = "google/gemma-4-31B-it"  # Qwen3.6-35B-A3B is flex-only on Sail (research/reports/04)
     reader_fallback_model: str = "nvidia/Gemma-4-31B-IT-NVFP4"  # retry model on 429/503/timeout; "" disables
-    reader_provider: str = "auto"  # auto (vlm iff READER_API_KEY set) | vlm | mock
+    reader_provider: str = (
+        "auto"  # auto: claude iff ANTHROPIC_API_KEY, else vlm iff READER_API_KEY | vlm | claude | mock
+    )
     reader_timeout_s: float = 7.0  # per attempt, capped by the deadline; Sail Gemma asap calls take ~3.1 s
     reader_hedge_s: float = 3.25  # start the fallback model if the primary hasn't answered by then; 0 = only on failure
     reader_deadline_s: float = 7.0  # wall budget for all attempts of one call (hedge + healthy p95 3.25 s + 0.5 s)
     reader_max_retries: int = 1
     reader_max_images: int = 12  # per call (Sail cap 20; report 04 says <=12 for latency); more -> chunk + merge
-    reader_thumb_max_px: int = 512
+    reader_thumb_max_px: int = 960  # longest side sent to the reader; 960 = the headset upload, unscaled
     reader_max_tokens: int = 300
     reader_json_mode: str = "schema"  # schema (json_schema) | object (json_object) | off; downgraded on HTTP 400
     reader_completion_window: str = ""  # Sail: asap | balanced; sent as X-Sail-Completion-Window when set
@@ -61,9 +63,9 @@ class Settings(BaseSettings):
     voyage_api_key: str = ""
 
     stt_provider: str = "mock"
-    stt_model: str = "whisper-1"
+    stt_model: str = "gpt-4o-mini-transcribe"  # ~0.37 s vs ~1.1 s whisper-1
     tts_provider: str = "mock"
-    tts_model: str = "tts-1"
+    tts_model: str = "gpt-4o-mini-tts"  # ~1.1 s vs ~1.8 s tts-1
     tts_voice: str = "alloy"
     deepgram_api_key: str = ""
     elevenlabs_api_key: str = ""

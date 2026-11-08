@@ -394,6 +394,7 @@ async def main() -> int:
     ap.add_argument("--live", action="store_true", help="use ANTHROPIC_API_KEY / READER_API_KEY from the env ($$$)")
     ap.add_argument("--limit", type=int, default=None, help="only the first N questions (use with --live)")
     ap.add_argument("--no-thumbs", action="store_true", help="skip rendering synthetic frames (captions only)")
+    ap.add_argument("--thumb-width", type=int, default=512, help="synthetic frame width (960 = headset upload)")
     ap.add_argument("--price-in", type=float, default=CLAUDE_PRICE_IN, help="USD per 1M Claude input tokens")
     ap.add_argument("--price-out", type=float, default=CLAUDE_PRICE_OUT, help="USD per 1M Claude output tokens")
     ap.add_argument("--reader-price", type=float, default=0.0, help="USD per 1M reader tokens (blended)")
@@ -408,7 +409,7 @@ async def main() -> int:
     with tempfile.TemporaryDirectory(prefix="megamind-eval-") as tmp:
         day = load_day(args.dataset, None if args.no_thumbs else Path(tmp))
         if not args.no_thumbs:
-            render_thumbs(day, Path(tmp))
+            render_thumbs(day, Path(tmp), width=args.thumb_width)
         turns = await run(
             day,
             settings,

@@ -1,7 +1,7 @@
 """Text-to-speech providers (stream 3). Output is a WAV written to settings.audio_dir and
 served at /v1/audio/{id}.wav (the headset plays it with UnityWebRequestMultimedia, WAV only).
 
-  openai     -> `audio.speech` with response_format=wav
+  openai     -> `audio.speech` with response_format=pcm (24 kHz), wrapped in a WAV header
   elevenlabs -> REST text-to-speech with output_format=pcm_16000, wrapped in a WAV header
   mock       -> no audio (audio_url=null)
 """
@@ -82,8 +82,9 @@ class OpenAITTS(_FileTTS):
         self.voice = settings.tts_voice
 
     async def _render(self, text: str) -> bytes:
-        r = await self.client.audio.speech.create(model=self.model, voice=self.voice, input=text, response_format="wav")
-        return r.content
+        # pcm (24 kHz s16le mono) + our own header: OpenAI's streamed WAV header carries placeholder sizes
+        r = await self.client.audio.speech.create(model=self.model, voice=self.voice, input=text, response_format="pcm")
+        return pcm16_to_wav(r.content, 24000)
 
 
 class ElevenLabsTTS(_FileTTS):

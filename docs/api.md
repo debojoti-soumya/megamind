@@ -20,7 +20,7 @@ Response bodies are unchanged: `thumb_url`/`replay_url`/`audio_url` stay token-f
 ## `GET /health`
 ```json
 { "status": "ok", "store_count": 1234,
-  "models": { "claude": "claude-sonnet-4-6", "reader": "google/gemma-4-31B-it",
+  "models": { "claude": "claude-haiku-4-5", "reader": "google/gemma-4-31B-it",
               "embed": "mock (openai configured, no key)", "enrich": "vlm:google/gemma-4-31B-it",
               "stt": "mock", "tts": "mock", "store": "lancedb" } }
 ```
