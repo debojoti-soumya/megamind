@@ -1,8 +1,8 @@
 """Keyframe filter v2: dark -> blur -> too_soon -> dedupe -> per-minute cap, with pose and
 settled-frame triggers (research/digest/capture.md items 1-5).
 
-Pure PIL/NumPy, ~1 ms per 960 px frame. Per-device state is keyed on frame timestamps
-(not wall clock) so video replays through tools/feeder.py are deterministic.
+Pure PIL/NumPy, ~3-4 ms per 960 px frame (one grey decode, one 320 px downscale). Per-device state
+is keyed on frame timestamps (not wall clock) so video replays through tools/feeder.py are deterministic.
 
 Decision order for a frame (h = dHash, prev = previous frame of this device, kept = last kept):
   dark      mean luma < filter_min_luma
@@ -21,6 +21,7 @@ Decision order for a frame (h = dHash, prev = previous frame of this device, kep
 
 from __future__ import annotations
 
+import io
 import math
 from collections import Counter
 from dataclasses import dataclass
@@ -34,8 +35,24 @@ from megamind.models import FrameMeta, Pose
 Reason = str  # one of docs/api.md reason values; see megamind.models.FrameAccepted
 
 
+def decode_frame(jpeg: bytes) -> Image.Image:
+    """Decode an uploaded frame straight to greyscale - all the filter needs.
+
+    For JPEGs `draft("L")` makes libjpeg emit only the Y plane (no chroma upsampling or RGB
+    conversion); other formats decode normally and are converted where needed.
+    """
+    img = Image.open(io.BytesIO(jpeg))
+    img.draft("L", img.size)
+    img.load()
+    return img
+
+
+def _grey(img: Image.Image) -> Image.Image:
+    return img if img.mode == "L" else img.convert("L")
+
+
 def dhash(img: Image.Image, size: int = 8) -> str:
-    g = img.convert("L").resize((size + 1, size), Image.Resampling.LANCZOS)
+    g = _grey(img).resize((size + 1, size), Image.Resampling.LANCZOS)
     a = np.asarray(g, dtype=np.int16)
     bits = (a[:, 1:] > a[:, :-1]).flatten()
     value = 0
@@ -49,7 +66,23 @@ def hamming(h1: str, h2: str) -> int:
 
 
 def mean_luma(img: Image.Image) -> float:
-    return float(np.asarray(img.convert("L").resize((32, 32)), dtype=np.float32).mean())
+    return float(np.asarray(_grey(img).resize((32, 32)), dtype=np.float32).mean())
+
+
+def _small_grey(img: Image.Image, width: int = 320) -> np.ndarray:
+    g = _grey(img)
+    w, h = g.size
+    if w > width:
+        g = g.resize((width, max(1, round(h * width / w))), Image.Resampling.BILINEAR)
+    return np.asarray(g, dtype=np.float32)
+
+
+def _sharpness(a: np.ndarray) -> float:
+    if a.shape[0] < 3 or a.shape[1] < 3:
+        return 0.0
+    dxx = a[:, :-2] + a[:, 2:] - 2.0 * a[:, 1:-1]
+    dyy = a[:-2, :] + a[2:, :] - 2.0 * a[1:-1, :]
+    return 2.0 * float(min(dxx.var(), dyy.var()))
 
 
 def sharpness(img: Image.Image, width: int = 320) -> float:
@@ -59,15 +92,17 @@ def sharpness(img: Image.Image, width: int = 320) -> float:
     detail sharp, so a plain Laplacian variance barely drops). Typical values at 320 px:
     sharp indoor passthrough 100-600, motion-blurred pan < 30, flat wall < 5.
     """
-    w, h = img.size
-    if w > width:
-        img = img.resize((width, max(1, round(h * width / w))), Image.Resampling.BILINEAR)
-    a = np.asarray(img.convert("L"), dtype=np.float32)
-    if a.shape[0] < 3 or a.shape[1] < 3:
-        return 0.0
-    dxx = a[:, :-2] + a[:, 2:] - 2.0 * a[:, 1:-1]
-    dyy = a[:-2, :] + a[2:, :] - 2.0 * a[1:-1, :]
-    return 2.0 * float(min(dxx.var(), dyy.var()))
+    return _sharpness(_small_grey(img, width))
+
+
+def frame_metrics(img: Image.Image) -> tuple[str, float, float]:
+    """(dhash, mean luma, sharpness) from one grey conversion and one 320 px downscale.
+
+    Luma is the mean of the 320 px copy (same value as `mean_luma` to within ~0.1 grey level).
+    """
+    g = _grey(img)
+    a = _small_grey(g)
+    return dhash(g), float(a.mean()), _sharpness(a)
 
 
 def pose_delta(a: Pose | None, b: Pose | None) -> tuple[float, float]:
@@ -124,10 +159,20 @@ class KeyframeFilter:
             st.tokens = min(float(self.s.filter_max_per_min), st.tokens + refill)
         st.tokens_ts = ts if st.tokens_ts is None else max(st.tokens_ts, ts)
 
-    def decide(self, img: Image.Image, meta: FrameMeta, recent: list[tuple[float, str]]) -> FilterDecision:
-        """`recent` = (ts, dhash) of frames already kept for this device (store + in-flight)."""
+    def decide(
+        self,
+        img: Image.Image | None,
+        meta: FrameMeta,
+        recent: list[tuple[float, str]],
+        metrics: tuple[str, float, float] | None = None,
+    ) -> FilterDecision:
+        """`recent` = (ts, dhash) of frames already kept for this device (store + in-flight).
+
+        Pass `metrics` (from `frame_metrics`, e.g. computed in a worker thread) instead of `img`
+        to keep this call cheap; the stateful part always runs on the caller's thread.
+        """
         st = self._state.setdefault(meta.device_id, self._new_state())
-        d = self._decide(img, meta, recent, st)
+        d = self._decide(metrics or frame_metrics(img), meta, recent, st)
         st.prev_hash = d.frame_hash
         st.prev_unstable = (not d.accepted) and (
             d.reason == "blurry" or (d.reason == "too_soon" and self._changed(d.frame_hash, st))
@@ -145,13 +190,12 @@ class KeyframeFilter:
         return st.last_kept_hash is None or hamming(h, st.last_kept_hash) >= self.s.filter_dhash_max_distance
 
     def _decide(
-        self, img: Image.Image, meta: FrameMeta, recent: list[tuple[float, str]], st: _DeviceState
+        self, metrics: tuple[str, float, float], meta: FrameMeta, recent: list[tuple[float, str]], st: _DeviceState
     ) -> FilterDecision:
         s = self.s
-        h = dhash(img)
-        if mean_luma(img) < s.filter_min_luma:
+        h, luma, sharp = metrics
+        if luma < s.filter_min_luma:
             return FilterDecision(False, "dark", h)
-        sharp = sharpness(img)
         if sharp < s.filter_min_sharpness:
             return FilterDecision(False, "blurry", h, sharpness=sharp)
 

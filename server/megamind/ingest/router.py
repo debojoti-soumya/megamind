@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import logging
 import math
@@ -10,10 +9,10 @@ from typing import get_args
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
-from PIL import Image
 from ulid import ULID
 
 from megamind.ingest.audio import transcript_sink
+from megamind.ingest.filter import decode_frame, frame_metrics
 from megamind.ingest.worker import purge_all
 from megamind.models import FrameAccepted, FrameMeta, MemoryToken, PurgeResponse, SearchMode, SearchResponse
 from megamind.store.media import run_aging
@@ -29,6 +28,18 @@ def _iso_to_ts(s: str | None, param: str = "from/to") -> float | None:
         return datetime.fromisoformat(s).timestamp()
     except ValueError:
         raise HTTPException(400, f"{param}: expected ISO-8601, got {s!r}") from None
+
+
+class _Undecodable(Exception):
+    pass
+
+
+def _frame_metrics(jpeg: bytes) -> tuple[str, float, float]:
+    try:
+        img = decode_frame(jpeg)
+    except Exception as exc:  # noqa: BLE001
+        raise _Undecodable from exc
+    return frame_metrics(img)
 
 
 async def _recent_kept(app, device_id: str, since_ts: float) -> list[tuple[float, str]]:
@@ -60,9 +71,8 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
 
     jpeg = await image.read()
     try:
-        img = Image.open(io.BytesIO(jpeg))
-        img.load()
-    except Exception as exc:  # noqa: BLE001
+        metrics = await asyncio.to_thread(_frame_metrics, jpeg)  # ~4 ms of PIL/NumPy, mostly GIL-free
+    except _Undecodable as exc:
         raise HTTPException(400, "image is not a decodable JPEG") from exc
     for tap in getattr(app, "frame_taps", ()):  # every decodable frame, before the filter (e.g. replay buffer)
         tap(fm, jpeg)
@@ -73,7 +83,7 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
     frame_id = str(ULID())
     kf = app.keyframe_filter
     recent = await _recent_kept(app, fm.device_id, fm.ts - kf.history_window_s)
-    decision = kf.decide(img, fm, recent)
+    decision = kf.decide(None, fm, recent, metrics)
     if sum(kf.counts.values()) % 60 == 0:
         log.info("filter counts %s", dict(kf.counts))
     if not decision.accepted:
@@ -85,7 +95,7 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
     ]
 
     thumb_path = app.settings.thumb_dir / f"{frame_id}.jpg"
-    thumb_path.write_bytes(jpeg)
+    await asyncio.to_thread(thumb_path.write_bytes, jpeg)
 
     token = MemoryToken(
         id=frame_id,
