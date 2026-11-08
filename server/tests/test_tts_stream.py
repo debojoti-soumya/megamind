@@ -1,0 +1,146 @@
+"""TTS_STREAM: `audio` events per sentence on POST /v1/chat/stream (agent/speech.py), mock TTS only."""
+
+from __future__ import annotations
+
+import asyncio
+import wave
+
+import pytest
+from test_chat_stream import ANSWER, ScriptedAnthropic, _message, _stream, _two_rounds, _use_script, text
+from test_chat_stream import app_client as _app_client
+
+from megamind.agent import tts as tts_mod
+from megamind.agent.speech import SentenceBuffer, StreamingSpeaker, concat_wavs
+from megamind.models import ChatResponse
+
+app_client = _app_client  # the fixture from test_chat_stream (store with two memories + Anthropic script)
+
+TWO = "Your keys are on the kitchen counter. You left them there about twenty minutes ago."
+
+
+class SlowFirstTTS(tts_mod._FileTTS):
+    """Clip i takes `delays[i]` s (first sentence slowest), 16 kHz, 100 samples per 10 chars: ordering must hold."""
+
+    def __init__(self, audio_dir, delays=(0.2, 0.0, 0.0)):
+        super().__init__(audio_dir)
+        self.delays, self.calls = list(delays), []
+
+    async def _render(self, text: str) -> bytes:
+        i = len(self.calls)
+        self.calls.append(text)
+        await asyncio.sleep(self.delays[i] if i < len(self.delays) else 0)
+        return tts_mod.pcm16_to_wav(b"\x01\x00" * (10 * len(text)), 16000)
+
+
+def test_sentence_buffer_incremental_matches_split_sentences():
+    for n in (1, 3, 7, 50):
+        b = SentenceBuffer()
+        out = []
+        for i in range(0, len(TWO), n):
+            out += b.feed(TWO[i : i + n])
+        out.append(b.flush())
+        assert out == tts_mod.split_sentences(TWO), n
+    b = SentenceBuffer()
+    assert b.feed("Yes. It was on the kitchen counter next to the coffee machine. And") == [
+        "Yes. It was on the kitchen counter next to the coffee machine."
+    ]
+    assert b.flush() == "And"
+    assert SentenceBuffer().feed("The total was $23.47 at checkout. ") == []  # no next sentence start yet
+
+
+def test_concat_wavs(tmp_path):
+    for i, n in enumerate((100, 50)):
+        (tmp_path / f"p{i}.wav").write_bytes(tts_mod.pcm16_to_wav(b"\x01\x00" * n, 16000))
+    assert concat_wavs([tmp_path / "p0.wav", tmp_path / "p1.wav"], tmp_path / "out.wav")
+    with wave.open(str(tmp_path / "out.wav")) as w:
+        assert (w.getframerate(), w.getnframes()) == (16000, 150 + 2400)
+    (tmp_path / "p2.wav").write_bytes(tts_mod.pcm16_to_wav(b"\x01\x00" * 10, 24000))
+    assert not concat_wavs([tmp_path / "p0.wav", tmp_path / "p2.wav"], tmp_path / "out2.wav")
+
+
+async def test_speaker_emits_in_order_and_concatenates(tmp_path):
+    events = []
+
+    async def emit(name, data):
+        events.append((name, data))
+
+    sp = StreamingSpeaker(SlowFirstTTS(tmp_path), tmp_path, emit)
+    for i in range(0, len(TWO), 5):
+        await sp.feed(TWO[i : i + 5])
+    await asyncio.sleep(0.05)
+    assert events == []  # clip 1 is done but clip 0 is not: nothing out of order
+    url = await sp.finish(TWO)
+    assert [(d["seq"], d["text"]) for _, d in events] == [(0, TWO.split(". ")[0] + "."), (1, TWO.split(". ")[1])]
+    assert all(d["url"] == f"/v1/audio/{sp.audio_id}-{d['seq']}.wav" for _, d in events)
+    assert url == f"/v1/audio/{sp.audio_id}.wav"
+    with wave.open(str(tmp_path / f"{sp.audio_id}.wav")) as w:
+        assert w.getnframes() == 10 * len(events[0][1]["text"]) + 10 * len(events[1][1]["text"]) + 2400
+
+
+async def test_speaker_reset_drops_clips_and_mismatch_respeaks(tmp_path):
+    events = []
+
+    async def emit(name, data):
+        events.append((name, data))
+
+    tts = SlowFirstTTS(tmp_path, delays=(0.0, 0.0, 0.0))
+    sp = StreamingSpeaker(tts, tmp_path, emit)
+    await sp.feed("Let me check that for you right now. One")
+    await asyncio.sleep(0.01)
+    assert len(events) == 1
+    old = sp.audio_id
+    await sp.reset()
+    await sp.feed(TWO)
+    url = await sp.finish(TWO)
+    assert url != f"/v1/audio/{old}.wav" and [d["seq"] for _, d in events] == [0, 0, 1]
+    # the final answer is not what was streamed (e.g. NOT_FOUND replacement): one whole-answer call instead
+    sp = StreamingSpeaker(tts, tmp_path, emit)
+    await sp.feed(TWO)
+    url = await sp.finish("Sorry, I couldn't find that.")
+    assert url == f"/v1/audio/{sp.audio_id}.wav" and tts.calls[-1] == "Sorry, I couldn't find that."
+
+
+async def test_mock_tts_streams_no_audio(tmp_path):
+    sp = StreamingSpeaker(tts_mod.MockTTS(), tmp_path, lambda n, d: asyncio.sleep(0))
+    await sp.feed(TWO)
+    assert await sp.finish(TWO) is None
+
+
+@pytest.mark.parametrize("stream_on", [True, False])
+async def test_chat_stream_audio_events(app_client, stream_on):
+    c, app = app_client
+    app.state.settings.tts_stream = stream_on
+    app.state.tts = SlowFirstTTS(app.state.settings.audio_dir)
+    two = TWO + " <cites>t_keys</cites>"
+    _use_script(app, ScriptedAnthropic([_message([text(two)])]))
+    events = await _stream(c, {"session_id": "s", "device_id": "dev1", "text": "where are my keys?"})
+    names = [n for n, _ in events]
+    audio = [d for n, d in events if n == "audio"]
+    final = events[-1][1]
+    assert names[-1] == "final"
+    if not stream_on:
+        assert audio == [] and final["audio_url"].endswith(".wav")
+        return
+    assert [a["seq"] for a in audio] == [0, 1] and set(audio[0]) == {"seq", "url", "text"}
+    assert " ".join(a["text"] for a in audio) == final["answer"] == TWO
+    assert names.index("audio") < names.index("final") and names.count("audio") == 2
+    for a in audio:
+        r = await c.get(a["url"])
+        assert r.status_code == 200 and r.content[:4] == b"RIFF"
+    r = await c.get(final["audio_url"])
+    assert r.status_code == 200 and final["audio_url"] != audio[0]["url"]
+    with wave.open(str(app.state.settings.audio_dir / final["audio_url"].rsplit("/", 1)[1])) as w:
+        assert w.getnframes() == 10 * sum(len(a["text"]) for a in audio) + 2400  # both clips + 150 ms gap
+
+
+async def test_chat_stream_reset_cancels_preamble_audio(app_client):
+    c, app = app_client
+    app.state.tts = SlowFirstTTS(app.state.settings.audio_dir, delays=(0.0, 0.0, 0.0))
+    _use_script(app, ScriptedAnthropic(_two_rounds(preamble="Let me check my memory for that.")))
+    events = await _stream(c, {"session_id": "s", "device_id": "dev1", "text": "where are my keys?"})
+    names = [n for n, _ in events]
+    r_i = names.index("reset")
+    assert "audio" not in names[:r_i] or all(n != "audio" for n in names[r_i:]) is False
+    after = [d for n, d in events[r_i:] if n == "audio"]
+    assert [a["seq"] for a in after] == [0] and after[0]["text"] == ANSWER.split(" <cites>")[0]
+    assert ChatResponse.model_validate(events[-1][1]).audio_url.endswith(".wav")

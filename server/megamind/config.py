@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     tts_provider: str = "mock"
     tts_model: str = "gpt-4o-mini-tts"  # ~1.1 s vs ~1.8 s tts-1
     tts_voice: str = "alloy"
+    # POST /chat/stream: speak each sentence as soon as Claude finishes it (`audio` SSE events, agent/speech.py);
+    # off = one TTS call for the whole answer after the turn, as POST /chat does
+    tts_stream: bool = True
     deepgram_api_key: str = ""
     elevenlabs_api_key: str = ""
 

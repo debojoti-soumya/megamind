@@ -262,6 +262,14 @@ class ChatStreamDelta(BaseModel):
     text: str
 
 
+class ChatStreamAudio(BaseModel):
+    """`POST /v1/chat/stream` event `audio`: TTS of one sentence of the answer, in order (`seq` 0, 1, ...)."""
+
+    seq: int
+    url: str  # /v1/audio/{id}-{seq}.wav
+    text: str  # the sentence this clip speaks
+
+
 class ChatStreamError(BaseModel):
     """`POST /v1/chat/stream` event `error`: the turn failed after the stream started; no `final` follows."""
 
