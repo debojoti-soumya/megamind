@@ -36,6 +36,10 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 
 const q = new URLSearchParams(location.search);
+if (q.has('token')) {  // the server already set the session cookie; keep the API token out of browser history
+  const clean = new URLSearchParams(q); clean.delete('token');
+  history.replaceState(null, '', `${location.pathname}?${clean}${location.hash}`);
+}
 const id = q.get('m') || '', fmt = q.get('f') || 'glb';
 const kind = q.get('k') || (fmt === 'ply' ? 'splat' : 'mesh');
 const base = q.get('server') || '';
