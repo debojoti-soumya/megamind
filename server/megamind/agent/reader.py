@@ -115,6 +115,18 @@ def _retry_after_s(r: httpx.Response, default: float = 1.0, cap: float = 2.0) ->
 
 
 @dataclass
+class _ChunkState:
+    """Shared by the primary and fallback attempts of one chunk."""
+
+    json_mode: str
+    known: set[str]
+    calls: int = 0
+    last_err: Exception | None = None
+    fatal: bool = False  # auth or request-shape error: no model can succeed
+    hedged: bool = False  # the fallback ran while the primary was still in flight
+
+
+@dataclass
 class EvidenceItem:
     id: str
     why: str = ""
@@ -139,12 +151,27 @@ class Reader(ABC):
 
 
 class CaptionOnlyReader(Reader):
-    """Fallback with no model call: returns the top captions verbatim as evidence."""
+    """No model call: the top captions (+ OCR) verbatim as evidence, citing the top 3.
+
+    `top=None` lists every retrieved token in one compact line each: used when the VLM degrades so Claude
+    still sees the OCR / caption of hits ranked below 3 (the answer is often there)."""
+
+    def __init__(self, top: int | None = 3, zone: ZoneInfo | None = None) -> None:
+        self.top = top
+        self.zone = zone
+
+    def _line(self, t: MemoryToken) -> str:
+        when = f" {datetime.fromtimestamp(t.ts, self.zone).strftime('%a %H:%M')}:" if self.zone else ""
+        line = f"[{t.id}]{when} {t.caption}"
+        if t.ocr_text:
+            line += f" (text: {' / '.join(t.ocr_text.splitlines())})"
+        return line
 
     async def read(self, query: str, tokens: list[MemoryToken], *, now: float | None = None) -> ReaderOutput:
-        top = tokens[:3]
-        lines = [f"[{t.id}] {t.caption}" + (f" (text: {t.ocr_text})" if t.ocr_text else "") for t in top]
-        return ReaderOutput(evidence="\n".join(lines), confidence="low", cited_ids=[t.id for t in top])
+        shown = tokens if self.top is None else tokens[: self.top]
+        return ReaderOutput(
+            evidence="\n".join(self._line(t) for t in shown), confidence="low", cited_ids=[t.id for t in tokens[:3]]
+        )
 
 
 def _fmt_delta(seconds: float) -> str:
@@ -294,8 +321,9 @@ class VLMReader(Reader):
         self.max_retries = settings.reader_max_retries
         self.timeout_s = settings.reader_timeout_s
         self.deadline_s = settings.reader_deadline_s
+        self.hedge_s = settings.reader_hedge_s
         self.zone = _wearer_zone(settings.wearer_tz)
-        self.fallback = CaptionOnlyReader()
+        self.fallback = CaptionOnlyReader(top=None, zone=self.zone)
         self.extra_body: dict[str, Any] = json.loads(settings.reader_extra_body) if settings.reader_extra_body else {}
         self.json_mode = (
             settings.reader_json_mode.lower() if settings.reader_json_mode.lower() in _JSON_MODES else "off"
@@ -335,6 +363,9 @@ class VLMReader(Reader):
         return out
 
     async def _read_chunk(self, query: str, tokens: list[MemoryToken], now: float) -> ReaderOutput:
+        """Primary model first; if it hasn't answered after `hedge_s` (healthy calls take ~3.1 s, hung ones
+        never do) or fails fast, the fallback model runs too and the first good JSON wins. Everything
+        shares one wall-clock deadline, after which the chunk degrades to captions-only."""
         body: dict[str, Any] = {
             "model": self.model,
             "messages": [
@@ -345,25 +376,78 @@ class VLMReader(Reader):
             "temperature": 0,
             **self.extra_body,
         }
-        json_mode = self.json_mode
-        if fmt := response_format(json_mode):
-            body["response_format"] = fmt
-        # one key per chunk, reused on retries so a slow-but-successful first attempt is not billed twice
-        headers = {**self.headers, "Idempotency-Key": f"megamind-reader-{uuid.uuid4()}"}
-        known = {t.id for t in tokens}
-        calls = 0
-        downgrades = 0
-        last_err: Exception | None = None
+        st = _ChunkState(json_mode=self.json_mode, known={t.id for t in tokens})
+        # one key per (chunk, model), reused on retries so a slow-but-successful attempt is not billed twice
+        key = f"megamind-reader-{uuid.uuid4()}"
+        t_start = time.perf_counter()
+        deadline = t_start + self.deadline_s
+        hedge_at = t_start + self.hedge_s if self.fallback_model and self.hedge_s > 0 else None
+
+        def launch(model: str, suffix: str, handoff: bool) -> asyncio.Task[ReaderOutput | None]:
+            headers = {**self.headers, "Idempotency-Key": key + suffix}
+            return asyncio.create_task(self._attempts({**body, "model": model}, headers, deadline, st, handoff))
+
+        primary = launch(self.model, "", handoff=bool(self.fallback_model))
+        running: set[asyncio.Task[ReaderOutput | None]] = {primary}
+        fallback: asyncio.Task[ReaderOutput | None] | None = None
+        result: ReaderOutput | None = None
+        try:
+            while running:
+                wake = deadline if fallback is not None or hedge_at is None else min(deadline, hedge_at)
+                done, _ = await asyncio.wait(
+                    running, timeout=max(0.0, wake - time.perf_counter()), return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    running.discard(task)
+                    try:
+                        out = task.result()
+                    except Exception as e:  # noqa: BLE001 - never let a reader bug kill the voice turn
+                        st.last_err, out = e, None
+                    if out is not None and result is None:
+                        result = out
+                        if task is fallback:
+                            result.usage["fallback_model"] = 1
+                if result is not None or time.perf_counter() >= deadline:
+                    break
+                hedge_due = hedge_at is not None and time.perf_counter() >= hedge_at
+                if fallback is None and self.fallback_model and not st.fatal and (not running or hedge_due):
+                    st.hedged = bool(running)
+                    if st.hedged:
+                        log.info(
+                            "reader %s slow after %.1f s, hedging on %s", self.model, self.hedge_s, self.fallback_model
+                        )
+                    fallback = launch(self.fallback_model, "-fallback", handoff=False)
+                    running.add(fallback)
+        finally:
+            for task in running:
+                task.cancel()
+            await asyncio.gather(*running, return_exceptions=True)
+        if result is not None:
+            result.calls = st.calls
+            if st.hedged:
+                result.usage["hedged"] = 1
+            return result
+        log.warning("reader degraded to captions after %d call(s): %r", st.calls, st.last_err or "deadline")
+        fb = await self.fallback.read(query, tokens, now=now)
+        fb.degraded, fb.calls = True, st.calls
+        return fb
+
+    async def _attempts(
+        self, body: dict[str, Any], headers: dict[str, str], deadline: float, st: _ChunkState, handoff: bool
+    ) -> ReaderOutput | None:
+        """Calls one model until it answers (-> output) or gives up (-> None). `handoff`: the fallback model
+        is waiting, so give up on capacity errors / hangs / garbage at once instead of retrying here."""
+        model = body["model"]
         attempt = 0
-        used_fallback = False
-        # wall-clock budget for the whole chunk (all attempts): the voice turn must not wait 2x timeout
-        deadline = time.perf_counter() + self.deadline_s
         while attempt <= self.max_retries:
             remaining = deadline - time.perf_counter()
             if remaining < _MIN_ATTEMPT_S:
-                last_err = last_err or TimeoutError("reader deadline")
-                break
-            calls += 1
+                st.last_err = st.last_err or TimeoutError("reader deadline")
+                return None
+            body.pop("response_format", None)
+            if fmt := response_format(st.json_mode):
+                body["response_format"] = fmt
+            st.calls += 1
             t0 = time.perf_counter()
             budget = min(self.timeout_s, remaining)
             try:
@@ -378,57 +462,53 @@ class VLMReader(Reader):
                 r.raise_for_status()
                 data = r.json()
                 text = data["choices"][0]["message"]["content"] or ""
-                answer, conf, items = parse_reader_json(text, known)
+                answer, conf, items = parse_reader_json(text, st.known)
                 usage = {k: int(v) for k, v in (data.get("usage") or {}).items() if isinstance(v, int | float)}
-                if used_fallback:
-                    usage["fallback_model"] = 1
                 return ReaderOutput(
                     evidence=answer,
                     confidence=conf,
                     cited_ids=[i.id for i in items],
                     items=items,
                     latency_ms=(time.perf_counter() - t0) * 1000,
-                    calls=calls,
                     usage=usage,
                 )
             except httpx.HTTPStatusError as e:
-                last_err = e
+                st.last_err = e
                 code = e.response.status_code
-                if 400 <= code < 500 and code not in (408, 409, 429):
+                if code in (401, 403):
+                    st.fatal = True  # same key for both models: degrade now
+                    log.warning("reader HTTP %d on %s (auth), degrading", code, model)
+                    return None
+                if code in (400, 422):
                     # endpoint rejects the request shape: most likely the response_format. Downgrade
-                    # schema -> object -> off (does not consume the retry budget), then give up.
-                    if json_mode != "off" and downgrades < len(_JSON_MODES) - 1:
-                        json_mode = _downgrade(json_mode)
-                        downgrades += 1
-                        body.pop("response_format", None)
-                        if fmt := response_format(json_mode):
-                            body["response_format"] = fmt
-                        log.warning("reader HTTP %d, retrying with json_mode=%s", code, json_mode)
+                    # schema -> object -> off (does not consume the retry budget), then give up on both models.
+                    if st.json_mode != "off":
+                        st.json_mode = _downgrade(st.json_mode)
+                        log.warning("reader HTTP %d, retrying with json_mode=%s", code, st.json_mode)
                         continue
-                    break
-                if code in (429, 503) and self.fallback_model and not used_fallback:
-                    # capacity problem on the primary pool: retry on the fallback model (different pool)
-                    used_fallback, body["model"] = True, self.fallback_model
-                    log.warning("reader HTTP %d on %s, retrying on %s", code, self.model, self.fallback_model)
-                    continue
+                    st.fatal = True
+                    return None
+                if 400 <= code < 500 and code not in (408, 409, 429):
+                    return None  # e.g. 404 unknown model: the other model may still work
+                if handoff and code in (429, 503):
+                    log.warning("reader HTTP %d on %s, handing over to the fallback model", code, model)
+                    return None
                 if attempt < self.max_retries:
                     wait = _retry_after_s(e.response)
                     if deadline - time.perf_counter() - wait < _MIN_ATTEMPT_S:
-                        break
+                        return None
                     await asyncio.sleep(wait)
             except httpx.TimeoutException as e:
-                last_err = e
-                if self.fallback_model and not used_fallback:
-                    # a slow primary pool: spend the retry on the fallback model rather than queueing again
-                    used_fallback, body["model"] = True, self.fallback_model
+                st.last_err = e
+                if self.fallback_model:
+                    return None  # a hung pool: re-queueing on it rarely beats the deadline
             except (httpx.TransportError, KeyError, ValueError, json.JSONDecodeError) as e:
-                last_err = e
+                st.last_err = e
+                if handoff:
+                    return None
             attempt += 1
-            log.warning("reader attempt %d/%d failed: %r", attempt, self.max_retries + 1, last_err)
-        log.warning("reader degraded to captions after %d call(s): %r", calls, last_err)
-        fb = await self.fallback.read(query, tokens)
-        fb.degraded, fb.calls = True, calls
-        return fb
+            log.warning("reader %s attempt %d/%d failed: %r", model, attempt, self.max_retries + 1, st.last_err)
+        return None
 
 
 def build_reader(settings: Settings) -> Reader:

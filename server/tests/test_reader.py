@@ -223,7 +223,7 @@ async def test_timeout_degrades_to_captions(tmp_path):
     out = await s.reader().read("q", toks)
     assert out.degraded and out.calls == 2
     assert out.confidence == "low" and out.cited_ids == ["t00", "t01"]
-    assert "[t00] caption 0" in out.evidence
+    assert out.evidence.startswith("[t00] ") and "caption 0" in out.evidence
 
 
 async def test_5xx_then_success_retries(tmp_path):
@@ -289,9 +289,9 @@ async def test_5xx_on_both_models_degrades(tmp_path):
 
 async def test_garbage_output_degrades(tmp_path):
     toks = _tokens(tmp_path, 1)
-    s = Scripted([_completion("I am not JSON"), _completion("still not")])
+    s = Scripted([_completion("I am not JSON"), _completion("still not"), _completion("nope")])
     out = await s.reader().read("q", toks)
-    assert out.degraded and out.calls == 2
+    assert out.degraded and out.calls == 3  # primary hands over at once; the fallback gets its retry
 
 
 async def test_empty_tokens_short_circuits(tmp_path):
@@ -381,3 +381,94 @@ async def test_retry_after_longer_than_the_deadline_degrades_instead_of_sleeping
     s = Scripted([429, _completion({"answer": "ok", "evidence": [{"id": "t00"}], "confidence": "high"})])
     out = await s.reader(_settings(reader_fallback_model="", reader_deadline_s=1.8)).read("q", toks)
     assert out.degraded and out.calls == 1 and slept == []
+
+
+class ByModel(Scripted):
+    """Async handler: per-model delay (None = hang until cancelled) then a canned answer."""
+
+    def __init__(self, delays: dict[str, float | None], answers: dict[str, object] | None = None):
+        super().__init__([])
+        self.delays, self.answers = delays, answers or {}
+
+    async def handler(self, request):
+        self.requests.append(request)
+        model = json.loads(request.content)["model"]
+        delay = self.delays[model]
+        await asyncio.sleep(3600 if delay is None else delay)
+        ans = self.answers.get(model, {"answer": f"from {model}", "evidence": [{"id": "t00"}], "confidence": "high"})
+        if isinstance(ans, int):
+            return httpx.Response(ans, json={"error": {"message": "nope"}})
+        return httpx.Response(200, json=_completion(ans))
+
+
+PRIMARY, FALLBACK = "google/gemma-4-31B-it", "nvidia/Gemma-4-31B-IT-NVFP4"
+
+
+def test_default_deadlines_leave_room_for_the_fallback(monkeypatch):
+    for var in ("READER_HEDGE_S", "READER_DEADLINE_S", "READER_TIMEOUT_S"):
+        monkeypatch.delenv(var, raising=False)
+    s = Settings(_env_file=None)
+    healthy_call_s = 3.1  # Sail Gemma asap, measured (issue #66)
+    assert s.reader_hedge_s > healthy_call_s  # healthy primaries never pay for a second call
+    assert s.reader_hedge_s + healthy_call_s <= s.reader_deadline_s <= s.reader_timeout_s
+
+
+async def test_hung_primary_is_hedged_on_the_fallback_model(tmp_path):
+    toks = _tokens(tmp_path, 1)
+    s = ByModel({PRIMARY: None, FALLBACK: 0.1})
+    t0 = asyncio.get_running_loop().time()
+    out = await s.reader(_settings(reader_hedge_s=0.2, reader_deadline_s=2.0, reader_timeout_s=2.0)).read("q", toks)
+    elapsed = asyncio.get_running_loop().time() - t0
+    assert not out.degraded and out.evidence == f"from {FALLBACK}"
+    assert out.usage["fallback_model"] == 1 and out.usage["hedged"] == 1 and out.calls == 2
+    assert elapsed < 1.0  # hedge (0.2) + fallback (0.1), not the 2 s deadline
+    keys = {r.headers["idempotency-key"] for r in s.requests}
+    assert len(keys) == 2  # the hedge is a different request, not a replay of the primary
+
+
+async def test_primary_finishing_after_the_hedge_still_wins(tmp_path):
+    toks = _tokens(tmp_path, 1)
+    s = ByModel({PRIMARY: 0.3, FALLBACK: None})
+    out = await s.reader(_settings(reader_hedge_s=0.1, reader_deadline_s=2.0, reader_timeout_s=2.0)).read("q", toks)
+    assert out.evidence == f"from {PRIMARY}" and out.usage["hedged"] == 1 and "fallback_model" not in out.usage
+
+
+async def test_fast_primary_never_starts_the_fallback(tmp_path):
+    toks = _tokens(tmp_path, 1)
+    s = ByModel({PRIMARY: 0.05, FALLBACK: 0.05})
+    out = await s.reader(_settings(reader_hedge_s=0.5)).read("q", toks)
+    assert out.evidence == f"from {PRIMARY}" and out.calls == 1 and "hedged" not in out.usage
+
+
+async def test_both_models_hung_degrade_at_the_deadline(tmp_path):
+    toks = _tokens(tmp_path, 4)
+    s = ByModel({PRIMARY: None, FALLBACK: None})
+    t0 = asyncio.get_running_loop().time()
+    out = await s.reader(_settings(reader_hedge_s=0.1, reader_deadline_s=1.2, reader_timeout_s=5.0)).read("q", toks)
+    assert out.degraded and out.calls == 2
+    assert asyncio.get_running_loop().time() - t0 < 1.6
+
+
+async def test_auth_error_degrades_without_retrying(tmp_path):
+    toks = _tokens(tmp_path, 1)
+    s = Scripted([401])
+    out = await s.reader().read("q", toks)
+    assert out.degraded and out.calls == 1 and len(s.requests) == 1
+
+
+async def test_degraded_evidence_lists_every_hit_with_its_ocr(tmp_path):
+    """#68: the answer was in rank 4-5; captions-only used to pass only the top 3."""
+    toks = _tokens(tmp_path, 6)
+    toks[4].ocr_text = "VISITORS CHECK IN\nAT FRONT DESK"
+    s = Scripted([httpx.ConnectError("down")] * 4)
+    out = await s.reader(_settings(wearer_tz="America/Los_Angeles")).read("lobby sign", toks)
+    assert out.degraded
+    lines = out.evidence.splitlines()
+    assert len(lines) == 6 and lines[4].startswith("[t04] ")
+    assert "(text: VISITORS CHECK IN / AT FRONT DESK)" in lines[4]
+    assert out.cited_ids == ["t00", "t01", "t02"]
+
+
+async def test_caption_only_reader_default_stays_top_3(tmp_path):
+    out = await CaptionOnlyReader().read("q", _tokens(tmp_path, 6, thumbs=False))
+    assert len(out.evidence.splitlines()) == 3 and out.evidence.startswith("[t00] caption 0")

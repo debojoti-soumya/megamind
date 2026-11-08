@@ -401,3 +401,57 @@ async def test_ocr_match_skips_reader_on_claude_path(recall):
         payload["evidence"].startswith("[exact text match") and "Standup 10am / Ship demo Sunday" in payload["evidence"]
     )
     assert stats.extra["reader_skipped"] == 1
+
+
+def _plan(q: str):
+    from datetime import UTC, datetime
+
+    from megamind.retrieval.planner import plan_query
+
+    # 2026-11-07 12:00 in Los Angeles
+    return plan_query(q, now=datetime(2026, 11, 7, 20, 0, tzinfo=UTC), tz="America/Los_Angeles")
+
+
+def test_prefetch_reusable_counts_stems_and_the_planner_rewrite():
+    """#70: Claude's paraphrases ("parked car parking spot") searched the same thing as the raw question."""
+    q = "where did I park"
+    assert not prefetch_reusable({"query": "parked car parking spot"}, q)  # no plan: question words only
+    assert prefetch_reusable({"query": "parked car parking spot"}, q, _plan(q))  # rewrite has park/parking/car
+    q = "what did I eat for breakfast"
+    assert prefetch_reusable({"query": "breakfast food eating"}, q, _plan(q))
+    q = "how much was the total?"
+    assert not prefetch_reusable({"query": "self-checkout total price receipt"}, q, _plan(q))
+
+
+def test_prefetch_reusable_accepts_time_bounds_matching_the_planner_window():
+    q = "when did I make coffee this morning"
+    plan = _plan(q)  # 05:00-12:00 local
+    morning = {"query": "coffee", "time_from": "2026-11-07T06:00:00-08:00", "time_to": "2026-11-07T12:00:00-08:00"}
+    assert prefetch_reusable(morning, q, plan)
+    assert prefetch_reusable({**morning, "time_to": None}, q, plan)  # open end -> planner's end
+    yesterday = {**morning, "time_from": "2026-11-06T06:00:00-08:00", "time_to": "2026-11-06T12:00:00-08:00"}
+    assert not prefetch_reusable(yesterday, q, plan)
+    assert not prefetch_reusable({**morning, "time_from": "not a time"}, q, plan)
+    q = "where are my keys"  # no time in the question: Claude's bounds can't match the prefetch
+    assert not prefetch_reusable({"query": "keys", "time_from": "2026-11-07T06:00:00-08:00"}, q, _plan(q))
+
+
+async def test_follow_up_answered_from_history_keeps_its_citations(recall):
+    """#70: turn 2 answers from turn 1's tool result with no tool call; its <cites> must still resolve."""
+    script = ScriptedAnthropic(
+        [
+            _message([tool_use({"query": "keys"})], stop_reason="tool_use"),
+            _message([text("On the kitchen counter. <cites>t_keys</cites>")]),
+            _message([text("Next to the coffee machine. <cites>t_keys</cites>")]),
+        ]
+    )
+    agent = _spy_agent(SpyRecall(recall), script, recall_prefetch=False)
+    first = await agent.chat("s", "where are my keys", "dev1")
+    follow = await agent.chat("s", "and what was next to them?", "dev1")
+    assert [c.id for c in first.cited] == ["t_keys"]
+    assert not follow.tool_calls and [c.id for c in follow.cited] == ["t_keys"]
+    other = ScriptedAnthropic([_message([text("Hmm. <cites>t_keys</cites>")])])
+    agent._client = other.client()
+    assert not (await agent.chat("other-session", "what was next to them?", "dev1")).cited  # no cross-session leak
+    agent.reset("s")
+    assert "s" not in agent.cite_histories
