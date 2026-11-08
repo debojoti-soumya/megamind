@@ -170,6 +170,28 @@ async def test_purge(store, tmp_path):
     assert await store.purge() == 0
 
 
+async def test_purge_erases_bytes_and_old_versions(lance, tmp_path):
+    """A LanceDB delete only hides rows; purge must also drop them from data files and from older versions."""
+    secret = "ZQX-PURGED-SECRET"
+    await lance.add_many(
+        [_token(i, device="a" if i % 3 == 0 else "b", ocr=secret if i % 3 == 0 else "") for i in range(9)]
+    )
+    for i in range(9, 12):  # more versions that still reference the secret rows
+        await lance.add(_token(i, device="b"))
+    root = tmp_path / "lancedb"
+
+    def on_disk() -> bool:
+        return any(secret.encode() in p.read_bytes() for p in root.rglob("*") if p.is_file())
+
+    assert on_disk()
+    assert await lance.purge("a") == 3
+    assert not on_disk()
+    assert len(lance._table.list_versions()) <= 2  # nothing left to time-travel back to
+    assert await lance.count() == 9 and await lance.count("a") == 0
+    await lance.add(_token(20, device="a"))
+    assert await lance.count("a") == 1 and (await lance.get("tok0001")) is not None
+
+
 async def test_fts_index_sees_rows_added_after_build(lance):
     await lance.add(_token(0, caption="first row builds the index"))
     assert any(idx.columns == ["search_text"] for idx in lance._table.list_indices())
