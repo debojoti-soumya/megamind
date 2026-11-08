@@ -187,6 +187,9 @@ namespace Megamind
 
         public void ScaleUp() => SetUiScale(NextScale(+1));
         public void ScaleDown() => SetUiScale(NextScale(-1));
+        /// <summary>1x -> 1.25x -> 1.5x -> 2x -> 1x (menu "Text size" entry).</summary>
+        public void CycleScale() => SetUiScale(NearestStep() == UiScaleSteps.Length - 1 ? UiScaleSteps[0] : UiScaleSteps[NearestStep() + 1]);
+        public string UiScaleLabel => uiScale.ToString("0.##") + "x";
 
         public void SetUiScale(float scale)
         {
@@ -196,12 +199,14 @@ namespace Megamind
             ApplyScale();
         }
 
-        private float NextScale(int dir)
+        private float NextScale(int dir) => UiScaleSteps[Mathf.Clamp(NearestStep() + dir, 0, UiScaleSteps.Length - 1)];
+
+        private int NearestStep()
         {
             int best = 0;
             for (int i = 0; i < UiScaleSteps.Length; i++)
                 if (Mathf.Abs(UiScaleSteps[i] - uiScale) < Mathf.Abs(UiScaleSteps[best] - uiScale)) best = i;
-            return UiScaleSteps[Mathf.Clamp(best + dir, 0, UiScaleSteps.Length - 1)];
+            return best;
         }
 
         private void ApplyScale() => transform.localScale = Vector3.one * (_baseScale * uiScale);

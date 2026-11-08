@@ -19,6 +19,8 @@ namespace Megamind
         public MegamindConfig config;
         public ChatPanel panel;
         public AudioSource speaker;
+        [Tooltip("Optional: short spoken commands (\"open menu\", \"pause recording\", ...) are executed instead of shown as an answer.")]
+        public PanelMenu menu;
 
         [Header("Push-to-talk")]
         public OVRInput.Button pushToTalk = OVRInput.Button.PrimaryIndexTrigger;
@@ -150,6 +152,8 @@ namespace Megamind
                 panel?.AddAssistantMessage("(bad response: " + e.Message + ")", null, true);
                 return;
             }
+            // STT happens inside /v1/chat, so voice commands can only be recognised from the returned transcript.
+            if (echoTranscript && menu != null && menu.TryVoiceCommand(resp.transcript)) return;
             if (echoTranscript && !string.IsNullOrEmpty(resp.transcript)) panel?.AddUserMessage(resp.transcript);
             panel?.AddAssistantMessage(resp.answer, resp.cited, false, resp.Confidence(), LastLatencySeconds);
             OnResponse?.Invoke(resp);
