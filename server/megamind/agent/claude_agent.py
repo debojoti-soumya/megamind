@@ -59,7 +59,7 @@ PREFETCH_MIN_TIME_IOU = 0.5  # Claude's time window vs the planner's window for 
 NOT_FOUND_ANSWER = "I don't have a memory of that."
 _CITES_RE = re.compile(r"\s*<cites>(.*?)</cites>\s*", re.DOTALL)
 
-SYSTEM_PROMPT = """You are Megamind, a calm assistant living in the wearer's AR headset. Your replies are
+_SYSTEM_HEAD = """You are Megamind, a calm assistant living in the wearer's AR headset. Your replies are
 spoken aloud by text-to-speech, so answer in one or two short plain sentences: no markdown,
 no lists, no token ids, no URLs.
 
@@ -68,9 +68,17 @@ wearer's headset cameras. Call it whenever a question depends on past perception
 object is, what some text said, who or what was there, what the wearer was doing earlier.
 Pass short keywords as query (the object, place or text), not the whole question.
 
-The wearer's local time is {local} ({tz}); in UTC that is {now}. Resolve relative times
+"""
+# CLAUDE_PROMPT_CACHE off: the clock is rendered into the system prompt (the request bodies before caching)
+_TIME_LIVE = """The wearer's local time is {local} ({tz}); in UTC that is {now}. Resolve relative times
 ("ten minutes ago", "this morning", "yesterday") against the LOCAL time and pass them as
-ISO-8601 with the UTC offset, e.g. {example}. Leave time_from/time_to null when the
+ISO-8601 with the UTC offset, e.g. {example}."""
+# CLAUDE_PROMPT_CACHE on: the system prompt is byte-stable (cacheable across turns); the clock travels with the
+# question as the first block of the user message (CLOCK_BLOCK), after the cached history
+_TIME_STATIC = """The wearer's timezone is {tz}; the current local time and its UTC equivalent are given with
+each question. Resolve relative times ("ten minutes ago", "this morning", "yesterday") against that
+LOCAL time and pass them as ISO-8601 with the UTC offset, in the format shown there."""
+_SYSTEM_TAIL = """ Leave time_from/time_to null when the
 question has no time hint. You may call the tool more than once per question, for example to
 widen the time window or rephrase the query when the first result is not_found or low
 confidence, but stop after a few attempts.
@@ -88,6 +96,13 @@ After your spoken answer, on the same message, append the token ids of the evide
 answer relies on inside a trailer like <cites>id1,id2</cites>, including ids from tool results
 earlier in this conversation when you answer from those. The trailer is stripped before
 speech. Omit it when you cite nothing."""
+SYSTEM_PROMPT = _SYSTEM_HEAD + _TIME_LIVE + _SYSTEM_TAIL
+STATIC_SYSTEM_PROMPT = _SYSTEM_HEAD + _TIME_STATIC + _SYSTEM_TAIL
+CLOCK_BLOCK = (
+    "The wearer's local time is {local} ({tz}); in UTC that is {now}. "
+    "For example, one hour ago in ISO-8601 with the UTC offset is {example}."
+)
+EPHEMERAL = {"type": "ephemeral"}
 
 
 @dataclass
@@ -116,17 +131,53 @@ def _zone(tz_name: str) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
-def render_system_prompt(now: float | None, tz_name: str) -> str:
+def _clock_fields(now: float | None, tz_name: str) -> dict[str, str]:
     utc = datetime.fromtimestamp(now, UTC) if now is not None else datetime.now(UTC)
     zone = _zone(tz_name)
     local = utc.astimezone(zone)
     example = local.replace(hour=max(0, local.hour - 1), minute=0, second=0, microsecond=0)
-    return SYSTEM_PROMPT.format(
-        local=local.strftime("%A %Y-%m-%d %H:%M:%S %Z"),
-        tz=zone.key,
-        now=utc.isoformat(timespec="seconds"),
-        example=example.isoformat(timespec="seconds"),
-    )
+    return {
+        "local": local.strftime("%A %Y-%m-%d %H:%M:%S %Z"),
+        "tz": zone.key,
+        "now": utc.isoformat(timespec="seconds"),
+        "example": example.isoformat(timespec="seconds"),
+    }
+
+
+def render_system_prompt(now: float | None, tz_name: str) -> str:
+    """The system prompt with the clock inside (CLAUDE_PROMPT_CACHE off; unchanged request bodies)."""
+    return SYSTEM_PROMPT.format(**_clock_fields(now, tz_name))
+
+
+def render_static_system_prompt(tz_name: str) -> str:
+    """The clock-free system prompt (CLAUDE_PROMPT_CACHE on): identical bytes every turn, so tools + system cache."""
+    return STATIC_SYSTEM_PROMPT.format(tz=_zone(tz_name).key)
+
+
+def render_clock_block(now: float | None, tz_name: str) -> str:
+    """The clock sentence that goes with the question (first block of the user message) when caching is on."""
+    return CLOCK_BLOCK.format(**_clock_fields(now, tz_name))
+
+
+def _mark_last_block(msg: dict) -> dict:
+    """A copy of `msg` whose last content block carries a cache breakpoint (string content becomes a text block)."""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return {**msg, "content": [{"type": "text", "text": content, "cache_control": EPHEMERAL}]}
+    if not isinstance(content, list) or not content:
+        return msg
+    return {**msg, "content": [*content[:-1], {**content[-1], "cache_control": EPHEMERAL}]}
+
+
+def with_cache_breakpoints(prior: list[dict], turn: list[dict]) -> list[dict]:
+    """`prior + turn` with per-request cache markers (the stored history is never mutated): one on the last block
+    of the prior history (so this turn reads back everything the previous turn wrote, and the next turn can read
+    this turn's answer) and one on the last block of this turn's latest user message (the question, the recall
+    result attached to it, or the latest tool_result: text, image and tool_result blocks all take a marker), so
+    the next round reads back this call. With the system breakpoint that is 3 of the 4 allowed; the API looks
+    back from each marker for the entry the previous request wrote."""
+    out = [*prior[:-1], _mark_last_block(prior[-1])] if prior else []
+    return [*out, *turn[:-1], _mark_last_block(turn[-1])] if turn else out
 
 
 def _relative(ts: float, now: float) -> str:
@@ -465,8 +516,8 @@ class ClaudeAgent:
                 resp = await self._no_llm_fallback(text, device_id, stats, now=now, emit=emit)
         stats.total_ms = (time.perf_counter() - t0) * 1000
         log.info(
-            "req=%s session=%s path=%s llm_calls=%d tool_calls=%d in_tok=%d out_tok=%d "
-            "llm_ms=%.0f tool_ms=%.0f total_ms=%.0f",
+            "req=%s session=%s path=%s llm_calls=%d tool_calls=%d in_tok=%d out_tok=%d cache_read=%d "
+            "cache_write=%d llm_ms=%.0f tool_ms=%.0f total_ms=%.0f",
             stats.request_id,
             session_id,
             stats.path,
@@ -474,6 +525,8 @@ class ClaudeAgent:
             stats.tool_calls,
             stats.input_tokens,
             stats.output_tokens,
+            stats.extra.get("cache_read_input_tokens", 0),
+            stats.extra.get("cache_creation_input_tokens", 0),
             stats.llm_ms,
             stats.tool_ms,
             stats.total_ms,
@@ -492,6 +545,14 @@ class ClaudeAgent:
     ) -> ChatResponse:
         assert self._client is not None
         now = time.time() if now is None else now
+        cache = self.settings.claude_prompt_cache
+        tz = self.settings.wearer_tz
+        system: str | list[dict] = (
+            # byte-stable (no clock) and marked, so tools + system are one cache entry shared by every turn
+            [{"type": "text", "text": render_static_system_prompt(tz), "cache_control": EPHEMERAL}]
+            if cache
+            else self.system_prompt(now)
+        )
         turn: list[dict] = [{"role": "user", "content": text}]
         prior = [m for t in self.histories.get(session_id, []) for m in t]
         tool_calls: list[ToolCallRecord] = []
@@ -575,27 +636,26 @@ class ClaudeAgent:
                 t_tool = time.perf_counter()
                 r, prefetch, stats.extra["prefetch"] = await prefetch, None, "first"
                 await first_result(r, t_tool)
-            # opt-in prompt caching when the turn opens with Claude's tool-picking call: a breakpoint on the question
-            # block on every call of the turn, so call 1 writes tools + system + history + question and the tool
-            # round(s) read it back (a cache read needs a breakpoint in the reading request too). The system prompt
-            # carries the time, so turns can't share an entry. Request bodies are unchanged when the flag is off.
-            cache_question = (
-                self.settings.claude_prompt_cache and len(turn) == 1 and isinstance(turn[0]["content"], str)
-            )
+            # prompt caching (CLAUDE_PROMPT_CACHE, default on): tools + clock-free system cache together; markers on
+            # the prior history and this turn's latest user message let each call read back what the previous call
+            # (and the previous turn) wrote. The clock rides with the question as the first block of this turn's
+            # first user message (after first_result's rewrite), stored with the turn so the next turn re-sends the
+            # same bytes. Off = the request bodies exactly as before caching.
+            if cache:
+                first = turn[0]["content"]
+                blocks = first if isinstance(first, list) else [{"type": "text", "text": first}]
+                clock = {"type": "text", "text": render_clock_block(now, tz)}
+                turn[0] = {"role": "user", "content": [clock, *blocks]}
             for _round in range(MAX_TOOL_ROUNDS + 1):
                 t_llm = time.perf_counter()
-                messages = prior + turn
-                if cache_question:
-                    question = {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}
-                    messages = [*prior, {"role": "user", "content": [question]}, *turn[1:]]
                 req = {
                     "model": model,
                     "max_tokens": MAX_TOKENS,
-                    "system": self.system_prompt(now),
+                    "system": system,
                     "tools": [RECALL_MEMORY_TOOL],
-                    "messages": messages,
+                    "messages": with_cache_breakpoints(prior, turn) if cache else prior + turn,
                 }
-                msg = await self._create(req, emit)
+                msg = await self._create(req, emit, stats.request_id)
                 stats.llm_ms += (time.perf_counter() - t_llm) * 1000
                 stats.model_calls += 1
                 stats.input_tokens += msg.usage.input_tokens
@@ -654,23 +714,46 @@ class ClaudeAgent:
         del cite_hist[:-MAX_TURNS]
         return ChatResponse(transcript=text, answer=answer, cited=cited, tool_calls=tool_calls)
 
-    async def _create(self, req: dict, emit: _Emitter | None):
-        """One Messages API call: `messages.create`, or `messages.stream` (same parameters) forwarding text deltas."""
+    async def _create(self, req: dict, emit: _Emitter | None, request_id: str = ""):
+        """One Messages API call: `messages.create`, or `messages.stream` (same parameters) forwarding text deltas.
+        The streamed call logs when the API's first event / first and last text delta arrived (ms since the request
+        went out), which tells a live run at once whether the API delivered the answer progressively or in a burst."""
         assert self._client is not None
         if emit is None:
             return await self._client.messages.create(**req)
         filt = _TrailerFilter()
         n_text = 0
+        t0 = time.perf_counter()
+        first_ms: float | None = None
+        first_text_ms: float | None = None
+        last_text_ms: float | None = None
+        n_deltas = 0
         async with self._client.messages.stream(**req) as stream:
             async for ev in stream:
+                if first_ms is None:
+                    first_ms = (time.perf_counter() - t0) * 1000
                 if ev.type == "content_block_start" and ev.content_block.type == "text":
                     if n_text:
                         await emit.delta(filt.feed("\n"))  # answer_text joins text blocks with newlines
                     n_text += 1
                 elif ev.type == "text":
+                    n_deltas += 1
+                    last_text_ms = (time.perf_counter() - t0) * 1000
+                    if first_text_ms is None:
+                        first_text_ms = last_text_ms
                     await emit.delta(filt.feed(ev.text))
             msg = await stream.get_final_message()
         await emit.delta(filt.flush())
+        fmt = lambda v: "-" if v is None else f"{v:.0f}"  # noqa: E731
+        log.info(
+            "req=%s stream: first_event_ms=%s first_text_ms=%s text_deltas=%d last_text_ms=%s total_ms=%.0f",
+            request_id,
+            fmt(first_ms),
+            fmt(first_text_ms),
+            n_deltas,
+            fmt(last_text_ms),
+            (time.perf_counter() - t0) * 1000,
+        )
         return msg
 
     async def _recall_now(self, text: str, device_id: str | None, now: float, stats: TurnStats) -> RecallResult | None:

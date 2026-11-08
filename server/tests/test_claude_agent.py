@@ -107,6 +107,9 @@ def _settings(**cfg) -> Settings:
     cfg.setdefault("recall_prefetch", True)
     cfg.setdefault("reader_skip_on_ocr", True)
     cfg.setdefault("recall_first", False)  # the scripted tests below drive Claude's first (tool-picking) call
+    # these tests assert the pre-caching request shape (clock in the system prompt, plain string question); the
+    # cached shape (default on) is covered in test_chat_stream.py
+    cfg.setdefault("claude_prompt_cache", False)
     return Settings(_env_file=None, **cfg)
 
 

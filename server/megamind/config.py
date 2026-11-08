@@ -53,10 +53,11 @@ class Settings(BaseSettings):
     recall_first: bool = (
         True  # standalone recall questions: the prefetch is Claude's first tool result (no picking call)
     )
-    # opt-in prompt caching within a turn that starts with Claude's tool-picking call: a cache breakpoint on the
-    # question, so the tool round re-reads tools + system + history. Never changes answers; off (default) = the
-    # request bodies are exactly as before
-    claude_prompt_cache: bool = False
+    # prompt caching (default on): a clock-free system prompt cached with the tools, the clock sent with the
+    # question, and breakpoints on the prior history and the latest tool result, so every call reads back what the
+    # previous call / turn wrote (history is the bulk of the input). Never changes answers; off = the request
+    # bodies exactly as before caching (clock in the system prompt, plain string question, no cache_control)
+    claude_prompt_cache: bool = True
     # "right now" questions (megamind.live.is_now_question) with live frames buffered: skip embedding + retrieval
     # and hand Claude only the newest live frames + speech as its first tool result (it can still re-query)
     now_fast_path: bool = True
