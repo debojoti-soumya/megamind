@@ -314,6 +314,20 @@ Every device that has stored memory tokens, most recently active first (by `last
 stored (enriched) tokens count: frames still in the enrichment queue or only in the replay buffer do not.
 `{ "devices": [] }` on an empty store.
 
+## `GET /turns?since=...&until=...&device_id=...&limit=200`
+Every chat turn (`POST /chat` and `POST /chat/stream`, typed or voice) with its wall-clock times, oldest first, for
+captioning a recording of the headset view (`server/tools/make_captions.py`, `headset/tools/record-headset.sh`).
+```json
+{ "turns": [ { "started_at": 1731000102.0, "ended_at": 1731000103.9, "question": "where did I leave my keys?",
+               "answer": "In the ceramic bowl on the hallway table, about ten minutes ago.", "voice": true,
+               "session_id": "s1", "device_id": "quest3-1" } ] }
+```
+`started_at` is when the request arrived (a voice question was spoken just before it), `ended_at` when the answer
+(text and audio) was ready. `since` keeps turns that ended at or after it, `until` those that started at or before
+it (epoch s). The newest 1000 are kept in memory and every turn is appended to `TURN_LOG_PATH` (default
+`<AUDIO_DIR>/../turns.jsonl`, on the Modal Volume), so they survive restarts. `TURN_LOG=false` keeps nothing and
+returns `{ "turns": [] }`. A voice command handled by `POST /stt` never reaches Claude and is not listed.
+
 ## `GET /replay.mp4?device_id=...&from=...&to=...`
 Moment replay: an H.264 mp4 of **every** frame received from the device in `[from, to]` (not just the
 keyframes the filter kept), each frame held until the next, so mp4 offset 0 = the first frame's `ts`.

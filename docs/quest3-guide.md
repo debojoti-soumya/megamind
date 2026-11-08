@@ -67,6 +67,26 @@ Capture pauses on its own only when the app is really backgrounded (HUD `capture
 
 Megamind draws its own **REC** dot and status strip in the chat panel header (`CaptureHud.cs` is the data source). Your casts and recordings will show it, which is intended.
 
+### Recording the demo video (headset view + captions)
+
+The server logs every chat turn's question, answer and wall-clock times (`GET /v1/turns`, `TURN_LOG=true` by
+default), so a recording of the headset view can be captioned with what was really asked and answered.
+`headset/tools/record-headset.sh` wraps the steps:
+
+1. Record in the headset (*Camera* → *Record video*, or hold the Meta button + right trigger). The clip includes the
+   passthrough view, the chat panel and the spoken answers. **Record or cast, not both** [M-cast-ts].
+   Or record from the laptop over adb: `headset/tools/record-headset.sh mirror take1.mp4` (needs `scrcpy`; the
+   Quest image is both eyes side by side, so set `CROP=W:H:X:Y` to one eye; verify on device).
+2. Copy the newest in-headset recording to the laptop: `headset/tools/record-headset.sh pull takes/`
+   (reads `/sdcard/Oculus/VideoShots`; set `SHOTS=` if your headset saves elsewhere; verify on device).
+3. Caption it: `MEGAMIND_SERVER=https://... MEGAMIND_TOKEN=... headset/tools/record-headset.sh captions takes/<clip>.mp4`
+   writes `<clip>.srt` (for CapCut / DaVinci / Premiere) and `<clip>-captioned.mp4` with the captions burned in:
+   `Q: where did I leave my keys?` while the server works, then `A: In the bowl by the door… (1.9 s)`.
+
+The start time comes from the clip's `creation_time` tag, else its `YYYYMMDD-HHMMSS` file-name stamp (headset clock,
+`--tz`), else `--start`. If captions run early or late, re-run with `--offset 1.5` (seconds, positive = later).
+`--no-latency` drops the `(1.9 s)`. All options: `python server/tools/make_captions.py --help`.
+
 ---
 
 ## 2. Connections
