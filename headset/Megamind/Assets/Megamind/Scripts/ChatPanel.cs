@@ -53,6 +53,8 @@ namespace Megamind
         public Color thumbFailedColor = new Color(0.30f, 0.16f, 0.18f); // thumbnail that failed to download
 
         private readonly Queue<GameObject> _messages = new Queue<GameObject>();
+        private ChatBubble _draft;          // streaming answer bubble (POST /v1/chat/stream deltas), null when none
+        private bool _scrollPending;
         private bool _serverOk;
         private int _storeCount = -1;
         private string _serverHost = "";
@@ -92,11 +94,69 @@ namespace Megamind
         public void AddAssistantMessage(string text, List<Citation> cited, bool isError) => AddAssistantMessage(text, cited, isError, null, 0f);
 
         public void AddAssistantMessage(string text, List<Citation> cited, bool isError, string confidence, float latencySeconds)
+            => AddAssistantMessage(text, cited, isError, confidence, latencySeconds, 0f);
+
+        /// <summary>firstTextSeconds &gt; 0 (streamed answers): the meta line shows time to the first words too.</summary>
+        public void AddAssistantMessage(string text, List<Citation> cited, bool isError, string confidence, float latencySeconds,
+                                        float firstTextSeconds)
         {
             var b = AddAssistantBubble(text);
             if (isError) b.SetError(errorTextColor, errorBubbleColor);
+            AddAnswerDetails(cited, confidence, latencySeconds, firstTextSeconds);
+        }
+
+        /// <summary>Streaming answer text so far (POST /v1/chat/stream `delta`s), shown in one assistant bubble that
+        /// grows in place. "" hides the bubble (`reset`); FinishDraft / DiscardDraft end it.</summary>
+        public void SetDraft(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                if (_draft != null) _draft.gameObject.SetActive(false);
+                return;
+            }
+            if (_draft == null)
+            {
+                _draft = Instantiate(assistantBubblePrefab, content);
+                _draft.Text = text;
+                Track(_draft.gameObject);
+                return;
+            }
+            if (!_draft.gameObject.activeSelf) _draft.gameObject.SetActive(true);
+            _draft.Text = text;
+            RequestScroll();
+        }
+
+        public bool HasDraft => _draft != null;
+
+        /// <summary>The final answer replaces the draft text (it is authoritative) and gets the usual thumbnails and
+        /// meta line; without a draft this is AddAssistantMessage.</summary>
+        public void FinishDraft(string text, List<Citation> cited, string confidence, float latencySeconds, float firstTextSeconds)
+        {
+            var b = _draft;
+            _draft = null;
+            if (b == null)
+            {
+                AddAssistantMessage(text, cited, false, confidence, latencySeconds, firstTextSeconds);
+                return;
+            }
+            b.gameObject.SetActive(true);
+            b.transform.SetAsLastSibling(); // thumbnails/meta go right under it even if a system chip came in between
+            b.Text = text;
+            AddAnswerDetails(cited, confidence, latencySeconds, firstTextSeconds);
+            RequestScroll();
+        }
+
+        /// <summary>Drops the streaming bubble (the turn failed, or it was a voice command).</summary>
+        public void DiscardDraft()
+        {
+            if (_draft != null) Destroy(_draft.gameObject);
+            _draft = null;
+        }
+
+        private void AddAnswerDetails(List<Citation> cited, string confidence, float latencySeconds, float firstTextSeconds)
+        {
             AddCitations(cited);
-            AddMetaLine(confidence, latencySeconds);
+            AddMetaLine(confidence, latencySeconds, firstTextSeconds);
         }
 
         public void AddCitations(List<Citation> cited)
@@ -123,13 +183,17 @@ namespace Megamind
             }
         }
 
-        public void AddMetaLine(string confidence, float latencySeconds)
+        public void AddMetaLine(string confidence, float latencySeconds) => AddMetaLine(confidence, latencySeconds, 0f);
+
+        /// <summary>"0.9 s first · 2.4 s · high" under an answer; firstTextSeconds &gt; 0 only for streamed turns.</summary>
+        public void AddMetaLine(string confidence, float latencySeconds, float firstTextSeconds)
         {
             if (metaLinePrefab == null || (string.IsNullOrEmpty(confidence) && latencySeconds <= 0f)) return;
             var meta = Instantiate(metaLinePrefab, content);
             var t = meta.GetComponentInChildren<Text>();
-            if (t) t.text = (latencySeconds > 0f ? latencySeconds.ToString("0.0") + " s" : "")
-                          + (!string.IsNullOrEmpty(confidence) ? "  ·  " + confidence.Replace('_', ' ') : "");
+            if (t) t.text = (latencySeconds > 0f && firstTextSeconds > 0f ? firstTextSeconds.ToString("0.0") + " s first  \u00b7  " : "")
+                          + (latencySeconds > 0f ? latencySeconds.ToString("0.0") + " s" : "")
+                          + (!string.IsNullOrEmpty(confidence) ? "  \u00b7  " + confidence.Replace('_', ' ') : "");
             Track(meta.gameObject);
         }
 
@@ -143,7 +207,8 @@ namespace Megamind
 
         public void Clear()
         {
-            while (_messages.Count > 0) Destroy(_messages.Dequeue());
+            while (_messages.Count > 0) DestroyTracked(_messages.Dequeue());
+            _draft = null;
             if (emptyHint) emptyHint.SetActive(true);
         }
 
@@ -152,15 +217,30 @@ namespace Megamind
             if (emptyHint && emptyHint.activeSelf) emptyHint.SetActive(false);
             _messages.Enqueue(go);
             int cap = config != null ? config.maxTranscriptMessages : 40;
-            while (_messages.Count > cap) Destroy(_messages.Dequeue());
+            while (_messages.Count > cap) DestroyTracked(_messages.Dequeue());
+            RequestScroll();
+        }
+
+        private static void DestroyTracked(GameObject go)
+        {
+            if (go != null) Destroy(go); // a discarded draft is already gone
+        }
+
+        private void RequestScroll()
+        {
+            if (_scrollPending || !isActiveAndEnabled) return;
+            _scrollPending = true;
             StartCoroutine(ScrollToEnd());
         }
 
         private IEnumerator ScrollToEnd()
         {
             yield return null; // wait for layout
+            _scrollPending = false;
             if (scroll) scroll.verticalNormalizedPosition = 0f;
         }
+
+        private void OnDisable() => _scrollPending = false; // a pending ScrollToEnd stopped with the object
 
         private IEnumerator LoadThumb(RawImage target, string url)
         {

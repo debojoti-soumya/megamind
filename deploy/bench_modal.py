@@ -29,7 +29,12 @@ image = (
         copy=True,
         ignore=[".venv", ".env", "data", "**/__pycache__", "*.egg-info", ".pytest_cache"],
     )
-    .run_commands("pip install --no-cache-dir /app/server")
+    .add_local_dir(Path.home() / ".cache/coco/img", str(Path.home() / ".cache/coco/img"), copy=True)
+    .run_commands(
+        "pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu",
+        "pip install --no-cache-dir /app/server open-clip-torch>=2.24 transformers sentencepiece protobuf",
+        "python -c \"import open_clip; open_clip.create_model_and_transforms('ViT-B-16-SigLIP', pretrained='webli')\"",
+    )
 )
 app = modal.App("megamind-bench")
 secrets = [modal.Secret.from_name("megamind-providers")]
@@ -37,6 +42,14 @@ secrets = [modal.Secret.from_name("megamind-providers")]
 SAIL = {"READER_BASE_URL": "https://api.sailresearch.com/v1", "READER_PROVIDER": "vlm"}
 CONFIGS: dict[str, dict[str, str]] = {
     "defaults": {},
+    "coco_off": {
+        **{"_ARGS": "--dataset tools/data/coco_day.json", "EMBED_PROVIDER": "openai"},
+        "IMAGE_EMBED_PROVIDER": "none",
+    },
+    "coco_on": {
+        **{"_ARGS": "--dataset tools/data/coco_day.json", "EMBED_PROVIDER": "openai"},
+        "IMAGE_EMBED_PROVIDER": "openclip",
+    },
     "long_hybrid": {
         "_ARGS": "--dataset tools/data/long_week.json",
         "EMBED_PROVIDER": "openai",
@@ -60,6 +73,11 @@ CONFIGS: dict[str, dict[str, str]] = {
     "sail512_sonnet": {**SAIL, "READER_THUMB_MAX_PX": "512"},
     "sail960_sonnet": {**SAIL, "READER_THUMB_MAX_PX": "960"},
     "claude_sonnet": {"READER_PROVIDER": "claude", "READER_THUMB_MAX_PX": "960"},
+    "claude_sonnet_siglip": {
+        "READER_PROVIDER": "claude",
+        "READER_THUMB_MAX_PX": "960",
+        "IMAGE_EMBED_PROVIDER": "openclip",
+    },
     "claude_haiku": {"READER_PROVIDER": "claude", "READER_THUMB_MAX_PX": "960", "CLAUDE_MODEL": "claude-haiku-4-5"},
 }
 
