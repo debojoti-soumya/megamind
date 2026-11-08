@@ -22,9 +22,12 @@ namespace Megamind
         public float refreshSeconds = 0.25f;
         [Tooltip("A/X button or either hand's middle-finger pinch toggles capture on/off.")]
         public bool toggleWithButton = true;
+        [Tooltip("Hand-tracking hands for the middle-finger pinch toggle. Found automatically when empty.")]
+        public OVRHand leftHand, rightHand;
 
         private float _next;
         private Image _dot;
+        private bool _middlePinchHeld;
 
         private void Start()
         {
@@ -35,8 +38,21 @@ namespace Megamind
                 var rig = FindAnyObjectByType<OVRCameraRig>();
                 if (rig != null) head = rig.centerEyeAnchor != null ? rig.centerEyeAnchor : rig.transform;
             }
+            if (leftHand == null || rightHand == null)
+            {
+                foreach (var h in FindObjectsByType<OVRHand>(FindObjectsSortMode.None))
+                {
+                    if (leftHand == null && h.GetHand() == OVRPlugin.Hand.HandLeft) leftHand = h;
+                    else if (rightHand == null && h.GetHand() == OVRPlugin.Hand.HandRight) rightHand = h;
+                }
+            }
             if (target == null) BuildCanvas();
         }
+
+        private static bool IsMiddlePinching(OVRHand hand)
+            => hand != null && hand.IsTracked && !hand.IsSystemGestureInProgress
+               && hand.GetFingerIsPinching(OVRHand.HandFinger.Middle)
+               && hand.GetFingerConfidence(OVRHand.HandFinger.Middle) == OVRHand.TrackingConfidence.High;
 
         private void BuildCanvas()
         {
@@ -98,7 +114,11 @@ namespace Megamind
 
         private void Update()
         {
-            if (toggleWithButton && uploader != null && (OVRInput.GetDown(OVRInput.Button.One) || OVRInput.GetDown(OVRInput.Button.Three)))
+            bool middlePinch = IsMiddlePinching(leftHand) || IsMiddlePinching(rightHand);
+            bool middlePinchDown = middlePinch && !_middlePinchHeld;
+            _middlePinchHeld = middlePinch;
+            if (toggleWithButton && uploader != null &&
+                (OVRInput.GetDown(OVRInput.Button.One) || OVRInput.GetDown(OVRInput.Button.Three) || middlePinchDown))
                 uploader.ToggleCapturing();
 
             if (Time.unscaledTime < _next || target == null) return;
@@ -120,7 +140,7 @@ namespace Megamind
                 {
                     "background" => "capture PAUSED (app backgrounded)",
                     "focus lost" => "capture PAUSED (focus lost: system menu / boundary)",
-                    _ => "capture PAUSED (press A/X)",
+                    _ => "capture PAUSED (press A/X or middle-pinch)",
                 },
                 FrameUploader.State.Unsupported => "Passthrough Camera API unsupported (Quest 3 + v74 required)",
                 FrameUploader.State.NoCameraComponent => "no PassthroughCameraAccess in scene",

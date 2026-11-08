@@ -13,7 +13,8 @@ project: open it in Unity Hub, let the packages resolve, run one menu item, buil
 > permission prompts, passthrough capture at 1280x960 / 1 fps uploading to `/v1/frames`, the
 > world-locked panel in passthrough, B/Y re-anchor, right-trigger push-to-talk → `/v1/chat` →
 > transcript bubble + reply with 3 cited thumbnails. Not yet exercised on device: hand-pinch PTT,
-> the settings sub-panel buttons (controller-ray UI), TTS playback (mock TTS returns no audio),
+> the settings sub-panel buttons (controller-ray UI; scenes built before the hand/ray fix had no `OVRHand` and no
+> ray, see [Hands and the UI ray](#hands-and-the-ui-ray)), TTS playback (mock TTS returns no audio),
 > and real STT/TTS (needs API keys on the server). Ambient audio memory (`AmbientAudioRecorder`, below) was added
 > after this playtest and has **not** run on a headset yet (verify on device).
 
@@ -258,7 +259,7 @@ foreground and the log showed `app backgrounded: pausing capture`. Two changes:
   own when either event ends. Set `CaptureSettings.pauseOnFocusLoss` to restore the old pause-on-focus-loss.
   Logcat shows which one happened: `app backgrounded (OnApplicationPause): pausing capture`,
   `app focus lost (OnApplicationFocus: …): capture keeps running`, `OVR input focus lost (system UI overlay)`.
-  HUD: `capture PAUSED (app backgrounded)` vs `(press A/X)`, `(unfocused)` after `REC` while an overlay has focus,
+  HUD: `capture PAUSED (app backgrounded)` vs `(press A/X or middle-pinch)`, `(unfocused)` after `REC` while an overlay has focus,
   and `bg N unfocus M` counters on line 2 once either happened.
 
 **Verify on device** (not run on a Quest yet): walk out of the boundary and into another room; the boundary
@@ -326,7 +327,7 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | `FrameUploader.cs` | 1 | 1 fps sample of `PassthroughCameraAccess.GetTexture()` → JPEG → `POST /v1/frames` with pose meta |
 | `AmbientAudioRecorder.cs` | 1 | ambient mic → 15 s 16 kHz mono PCM16 WAV chunks → `POST /v1/audio`; silence gate, backoff, pauses for push-to-talk / A/X / background |
 | `AudioChunkCodec.cs` | 1 | pure C# WAV + meta encoding (native-app layout) and the RMS level for the silence gate |
-| `CaptureHud.cs` | 1 | world-locked capture status HUD (+ `mic:` line) + recording indicator, A/X pause |
+| `CaptureHud.cs` | 1 | world-locked capture status HUD (+ `mic:` line) + recording indicator, A/X or middle-pinch pause |
 | `ChatClient.cs` | 3 | push-to-talk (trigger or index pinch) → 16 kHz WAV → `POST /v1/chat` → play audio; barge-in, latency; tells `AmbientAudioRecorder` to release the mic while recording |
 | `ChatPanel.cs` | 3 | transcript bubbles, cited thumbnails, confidence/latency line, status HUD (`/v1/health` poll) |
 | `PanelAnchor.cs` | 3 | places the canvas `panelDistance` m ahead on first use; hold B/Y 0.5 s to re-anchor |
@@ -352,6 +353,24 @@ MegamindPanel (Canvas)  + PanelAnchor + ChatPanel + ChatClient + SettingsPanel +
 Re-running the menu item replaces a previous `MegamindPanel`; tweak the result in the Inspector and save.
 Push-to-talk: hold the controller trigger (or index pinch); hold B/Y 0.5 s to drag the panel to your gaze.
 
+### Hands and the UI ray
+
+**Megamind > 1** adds Meta's `OVRHandPrefab` (`OVRHand` + `OVRSkeleton` + hand mesh) as `LeftOVRHand` /
+`RightOVRHand` under `TrackingSpace/LeftHandAnchor` / `RightHandAnchor`. It also adds `OVRControllerPrefab` + an
+`OVRRayHelper` under `RightHandAnchor/RightControllerAnchor`, puts an `OVRRayHelper` on the right hand, sets
+OVRProjectConfig *Hand Tracking Support* = **Controllers And Hands**, and wires `CaptureHud.leftHand/rightHand`.
+**Megamind > 1b** then wires `ChatClient.leftHand/rightHand` by `OVRHand.GetHand()` and points
+`OVRInputModule.rayTransform` at `RightControllerAnchor`. Menu 1 makes a new scene, so re-run 1b after every 1.
+All of this is **verify on device**:
+
+- **Enable hand tracking on the headset:** *Settings → Movement tracking → Hand tracking* (older Horizon OS:
+  *Settings → Hands & body*). Put the controllers down to switch to hands.
+- **Index pinch** (thumb + index, either hand) = push-to-talk: hold to record, release to send.
+- **Middle pinch** (thumb + middle, either hand) = capture pause/resume, same as A/X.
+- **Panel UI:** the right controller draws a ray with a cursor on the panel; the trigger clicks. With hands, the
+  right hand draws the ray and an index pinch clicks. A trigger or pinch on a button also starts push-to-talk,
+  but taps shorter than `ChatClient.minRecordSeconds` (0.3 s) are dropped.
+
 A browser prototype of the same panel (same API calls, same states) is served by the server at
 `http://<server>:8000/ui` — use it to agree on layout/behaviour and as a hardware-free demo fallback.
 
@@ -370,6 +389,7 @@ Nothing in this project has run on a headset yet. Hour-0, in this order:
    - **Pose/ts:** server-side `meta.pose.yaw` changes when you turn your head; `ts` is within ~1 s of the server clock.
    - **Perf:** no visible hitch each second (readback and JPEG encode run on consecutive frames); note `enc` ms on the HUD.
    - **Image:** open a stored thumbnail: colours correct (skin not blue — reboot if so), upright, not mirrored.
+   - **Hands + ray (verify on device):** with hand tracking on, an index pinch shows `push-to-talk` and sends a question, a middle pinch toggles `capture PAUSED`; the right controller (or right hand) draws a ray on the panel and the Settings button opens the sub-panel.
    - **Ambient audio (verify on device):** HUD `mic: chunks sent/accepted` climbs every ~15 s while people talk and `silent N` climbs in a quiet room; server log `POST /v1/audio 200`; the `mic:` state shows `push-to-talk` while you hold the trigger and goes back to `on` after the reply; A/X shows `paused`; push-to-talk replies still work. Then ask *"what did I hear?"*.
 4. Demo day: reboot the headset in the morning (RGB-flip bug), disable auto-sleep (Settings → General → Power), keep the HUD visible as a self-test.
 
