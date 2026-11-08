@@ -38,6 +38,9 @@ RECALL_MEMORY_TOOL = {
 }
 
 
+DEGRADED_PREFIX = "[reader unavailable: evidence below is from captions only, the images were not inspected]"
+
+
 def _ts(s: str | None) -> float | None:
     return datetime.fromisoformat(s).timestamp() if s else None
 
@@ -87,8 +90,11 @@ class RecallMemory:
         # --- reader + result mapping (stream-4) ---
         out = await self.reader.read(query, tokens)
         by_id = {h.id: h for h in hits}
+        evidence = out.evidence
+        if out.degraded:
+            evidence = f"{DEGRADED_PREFIX} {evidence}"
         return RecallResult(
-            evidence=out.evidence,
+            evidence=evidence,
             confidence=out.confidence,
             cited=[_cite(by_id[i]) for i in out.cited_ids if i in by_id],
             all_retrieved=[_cite(h) for h in hits],

@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     reader_base_url: str = "http://localhost:8001/v1"
     reader_api_key: str = "none"
     reader_model: str = "Qwen/Qwen3.6-35B-A3B"
+    reader_provider: str = "auto"  # auto (vlm iff READER_API_KEY set) | vlm | mock
+    reader_timeout_s: float = 8.0
+    reader_max_retries: int = 1
+    reader_max_images: int = 20  # Sail limit per request; more tokens -> chunk + merge
+    reader_thumb_max_px: int = 512
+    reader_max_tokens: int = 300
+    reader_json_mode: bool = True
+    reader_extra_body: str = ""  # JSON merged into the request, e.g. {"chat_template_kwargs":{"enable_thinking":false}}
     enrich_base_url: str = ""
     enrich_model: str = ""
 
