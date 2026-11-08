@@ -70,6 +70,12 @@ class Settings(BaseSettings):
 
     store_backend: str = "memory"
     retriever_backend: str = "hybrid"  # "hybrid" (ours) | "ucc" (Universal Constructor; falls back to hybrid on error)
+    # | "hier": LLM day/hour/block notes searched coarse-to-fine over the hybrid's candidates (retrieval/hier.py)
+    hier_model: str = "gpt-4.1"  # ranks blocks and frame tokens at recall time
+    hier_note_model: str = "gpt-4.1-mini"  # writes the block/hour/day notes
+    hier_base_url: str = "https://api.openai.com/v1"
+    hier_api_key: str = ""  # "" -> openai_api_key
+    hier_cache_path: str = "data/hier_notes.json"  # "" = keep notes in memory only
     ucc_api_key: str = ""
     ucc_base_url: str = "https://api.universalconstructor.co/v1"
     ucc_corpus: str = "megamind"
