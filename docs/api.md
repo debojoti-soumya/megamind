@@ -206,7 +206,8 @@ Response:
 ("show me pictures of the red car", "make a collage of every coffee today"), Claude calls the `make_collage` tool
 (`COLLAGE_AGENT_TOOL`, default on; without an API key the fallback path does the same for such requests) and
 `collage` is the `POST /collage` response. `cited` then starts with the collage's photos. Show `collage.url`
-(`width` x `height`) in place of the thumbnail row.
+(`width` x `height`) in place of the thumbnail row (the Quest panel shows it as one card in the transcript; a tap
+opens the lightbox on the collage, then each of `images[]`). `/chat/stream` carries it in `final` (no separate event).
 `device_id` (optional) limits the search to that device's memories; omitted/null = all devices.
 `device_id_used` is the device that was actually searched (`null` = all devices). `warning` is `null` normally;
 when the request's `device_id` has **no** memory tokens while other devices do, it says so instead of the answer
@@ -269,7 +270,9 @@ Server env `TTS_STREAM=false` turns the clips off (one TTS call after the turn, 
 back; a link not found in time is `null` in that event and present in `final.cited`.
 Clients can swap it in for `POST /chat` and fall back to `POST /chat` on 404/405 (older servers). The model
 requests are identical to `POST /chat` apart from streaming, so answers are the same. With `RECALL_FIRST` a
-standalone question's `retrieval` arrives before Claude is called at all.
+standalone question's `retrieval` arrives before Claude is called at all. After a tool round the server sends Claude that round's tool calls and results
+as plain text (`CLAUDE_TOOL_RESULTS_AS_TEXT`, default on), because Claude otherwise returns the whole answer in one
+burst at the end of the call instead of as a stream of `delta`s.
 
 Headset client (Unity `ChatClient`, `headset/`): asks every question (typed JSON and voice multipart) on
 `POST /chat/stream` and falls back to `POST /chat` with the same body on 404/405, or when the stream fails before its

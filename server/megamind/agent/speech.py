@@ -84,6 +84,7 @@ class StreamingSpeaker:
         self.tts, self.audio_dir, self.emit = tts, audio_dir, emit
         self.min_chars = min_chars
         self.t0 = time.perf_counter()
+        self.first_text_ms: float | None = None  # same clock as `started_ms` (the Claude stream log's is per call)
         self.first_audio_ms: float | None = None
         self._new_generation()
 
@@ -97,6 +98,8 @@ class StreamingSpeaker:
         self.sender: asyncio.Task[None] | None = None
 
     async def feed(self, text: str) -> None:
+        if text and self.first_text_ms is None:
+            self.first_text_ms = (time.perf_counter() - self.t0) * 1000
         for sentence in self.buf.feed(text):
             self._start(sentence)
 
@@ -157,7 +160,8 @@ class StreamingSpeaker:
         if not ok:
             return await self.tts.synthesize(answer, self.audio_id)
         log.info(
-            "tts stream: %d clips started at %s ms, first audio at %s ms, done at %.0f ms",
+            "tts stream: first text at %s ms, %d clips started at %s ms, first audio at %s ms, done at %.0f ms",
+            f"{self.first_text_ms:.0f}" if self.first_text_ms is not None else "-",
             len(paths),
             [round(t) for t in self.started_ms],
             f"{self.first_audio_ms:.0f}" if self.first_audio_ms is not None else "-",

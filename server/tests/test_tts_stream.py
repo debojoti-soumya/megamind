@@ -9,7 +9,17 @@ import wave
 
 import httpx2
 import pytest
-from test_chat_stream import ANSWER, ScriptedAnthropic, _message, _sse_body, _stream, _two_rounds, _use_script, text
+from test_chat_stream import (
+    ANSWER,
+    ScriptedAnthropic,
+    _message,
+    _sse_body,
+    _stream,
+    _two_rounds,
+    _use_script,
+    text,
+    tool_use,
+)
 from test_chat_stream import app_client as _app_client
 
 from megamind.agent import tts as tts_mod
@@ -230,3 +240,40 @@ async def test_recall_first_answer_streams_and_first_audio_overlaps_the_call(app
     assert seen["delta"] < t_call - 5 * GappedAnthropic.gap  # text arrives while the call is still running
     assert seen["audio"] < t_call  # clip 0 is playable before Claude has finished
     assert t_final - seen["audio"] >= tts_s * 0.9  # ... a whole sentence's TTS ahead of `final`
+
+
+@pytest.mark.parametrize("as_text", [True, False])
+async def test_two_search_answer_is_sent_tool_results_as_text(app_client, as_text):
+    """#138: Claude's own searches; with CLAUDE_TOOL_RESULTS_AS_TEXT the answer call carries no tool blocks (so
+    Sonnet streams it), and the first delta and first audio still precede `final`."""
+    c, app = app_client
+    uses = [tool_use({"query": "front door lock"}, "toolu_1"), tool_use({"query": "stove off"}, "toolu_2")]
+    script = GappedAnthropic([_message(uses, stop_reason="tool_use"), _message([text(TWO)])])
+    agent = _use_script(app, script, recall_first=False, recall_prefetch=False, claude_tool_results_as_text=as_text)
+    tts = SlowFirstTTS(app.state.settings.audio_dir, delays=(0.05, 0.05))
+    t0, seen = time.perf_counter(), {}
+
+    async def put(name, data):
+        seen.setdefault(name, time.perf_counter() - t0)
+
+    speaker = StreamingSpeaker(tts, app.state.settings.audio_dir, put)
+
+    async def on_event(name, data):
+        seen.setdefault(name, time.perf_counter() - t0)
+        if name == "delta":
+            await speaker.feed(data["text"])
+
+    q = "did I lock the front door and turn off the stove before leaving?"
+    resp, stats = await agent.chat_with_stats("s", q, "dev1", on_event=on_event)
+    t_call = time.perf_counter() - t0
+    assert await speaker.finish(resp.answer) is not None
+    t_final = time.perf_counter() - t0
+    assert [t.args["query"] for t in resp.tool_calls] == ["front door lock", "stove off"]
+    answer_req = json.dumps(script.requests[1]["messages"])
+    assert ("tool_result" in answer_req) is not as_text and ("tool_use" in answer_req) is not as_text
+    if as_text:
+        calls = [b["text"] for b in script.requests[1]["messages"][1]["content"]]
+        assert calls == ['recall_memory({"query": "front door lock"})', 'recall_memory({"query": "stove off"})']
+        assert "tool result:" in answer_req
+    assert "tool_result" in json.dumps(agent.histories["s"])  # history keeps the real blocks
+    assert seen["delta"] < t_call < t_final and seen["audio"] < t_final

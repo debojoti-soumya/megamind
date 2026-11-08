@@ -198,7 +198,7 @@ async def test_claude_calls_make_collage(recall):
     assert "make_collage" in first["system"]
     assert resp.collage is not None and resp.collage.id == "a" * 20
     assert [c.id for c in resp.cited] == ["t_mug"]
-    payload = json.loads(script.requests[1]["messages"][-1]["content"][0]["content"])
+    payload = json.loads(script.requests[1]["messages"][-1]["content"][1]["text"])
     assert payload["confidence"] == "high" and "Photo montage shown" in payload["evidence"]
 
 
@@ -217,7 +217,7 @@ async def test_claude_collage_not_found_has_no_collage(recall):
     agent = ClaudeAgent(_settings(anthropic_api_key="k"), recall, client=script.client(), collage=_fake_collage([]))
     resp = await agent.chat("s", "show me pictures of a giraffe", "dev1")
     assert resp.collage is None
-    payload = json.loads(script.requests[1]["messages"][-1]["content"][0]["content"])
+    payload = json.loads(script.requests[1]["messages"][-1]["content"][1]["text"])
     assert payload["confidence"] == "not_found"
 
 

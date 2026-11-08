@@ -232,6 +232,25 @@ def _with_images(payload: str, r: RecallResult) -> str | list[dict]:
     return blocks
 
 
+def _tool_rounds_as_text(turn: list[dict]) -> list[dict]:
+    """`turn` with each tool_use written as a text call and each tool_result as a labelled text block followed by its
+    content (images kept), so the request no longer ends in a tool_result (which Sonnet answers in one burst)."""
+
+    def flat(b: dict) -> list:
+        if b.get("type") == "tool_use":
+            return [{"type": "text", "text": f"{b['name']}({json.dumps(b['input'], ensure_ascii=False)})"}]
+        if b.get("type") == "tool_result":
+            content = b.get("content", "")
+            blocks = content if isinstance(content, list) else [{"type": "text", "text": str(content)}]
+            return [{"type": "text", "text": "tool result:"}, *blocks]
+        return [b]
+
+    return [
+        {**m, "content": [x for b in m["content"] for x in flat(b)]} if isinstance(m["content"], list) else m
+        for m in turn
+    ]
+
+
 def _strip_images(turn: list[dict]) -> list[dict]:
     """`turn` with every image block (in a message or inside a tool result) replaced by a short text placeholder."""
 
@@ -670,12 +689,15 @@ class ClaudeAgent:
                 turn[0] = {"role": "user", "content": [clock, *blocks]}
             for _round in range(MAX_TOOL_ROUNDS + 1):
                 t_llm = time.perf_counter()
+                p_sent, t_sent = prior, turn
+                if self.settings.claude_tool_results_as_text:  # prior too, so cached prefixes keep the same bytes
+                    p_sent, t_sent = _tool_rounds_as_text(prior), _tool_rounds_as_text(turn)
                 req = {
                     "model": model,
                     "max_tokens": MAX_TOKENS,
                     "system": system,
                     "tools": self.tools(),
-                    "messages": with_cache_breakpoints(prior, turn) if cache else prior + turn,
+                    "messages": with_cache_breakpoints(p_sent, t_sent) if cache else p_sent + t_sent,
                 }
                 msg = await self._create(req, emit, stats.request_id)
                 stats.llm_ms += (time.perf_counter() - t_llm) * 1000
