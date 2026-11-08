@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -60,6 +61,8 @@ class Settings(BaseSettings):
     ucc_keep_alive_s: int | None = None  # corpus retention; None keeps it until deleted
     wearer_tz: str = "America/Los_Angeles"  # IANA zone used to resolve "this morning" in recall_memory
     lancedb_path: Path = Path("./data/lancedb")
+    lancedb_vector_dtype: Literal["float16", "float32"] = "float16"  # new tables only; existing tables keep theirs
+    search_calibrate_image: bool = True  # scale image hits by SigLIP sigmoid(scale*cos+bias) in RRF (no-op for CLIP)
     thumb_dir: Path = Path("./data/thumbs")
     audio_dir: Path = Path("./data/audio")
     privacy_blur_faces: bool = False  # blur bystander faces in stored thumbnails (needs the privacy extra)
