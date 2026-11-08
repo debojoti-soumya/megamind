@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     enrich_base_url: str = ""  # "" -> reader_base_url (and the reader's extra body / completion window)
     enrich_model: str = ""  # "" -> reader_model
     enrich_api_key: str = ""  # "" -> reader_api_key, but only when enrich_base_url is "" (same endpoint)
+    enrich_concurrency: int = 2  # frames enriched in parallel; raise if /v1/stats enrich_lag_s grows
     enrich_timeout_s: float = 20.0  # per attempt; one retry on 429/5xx/timeout, then the local/empty fallback
     enrich_max_tokens: int = 400
 

@@ -122,6 +122,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             build_enricher(settings, st.image_embedder),
             st.text_embedder,
             st.image_embedder,
+            concurrency=max(1, settings.enrich_concurrency),
             face_blur=st.face_blur,
         )
         st.media = MediaStore(settings, st.store, lock=st.worker.add_lock)  # hot JPEG -> cold AV1 -> text

@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import statistics
+import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +48,8 @@ class EnrichmentWorker:
         self._concurrency = concurrency
         self._inflight: dict[str, MemoryToken] = {}  # dequeued, not yet stored
         self._discarded: set[str] = set()  # in-flight ids a purge cancelled
+        self._submitted: dict[str, float] = {}  # queued / in-flight id -> monotonic submit time
+        self._lags: deque[float] = deque(maxlen=100)  # submit -> stored seconds, newest frames
         self._add_lock = asyncio.Lock()  # store.add vs purge: nothing lands after a purge returns
         self.media: Any = None  # store.media.MediaStore, set by the app: purges rewrite AV1 chunks
 
@@ -64,8 +69,22 @@ class EnrichmentWorker:
         if self.queue.full():
             dropped, _ = self.queue.get_nowait()  # drop oldest under backpressure
             self.queue.task_done()
+            self._submitted.pop(dropped.id, None)
             _unlink(dropped.thumb_path)
+        self._submitted[token.id] = time.monotonic()
         await self.queue.put((token, jpeg))
+
+    def lag_stats(self) -> dict[str, float | int | None]:
+        """Upload -> searchable: seconds from `submit` to the store write for the last stored frames (p50 / max),
+        and the age of the oldest frame still waiting or in flight."""
+        lags = list(self._lags)
+        oldest = min(self._submitted.values(), default=None)
+        return {
+            "n": len(lags),
+            "p50": round(statistics.median(lags), 2) if lags else None,
+            "max": round(max(lags), 2) if lags else None,
+            "oldest_pending": round(time.monotonic() - oldest, 2) if oldest is not None else None,
+        }
 
     def discard(self, device_id: str | None = None, since_ts: float | None = None) -> int:
         """Drop queued frames and cancel in-flight ones matching a purge window; returns how many.
@@ -77,6 +96,7 @@ class EnrichmentWorker:
         for _ in range(n):
             token, jpeg = self.queue.get_nowait()
             if _in_window(token.device_id, token.ts, device_id, since_ts):
+                self._submitted.pop(token.id, None)
                 _unlink(token.thumb_path)
                 dropped += 1
             else:
@@ -114,6 +134,7 @@ class EnrichmentWorker:
                 _unlink(token.thumb_path)
             finally:
                 self._inflight.pop(token.id, None)
+                self._submitted.pop(token.id, None)
                 if token.id in self._discarded:
                     self._discarded.discard(token.id)
                     _unlink(token.thumb_path)
@@ -152,6 +173,8 @@ class EnrichmentWorker:
             if token.id in self._discarded:
                 return
             await self.store.add(token)
+            if (t0 := self._submitted.get(token.id)) is not None:
+                self._lags.append(time.monotonic() - t0)
 
 
 async def purge_all(state: Any, device_id: str | None = None, *, since_ts: float | None = None) -> int:
