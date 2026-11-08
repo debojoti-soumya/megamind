@@ -5,10 +5,15 @@ server, and (2) hosts the voice-first AR chat panel. Both streams share this pro
 (design doc §2, decision D1). The project in `headset/Megamind/` is a complete Unity
 project: open it in Unity Hub, let the packages resolve, run one menu item, build.
 
-> Status: the project compiles and builds headless (Unity 6000.0.66f2 + Meta SDK 85 / MRUK 85)
-> into `Builds/megamind.apk`, but the APK has **not yet been playtested on a headset** (needs a
-> Quest 3/3S on a wired adb connection). Expect to iterate on device; the troubleshooting
-> list below covers the likely failures.
+> Status: **playtested on a Quest 3 (Horizon OS v74 / Android 14), 2026-11-07.** Built headless
+> (Unity 6000.0.66f2 + Meta SDK 85 / MRUK 85) into `Builds/megamind.apk`, sideloaded over USB and run
+> against a laptop server with mock providers via `adb reverse tcp:8000 tcp:8000` +
+> `megamind.json` (`{"serverBaseUrl":"http://127.0.0.1:8000"}`). Verified on device: camera + mic
+> permission prompts, passthrough capture at 1280x960 / 1 fps uploading to `/v1/frames`, the
+> world-locked panel in passthrough, B/Y re-anchor, right-trigger push-to-talk → `/v1/chat` →
+> transcript bubble + reply with 3 cited thumbnails. Not yet exercised on device: hand-pinch PTT,
+> the settings sub-panel buttons (controller-ray UI), TTS playback (mock TTS returns no audio),
+> and real STT/TTS (needs API keys on the server).
 
 New to Quest? Start with the **[Quest 3 guide](../docs/quest3-guide.md)**: headset basics, every physical
 connection (USB/adb, wireless adb, Wi-Fi/Tailscale to the server, casting, power), a test runbook, and a
