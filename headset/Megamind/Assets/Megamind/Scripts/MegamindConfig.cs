@@ -33,9 +33,16 @@ namespace Megamind
 
         public string Url(string path) => serverBaseUrl.TrimEnd('/') + path;
 
-        /// <summary>Apply runtime overrides saved by SettingsPanel. Call once at startup.</summary>
+        /// <summary>Apply runtime overrides: PlayerPrefs (SettingsPanel) > megamind.json (adb push) > asset.
+        /// Same precedence as CaptureSettings, so chat and capture always talk to the same server. Call once at startup.</summary>
         public void LoadOverrides()
         {
+            var file = CaptureSettings.ReadOverrideFile();
+            if (file != null)
+            {
+                if (!string.IsNullOrEmpty(file.serverBaseUrl)) serverBaseUrl = file.serverBaseUrl.Trim();
+                if (!string.IsNullOrEmpty(file.deviceId)) deviceId = file.deviceId.Trim();
+            }
             if (PlayerPrefs.HasKey(UrlPrefKey)) serverBaseUrl = PlayerPrefs.GetString(UrlPrefKey);
             if (PlayerPrefs.HasKey(DevicePrefKey)) deviceId = PlayerPrefs.GetString(DevicePrefKey);
         }
