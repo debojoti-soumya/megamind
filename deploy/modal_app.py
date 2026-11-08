@@ -40,7 +40,7 @@ PROFILE_ENV = {
     "live": {
         "EMBED_PROVIDER": "openai",
         "IMAGE_EMBED_PROVIDER": "openclip",  # SigLIP ViT-B/16 image vectors (weights baked into the image below)
-        "RETRIEVER_BACKEND": "hybrid",  # combo/hier are opt-in: on a 9k-memory week UCC timed out and hier took 16 s p50
+        "RETRIEVER_BACKEND": "hybrid",  # combo/hier opt-in: on a 9k-memory week UCC timed out, hier 16 s p50
         "READER_PROVIDER": "auto",
         "READER_BASE_URL": "https://api.sailresearch.com/v1",
         "ENRICH_PROVIDER": "auto",
