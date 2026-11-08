@@ -91,8 +91,8 @@ async def main() -> int:
     meter = Meter(args.cache_dir, max_usd=args.max_usd, max_ucc=args.max_ucc, replay_latency=not args.live_latency)
     text_emb = image_emb = None
     if args.real:
-        from megamind.ingest.enrich import build_image_embedder, build_text_embedder
-        from megamind.store.embeddings import OpenAITextEmbedder
+        from megamind.ingest.enrich import build_text_embedder
+        from megamind.store.embeddings import OpenAITextEmbedder, build_image_embedder
 
         if s.embed_provider == "openai" and s.openai_api_key:
             text_emb = OpenAITextEmbedder(

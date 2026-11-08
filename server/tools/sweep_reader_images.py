@@ -68,7 +68,9 @@ async def main() -> int:
     day = eval_agent.select_questions(eval_agent.load_day(args.dataset, thumbs), args.questions)
     if not (thumbs / f"{day.tokens[-1].id}.jpg").is_file():
         eval_agent.render_thumbs(day, thumbs, width=args.thumb_width)
-    store = await eval_agent.seed_store(day.tokens, eval_agent.build_text_embedder(base))
+    store = await eval_agent.seed_store(
+        day.tokens, eval_agent.build_text_embedder(base), eval_agent.build_image_embedder(base)
+    )
     print(
         "| config | accuracy | cite P / R | input tok/turn | images/turn | $/turn | Claude call p50 / p95 ms "
         "| turn p50 / p95 ms |\n|---|--:|--:|--:|--:|--:|--:|--:|"

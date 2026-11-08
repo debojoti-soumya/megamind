@@ -1,0 +1,1623 @@
+{
+"date": "2026-11-08",
+"tz": "America/Los_Angeles",
+"now": "22:30",
+"device_id": "eval-device",
+"_comment": "COCO val2017 photos (CC BY 4.0), vague captions; tools/make_coco_day.py",
+"stream": [
+{
+"id": "c0010",
+"time": "07:05",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000445846.jpg"
+},
+{
+"id": "c0011",
+"time": "07:09",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000275727.jpg"
+},
+{
+"id": "c0012",
+"time": "07:11",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000297562.jpg"
+},
+{
+"id": "c0013",
+"time": "07:16",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000176232.jpg"
+},
+{
+"id": "c0014",
+"time": "07:18",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000079014.jpg"
+},
+{
+"id": "c0015",
+"time": "07:23",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000111207.jpg"
+},
+{
+"id": "c0016",
+"time": "07:27",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000147205.jpg"
+},
+{
+"id": "c0017",
+"time": "07:29",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000462756.jpg"
+},
+{
+"id": "c0018",
+"time": "07:33",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000541952.jpg"
+},
+{
+"id": "c0019",
+"time": "07:38",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000546325.jpg"
+},
+{
+"id": "c0020",
+"time": "07:43",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000551804.jpg"
+},
+{
+"id": "c0021",
+"time": "07:48",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000291791.jpg"
+},
+{
+"id": "c0022",
+"time": "07:52",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000244496.jpg"
+},
+{
+"id": "c0023",
+"time": "07:55",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000514914.jpg"
+},
+{
+"id": "c0024",
+"time": "07:58",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000069224.jpg"
+},
+{
+"id": "c0025",
+"time": "08:03",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000043737.jpg"
+},
+{
+"id": "c0026",
+"time": "08:08",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000552842.jpg"
+},
+{
+"id": "c0002",
+"time": "08:10",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000439290.jpg"
+},
+{
+"id": "c0027",
+"time": "08:12",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000019109.jpg"
+},
+{
+"id": "c0028",
+"time": "08:16",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000045229.jpg"
+},
+{
+"id": "c0029",
+"time": "08:18",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000198805.jpg"
+},
+{
+"id": "c0030",
+"time": "08:20",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000033221.jpg"
+},
+{
+"id": "c0031",
+"time": "08:22",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000257896.jpg"
+},
+{
+"id": "c0032",
+"time": "08:25",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000189310.jpg"
+},
+{
+"id": "c0033",
+"time": "08:28",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000543528.jpg"
+},
+{
+"id": "c0034",
+"time": "08:30",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000160728.jpg"
+},
+{
+"id": "c0035",
+"time": "08:34",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000149375.jpg"
+},
+{
+"id": "c0036",
+"time": "08:36",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000050006.jpg"
+},
+{
+"id": "c0037",
+"time": "08:40",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000015278.jpg"
+},
+{
+"id": "c0005",
+"time": "08:45",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000336658.jpg"
+},
+{
+"id": "c0038",
+"time": "08:45",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000407403.jpg"
+},
+{
+"id": "c0039",
+"time": "08:49",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000484351.jpg"
+},
+{
+"id": "c0040",
+"time": "08:53",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000389532.jpg"
+},
+{
+"id": "c0041",
+"time": "08:57",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000433192.jpg"
+},
+{
+"id": "c0042",
+"time": "09:00",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000236426.jpg"
+},
+{
+"id": "c0043",
+"time": "09:04",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000289059.jpg"
+},
+{
+"id": "c0044",
+"time": "09:07",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000173057.jpg"
+},
+{
+"id": "c0045",
+"time": "09:09",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000064718.jpg"
+},
+{
+"id": "c0046",
+"time": "09:14",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000180798.jpg"
+},
+{
+"id": "c0047",
+"time": "09:18",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000035279.jpg"
+},
+{
+"id": "c0048",
+"time": "09:20",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000047769.jpg"
+},
+{
+"id": "c0049",
+"time": "09:22",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000183709.jpg"
+},
+{
+"id": "c0050",
+"time": "09:27",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000495054.jpg"
+},
+{
+"id": "c0051",
+"time": "09:32",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000436617.jpg"
+},
+{
+"id": "c0052",
+"time": "09:37",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000437514.jpg"
+},
+{
+"id": "c0053",
+"time": "09:40",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000419098.jpg"
+},
+{
+"id": "c0054",
+"time": "09:44",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000162035.jpg"
+},
+{
+"id": "c0055",
+"time": "09:49",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000099114.jpg"
+},
+{
+"id": "c0056",
+"time": "09:51",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000289229.jpg"
+},
+{
+"id": "c0057",
+"time": "09:53",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000431140.jpg"
+},
+{
+"id": "c0058",
+"time": "09:58",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000214192.jpg"
+},
+{
+"id": "c0059",
+"time": "10:03",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000522638.jpg"
+},
+{
+"id": "c0008",
+"time": "10:05",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000131138.jpg"
+},
+{
+"id": "c0060",
+"time": "10:06",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000229849.jpg"
+},
+{
+"id": "c0061",
+"time": "10:11",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000379476.jpg"
+},
+{
+"id": "c0062",
+"time": "10:13",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000120584.jpg"
+},
+{
+"id": "c0063",
+"time": "10:15",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000482970.jpg"
+},
+{
+"id": "c0064",
+"time": "10:18",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000308793.jpg"
+},
+{
+"id": "c0065",
+"time": "10:21",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000273715.jpg"
+},
+{
+"id": "c0066",
+"time": "10:24",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000097988.jpg"
+},
+{
+"id": "c0067",
+"time": "10:27",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000270883.jpg"
+},
+{
+"id": "c0068",
+"time": "10:29",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000482100.jpg"
+},
+{
+"id": "c0069",
+"time": "10:32",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000383621.jpg"
+},
+{
+"id": "c0070",
+"time": "10:36",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000340175.jpg"
+},
+{
+"id": "c0071",
+"time": "10:39",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000073326.jpg"
+},
+{
+"id": "c0072",
+"time": "10:41",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000546219.jpg"
+},
+{
+"id": "c0073",
+"time": "10:43",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000239843.jpg"
+},
+{
+"id": "c0074",
+"time": "10:45",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000269942.jpg"
+},
+{
+"id": "c0075",
+"time": "10:47",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000166509.jpg"
+},
+{
+"id": "c0076",
+"time": "10:52",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000545100.jpg"
+},
+{
+"id": "c0077",
+"time": "10:57",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000483667.jpg"
+},
+{
+"id": "c0078",
+"time": "10:59",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000538364.jpg"
+},
+{
+"id": "c0079",
+"time": "11:04",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000342006.jpg"
+},
+{
+"id": "c0080",
+"time": "11:06",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000492758.jpg"
+},
+{
+"id": "c0081",
+"time": "11:09",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000370270.jpg"
+},
+{
+"id": "c0082",
+"time": "11:13",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000284762.jpg"
+},
+{
+"id": "c0083",
+"time": "11:15",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000363461.jpg"
+},
+{
+"id": "c0084",
+"time": "11:19",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000398905.jpg"
+},
+{
+"id": "c0085",
+"time": "11:24",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000339442.jpg"
+},
+{
+"id": "c0086",
+"time": "11:27",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000169356.jpg"
+},
+{
+"id": "c0087",
+"time": "11:29",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000333237.jpg"
+},
+{
+"id": "c0088",
+"time": "11:32",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000016958.jpg"
+},
+{
+"id": "c0089",
+"time": "11:37",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000343934.jpg"
+},
+{
+"id": "c0090",
+"time": "11:39",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000068093.jpg"
+},
+{
+"id": "c0091",
+"time": "11:43",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000190307.jpg"
+},
+{
+"id": "c0092",
+"time": "11:45",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000232646.jpg"
+},
+{
+"id": "c0093",
+"time": "11:50",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000303893.jpg"
+},
+{
+"id": "c0094",
+"time": "11:54",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000287874.jpg"
+},
+{
+"id": "c0095",
+"time": "11:56",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000298396.jpg"
+},
+{
+"id": "c0096",
+"time": "12:00",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000415194.jpg"
+},
+{
+"id": "c0097",
+"time": "12:05",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000196442.jpg"
+},
+{
+"id": "c0098",
+"time": "12:07",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000439994.jpg"
+},
+{
+"id": "c0099",
+"time": "12:12",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000041633.jpg"
+},
+{
+"id": "c0100",
+"time": "12:14",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000091654.jpg"
+},
+{
+"id": "c0101",
+"time": "12:17",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000177714.jpg"
+},
+{
+"id": "c0102",
+"time": "12:21",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000118367.jpg"
+},
+{
+"id": "c0103",
+"time": "12:25",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000423971.jpg"
+},
+{
+"id": "c0104",
+"time": "12:29",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000029675.jpg"
+},
+{
+"id": "c0001",
+"time": "12:30",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000277020.jpg"
+},
+{
+"id": "c0105",
+"time": "12:33",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000323799.jpg"
+},
+{
+"id": "c0106",
+"time": "12:38",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000405691.jpg"
+},
+{
+"id": "c0107",
+"time": "12:42",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000174482.jpg"
+},
+{
+"id": "c0108",
+"time": "12:46",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000469192.jpg"
+},
+{
+"id": "c0109",
+"time": "12:51",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000189213.jpg"
+},
+{
+"id": "c0110",
+"time": "12:55",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000531771.jpg"
+},
+{
+"id": "c0111",
+"time": "12:58",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000128675.jpg"
+},
+{
+"id": "c0112",
+"time": "13:02",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000122166.jpg"
+},
+{
+"id": "c0113",
+"time": "13:07",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000468577.jpg"
+},
+{
+"id": "c0114",
+"time": "13:11",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000032570.jpg"
+},
+{
+"id": "c0115",
+"time": "13:14",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000424551.jpg"
+},
+{
+"id": "c0116",
+"time": "13:16",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000042276.jpg"
+},
+{
+"id": "c0117",
+"time": "13:19",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000000885.jpg"
+},
+{
+"id": "c0118",
+"time": "13:21",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000080057.jpg"
+},
+{
+"id": "c0119",
+"time": "13:26",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000038210.jpg"
+},
+{
+"id": "c0120",
+"time": "13:31",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000133000.jpg"
+},
+{
+"id": "c0121",
+"time": "13:36",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000199442.jpg"
+},
+{
+"id": "c0122",
+"time": "13:40",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000432085.jpg"
+},
+{
+"id": "c0123",
+"time": "13:45",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000188689.jpg"
+},
+{
+"id": "c0124",
+"time": "13:47",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000431848.jpg"
+},
+{
+"id": "c0125",
+"time": "13:49",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000216516.jpg"
+},
+{
+"id": "c0126",
+"time": "13:51",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000335658.jpg"
+},
+{
+"id": "c0127",
+"time": "13:54",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000122962.jpg"
+},
+{
+"id": "c0128",
+"time": "13:59",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000537991.jpg"
+},
+{
+"id": "c0129",
+"time": "14:04",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000581357.jpg"
+},
+{
+"id": "c0130",
+"time": "14:07",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000145591.jpg"
+},
+{
+"id": "c0131",
+"time": "14:11",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000474344.jpg"
+},
+{
+"id": "c0007",
+"time": "14:15",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000388846.jpg"
+},
+{
+"id": "c0132",
+"time": "14:15",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000025096.jpg"
+},
+{
+"id": "c0133",
+"time": "14:17",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000182202.jpg"
+},
+{
+"id": "c0134",
+"time": "14:19",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000042563.jpg"
+},
+{
+"id": "c0135",
+"time": "14:22",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000500613.jpg"
+},
+{
+"id": "c0136",
+"time": "14:24",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000406570.jpg"
+},
+{
+"id": "c0137",
+"time": "14:27",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000320696.jpg"
+},
+{
+"id": "c0138",
+"time": "14:32",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000430056.jpg"
+},
+{
+"id": "c0139",
+"time": "14:37",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000449603.jpg"
+},
+{
+"id": "c0140",
+"time": "14:39",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000430377.jpg"
+},
+{
+"id": "c0141",
+"time": "14:43",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000018737.jpg"
+},
+{
+"id": "c0142",
+"time": "14:45",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000485130.jpg"
+},
+{
+"id": "c0143",
+"time": "14:47",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000501368.jpg"
+},
+{
+"id": "c0144",
+"time": "14:50",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000294163.jpg"
+},
+{
+"id": "c0145",
+"time": "14:55",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000274066.jpg"
+},
+{
+"id": "c0146",
+"time": "14:58",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000123321.jpg"
+},
+{
+"id": "c0147",
+"time": "15:02",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000459662.jpg"
+},
+{
+"id": "c0148",
+"time": "15:06",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000432898.jpg"
+},
+{
+"id": "c0149",
+"time": "15:10",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000137727.jpg"
+},
+{
+"id": "c0150",
+"time": "15:12",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000284445.jpg"
+},
+{
+"id": "c0151",
+"time": "15:17",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000234660.jpg"
+},
+{
+"id": "c0152",
+"time": "15:20",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000197796.jpg"
+},
+{
+"id": "c0153",
+"time": "15:22",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000365095.jpg"
+},
+{
+"id": "c0154",
+"time": "15:24",
+"caption": "Lunch at a restaurant.",
+"ocr": "",
+"entities": [],
+"episode": "lunch",
+"image": "/home/ubuntu/.cache/coco/img/000000206411.jpg"
+},
+{
+"id": "c0155",
+"time": "15:29",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000293245.jpg"
+},
+{
+"id": "c0156",
+"time": "15:34",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000213255.jpg"
+},
+{
+"id": "c0157",
+"time": "15:36",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000415882.jpg"
+},
+{
+"id": "c0158",
+"time": "15:40",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000364126.jpg"
+},
+{
+"id": "c0159",
+"time": "15:45",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000163640.jpg"
+},
+{
+"id": "c0160",
+"time": "15:49",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000314914.jpg"
+},
+{
+"id": "c0161",
+"time": "15:51",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000126226.jpg"
+},
+{
+"id": "c0162",
+"time": "15:53",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000011122.jpg"
+},
+{
+"id": "c0163",
+"time": "15:55",
+"caption": "Street outside.",
+"ocr": "",
+"entities": [],
+"episode": "street",
+"image": "/home/ubuntu/.cache/coco/img/000000314541.jpg"
+},
+{
+"id": "c0164",
+"time": "16:00",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000153527.jpg"
+},
+{
+"id": "c0165",
+"time": "16:05",
+"caption": "Office kitchen.",
+"ocr": "",
+"entities": [],
+"episode": "office",
+"image": "/home/ubuntu/.cache/coco/img/000000424642.jpg"
+},
+{
+"id": "c0166",
+"time": "16:09",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000324614.jpg"
+},
+{
+"id": "c0167",
+"time": "16:13",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000274219.jpg"
+},
+{
+"id": "c0168",
+"time": "16:16",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000066523.jpg"
+},
+{
+"id": "c0169",
+"time": "16:21",
+"caption": "Kitchen counter.",
+"ocr": "",
+"entities": [],
+"episode": "kitchen",
+"image": "/home/ubuntu/.cache/coco/img/000000260261.jpg"
+},
+{
+"id": "c0003",
+"time": "16:40",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000520301.jpg"
+},
+{
+"id": "c0004",
+"time": "17:20",
+"caption": "Outdoors, walking.",
+"ocr": "",
+"entities": [],
+"episode": "outdoors,",
+"image": "/home/ubuntu/.cache/coco/img/000000214753.jpg"
+},
+{
+"id": "c0006",
+"time": "19:30",
+"caption": "Dinner.",
+"ocr": "",
+"entities": [],
+"episode": "dinner.",
+"image": "/home/ubuntu/.cache/coco/img/000000575815.jpg"
+},
+{
+"id": "c0009",
+"time": "21:10",
+"caption": "Home office.",
+"ocr": "",
+"entities": [],
+"episode": "home",
+"image": "/home/ubuntu/.cache/coco/img/000000077396.jpg"
+}
+],
+"questions": [
+{
+"q": "how many people were at the table at lunch",
+"gold": [
+"c0001"
+],
+"expect": [
+"four",
+"4"
+]
+},
+{
+"q": "how many bananas were there this morning",
+"gold": [
+"c0002"
+],
+"expect": [
+"two",
+"2"
+]
+},
+{
+"q": "what animal did I see at the park",
+"gold": [
+"c0003"
+],
+"expect": [
+"dog"
+]
+},
+{
+"q": "what animal did I see on the trail",
+"gold": [
+"c0004"
+],
+"expect": [
+"horse"
+]
+},
+{
+"q": "what vehicle was at the stop this morning",
+"gold": [
+"c0005"
+],
+"expect": [
+"bus"
+]
+},
+{
+"q": "what did I have for dinner",
+"gold": [
+"c0006"
+],
+"expect": [
+"pizza"
+]
+},
+{
+"q": "what were people holding on the street this afternoon",
+"gold": [
+"c0007"
+],
+"expect": [
+"umbrella"
+]
+},
+{
+"q": "how many cups were on the counter in the office kitchen",
+"gold": [
+"c0008"
+],
+"expect": [
+"three",
+"3"
+]
+},
+{
+"q": "what animal was next to my laptop tonight",
+"gold": [
+"c0009"
+],
+"expect": [
+"cat"
+]
+},
+{
+"q": "did I see a fire hydrant today",
+"gold": [],
+"expect": [
+"__not_found__"
+]
+}
+]
+}
