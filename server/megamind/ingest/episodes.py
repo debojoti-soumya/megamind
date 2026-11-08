@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, field
 
 from ulid import ULID
@@ -49,6 +49,12 @@ class _Open:
     pose_n: int = 0
     rep_score: float = -1.0
     entities: Counter[str] = field(default_factory=Counter)
+    recent: deque[list[float]] = field(default_factory=deque)
+
+    def recent_mean(self) -> list[float] | None:
+        if not self.recent:
+            return None
+        return [sum(col) for col in zip(*self.recent)]
 
     @property
     def centroid(self) -> list[float] | None:
@@ -85,11 +91,14 @@ class EpisodeTracker:
             self._label_vecs = [await self.image_embedder.embed_text(f"a photo of {lbl}") for lbl in self.labels]
         return self._label_vecs
 
-    def _fits(self, o: _Open, t: MemoryToken, min_sim: float) -> bool:
+    def _fits(self, o: _Open, t: MemoryToken, min_sim: float, recent: bool = False) -> bool:
         if abs(t.ts - o.ep.end_ts) > self.s.episode_gap_s and not (o.ep.start_ts <= t.ts <= o.ep.end_ts):
             return False
-        if t.image_vec is not None and o.centroid is not None:
-            if _cos(t.image_vec, o.centroid) < min_sim:
+        if self.s.episode_max_s > 0 and t.ts - o.ep.start_ts > self.s.episode_max_s:
+            return False
+        ref = o.recent_mean() if recent else o.centroid
+        if t.image_vec is not None and ref is not None:
+            if _cos(t.image_vec, ref) < min_sim:
                 return False
         pc = o.pose_centroid()
         if t.pose is not None and pc is not None:
@@ -102,7 +111,7 @@ class EpisodeTracker:
         async with self._lock:
             recent = self._open.setdefault(t.device_id, [])
             current = recent[-1:] if recent else []
-            target = next((o for o in current if self._fits(o, t, self.s.episode_split_sim)), None)
+            target = next((o for o in current if self._fits(o, t, self.s.episode_split_sim, recent=True)), None)
             if target is None:  # rejoining an older episode after a detour needs a closer match
                 target = next((o for o in reversed(recent[:-1]) if self._fits(o, t, self.s.episode_rejoin_sim)), None)
             if target is None:
@@ -126,6 +135,9 @@ class EpisodeTracker:
         e.n_tokens += 1
         if t.image_vec is not None:
             o.vec_sum = list(t.image_vec) if o.vec_sum is None else [a + b for a, b in zip(o.vec_sum, t.image_vec)]
+            o.recent.append(list(t.image_vec))
+            while len(o.recent) > max(1, self.s.episode_recent_n):
+                o.recent.popleft()
         if t.pose is not None:
             o.pose_sum = [a + b for a, b in zip(o.pose_sum, (t.pose.x, t.pose.y, t.pose.z, t.pose.yaw))]
             o.pose_n += 1

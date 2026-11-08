@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     episode_split_sim: float = 0.70  # SigLIP-B/16, calibrated on tools/make_day.py footage
     episode_move_m: float = 3.0
     episode_rejoin_last: int = 4
+    episode_recent_n: int = 6  # continuing an episode compares to its last N frames, not the whole-episode mean
+    episode_max_s: float = 1800.0  # cap so a long stay in one place still yields queryable chunks
 
     search_w_bm25: float = 1.0
     search_w_text: float = 1.0
