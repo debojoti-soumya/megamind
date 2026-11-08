@@ -165,7 +165,8 @@ This is a hackathon prototype; do not wear it where recording isn't welcome.
   disk for the second or so before the worker blurs it.
 - **Purge** (`DELETE /v1/memories?device_id=&since=`) also drops frames that were accepted but
   not yet stored (queued or mid-enrichment) and the dedupe state for the purged window, so
-  nothing from before the purge reappears afterwards.
+  those frames do not reappear afterwards. (An episode summary the background consolidator is
+  writing at that moment can still land; purge again if it does.)
 
 ## License
 

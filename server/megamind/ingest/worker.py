@@ -100,6 +100,8 @@ class EnrichmentWorker:
                 await self._process(token, jpeg)
             except Exception:  # noqa: BLE001
                 log.exception("enrichment failed for %s", token.id)
+                # never stored, so no purge would ever find it; and it may be the unblurred upload
+                _unlink(token.thumb_path)
             finally:
                 self._inflight.pop(token.id, None)
                 if token.id in self._discarded:

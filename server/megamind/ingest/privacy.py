@@ -79,14 +79,16 @@ def blur_faces(jpeg: bytes, detector: FaceDetector | None = None) -> tuple[bytes
     if detector is None:
         return jpeg, 0
     try:
-        img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+        src = Image.open(io.BytesIO(jpeg))
+        img = src.convert("RGB")
     except Exception:  # noqa: BLE001
         return jpeg, 0
     boxes = list(detector(img))
     if not boxes:
         return jpeg, 0
     buf = io.BytesIO()
-    blur_boxes(img, boxes).save(buf, format="JPEG", quality=90)
+    exif = src.info.get("exif")  # keep the orientation tag: boxes are in stored-pixel coordinates
+    blur_boxes(img, boxes).save(buf, format="JPEG", quality=90, **({"exif": exif} if exif else {}))
     return buf.getvalue(), len(boxes)
 
 

@@ -94,6 +94,34 @@ def test_real_haar_detector_smoke():
     assert det(Image.open(flat)) == []
 
 
+def test_real_haar_detector_blurs_a_real_face():
+    pytest.importorskip("cv2")
+    skdata = pytest.importorskip("skimage.data")  # public-domain NASA portrait, not committed to the repo
+    buf = io.BytesIO()
+    Image.fromarray(skdata.astronaut()).resize((480, 480)).save(buf, format="JPEG", quality=90)
+    raw = buf.getvalue()
+    privacy.haar_detector.cache_clear()
+    det = privacy.haar_detector()
+    boxes = det(Image.open(io.BytesIO(raw)))
+    assert len(boxes) == 1
+    x, y, w, h = boxes[0]
+    out, n = blur_faces(raw, det)
+    assert n == 1
+    face = (x + w // 4, y + h // 4, x + 3 * w // 4, y + 3 * h // 4)
+    assert _stddev(out, face) < 0.5 * _stddev(raw, face)
+    assert det(Image.open(io.BytesIO(out))) == []  # no longer detectable as a face
+
+
+def test_blur_faces_keeps_exif_orientation():
+    img = Image.open(io.BytesIO(_noisy_jpeg()))
+    exif = Image.Exif()
+    exif[0x0112] = 6  # Orientation: rotate 90 CW
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", exif=exif.tobytes())
+    out, n = blur_faces(buf.getvalue(), fake_detector)
+    assert n == 1 and Image.open(io.BytesIO(out)).getexif().get(0x0112) == 6
+
+
 # --- worker -----------------------------------------------------------------------------------
 
 
@@ -162,6 +190,23 @@ async def test_worker_without_faces_leaves_thumbnail_untouched(tmp_path):
     await worker.queue.join()
     await worker.stop()
     assert Path(tok.thumb_path).read_bytes() == raw and enricher.seen == [raw]
+
+
+async def test_failed_frame_thumbnail_is_removed(tmp_path):
+    """A frame whose blur/enrichment fails is never stored, so no purge could reach its raw thumbnail."""
+
+    def broken_detector(img):
+        raise RuntimeError("cascade exploded")
+
+    store = InMemoryStore()
+    worker = EnrichmentWorker(store, RecordingEnricher(), MockTextEmbedder(), None, face_blur=FaceBlur(broken_detector))
+    await worker.start()
+    raw = _noisy_jpeg()
+    tok = _token(tmp_path, 0, raw)
+    await worker.submit(tok, raw)
+    await asyncio.wait_for(worker.queue.join(), 5)
+    await worker.stop()
+    assert await store.count() == 0 and not Path(tok.thumb_path).exists()
 
 
 async def test_worker_purge_discards_queued_and_inflight(tmp_path):
