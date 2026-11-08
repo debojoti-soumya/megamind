@@ -328,7 +328,8 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | `AmbientAudioRecorder.cs` | 1 | ambient mic → 15 s 16 kHz mono PCM16 WAV chunks → `POST /v1/audio`; silence gate, backoff, pauses for push-to-talk / A/X / background |
 | `AudioChunkCodec.cs` | 1 | pure C# WAV + meta encoding (native-app layout) and the RMS level for the silence gate |
 | `CaptureHud.cs` | 1 | capture status data source (`ShortStatus()` header strip, `FullReport()` Debug view) + A/X or middle-pinch pause; the old head-locked canvas only with `showOwnCanvas` |
-| `ChatClient.cs` | 3 | push-to-talk (trigger or index pinch) → 16 kHz WAV → `POST /v1/chat` → play audio; barge-in, latency; tells `AmbientAudioRecorder` to release the mic while recording |
+| `ChatClient.cs` | 3 | push-to-talk (trigger or index pinch) → 16 kHz WAV → `POST /v1/chat/stream` (answer text as it streams, sentence `audio` clips queued; `POST /v1/chat` fallback on older servers, `streamAnswers` off) → play audio; barge-in, latency; tells `AmbientAudioRecorder` to release the mic while recording |
+| `SseParser.cs`, `SseDownloadHandler.cs`, `SpeechClipCodec.cs` | 3 | incremental SSE parsing for `/v1/chat/stream` (pure C# parser + `DownloadHandlerScript`), inline sentence-clip decoding (WAV / PCM16) |
 | `ChatPanel.cs` | 3 | transcript bubbles, cited thumbnails, confidence/latency line, status HUD (`/v1/health` poll) |
 | `PanelAnchor.cs` | 3 | tag-along panel: eye height, `panelDistance` m ahead, glides back when the head leaves a 25° / 0.5 m dead zone; Pin/Unpin (world-lock), hold B/Y 0.5 s to drag; A-/A+ UI scale (PlayerPrefs `megamind.uiScale`) |
 | `SettingsPanel.cs` | 3 | runtime server URL / device id, new session, purge memory |
@@ -405,7 +406,7 @@ toggle. The chat panel header shows:
   *Unpin panel*, *Text size 1x → 1.25x → 1.5x → 2x*, *New session*, *Purge memory*. Only one overlay is open at a time;
   the dropdown closes on the Menu button, on any menu entry, or by clicking anywhere else on the panel.
 
-**Voice commands.** STT runs inside `POST /v1/chat` (there is no STT-only endpoint), so `ChatClient` hands the returned
+**Voice commands.** With a server that sends the stream's early `transcript` event, `ChatClient` matches commands on it and closes the stream, so the server stops the turn before Claude/TTS finish. Otherwise: STT runs inside `POST /v1/chat` (there is no STT-only endpoint), so `ChatClient` hands the returned
 `transcript` to `PanelMenu.TryVoiceCommand` before showing the answer: a short utterance (≤ 6 words after dropping
 fillers like "please", "hey", "megamind") that equals one of the phrases in `VoiceCommands.cs` is executed, the answer
 and its audio are dropped, and a dim system chip (`"open menu" → menu opened`) is added to the transcript. Cost: the

@@ -62,6 +62,25 @@ namespace Megamind
 
     [Serializable] public class ChatStreamError { public string detail; }
 
+    // `transcript`: what STT heard (voice) or the typed text, before retrieval/Claude; ChatClient matches voice
+    // commands on it and cancels the turn. Servers without it: the transcript arrives only in `final`.
+    [Serializable] public class ChatStreamTranscript { public string text; }
+
+    // `audio`: one spoken sentence of the answer, in `seq` order (0, 1, ...). Either `url` (a short clip on the server,
+    // e.g. /v1/audio/{id}.wav; `format` "wav" | "mp3") or `b64` (inline bytes; `format` "wav" or "pcm16" = raw
+    // little-endian PCM16 at `sample_rate`, default 24000, mono). `text` = the sentence. When a turn sent any `audio`
+    // event the client does not also play `final.audio_url`. A `reset` drops clips that have not played yet.
+    [Serializable]
+    public class ChatStreamAudio
+    {
+        public int seq;
+        public string url;
+        public string b64;
+        public string text;
+        public string format;
+        public int sample_rate;
+    }
+
     [Serializable] public class HealthModels { public string claude, reader, embed; }
 
     [Serializable] public class HealthResponse { public string status; public int store_count; public HealthModels models; }
