@@ -55,6 +55,7 @@ docs/       design doc (LaTeX + PDF), api.md, prior-art.md, resources.md
 server/     FastAPI backend — ingest, memory store, agent (Python 3.11+)
 tools/      feeder.py (webcam/video → /v1/frames), ask.py (CLI chat)
 headset/    Unity project for Quest 3 — setup README + C# scripts
+headset-android/  optional native Quest 3 capture app (Kotlin; frames + ambient audio, verified on device)
 .github/    CI: ruff + pytest on server/
 ```
 
@@ -129,6 +130,11 @@ Quest users (connections, sideloading, test runbook, demo-day card). Requirement
 with developer mode, Unity 2022.3 LTS or Unity 6, Meta XR Core SDK v74+, and Meta's
 [Passthrough Camera API samples](https://github.com/oculus-samples/Unity-PassthroughCameraApiSamples).
 Build and run Meta's *unmodified* sample first; only then add our scripts.
+
+Optional, capture only: [`headset-android/`](headset-android/README.md) is a small native Kotlin app (no Unity) that
+streams passthrough frames to `/v1/frames` and ambient audio to `/v1/audio`, keeps capturing behind the Quest
+Browser, and queues uploads while offline. Its capture code is verified on a Quest 3 (Horizon OS v209); the Unity
+app above is not yet tested on device and remains the full experience (AR chat panel).
 
 ## Development
 
