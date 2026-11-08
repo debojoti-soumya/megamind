@@ -244,6 +244,16 @@ class LiveMemory:
             except Exception:  # noqa: BLE001
                 log.exception("live memory: transcript lookup failed")
                 rows = []
+            sink = getattr(self.state, "transcripts", None)  # speech merge: a merged token keeps its start ts
+            if sink is not None and hasattr(sink, "open_tokens"):
+                seen = {t.id for t in rows}
+                since = now - self.cfg.transcript_window_s
+                rows += [
+                    t
+                    for t in sink.open_tokens(device_id, since)
+                    if t.id not in seen and t.ts <= now + 5.0 and t.kind == "transcript"
+                ]
+                rows.sort(key=lambda t: t.ts)
             fresh = [t for t in rows if t.id not in have_ids][-self.cfg.transcripts :]
             items.extend(fresh)
 

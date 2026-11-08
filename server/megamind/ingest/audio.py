@@ -92,6 +92,11 @@ class TranscriptSink:
         else:
             self._last.pop(device_id, None)
 
+    def open_tokens(self, device_id: str | None, since: float) -> list[MemoryToken]:
+        """Tokens still open for merging whose latest speech ended at/after `since`. A merged token keeps its
+        span-start `ts`, so live memory (main #98) uses this to see speech that is still going on."""
+        return [o.token for d, o in self._last.items() if (device_id is None or d == device_id) and o.end_ts >= since]
+
     @contextlib.asynccontextmanager
     async def purging(self, device_id: str | None = None) -> AsyncIterator[None]:
         """Hold the write lock around a purge: in-flight writes land first (and get purged), later speech

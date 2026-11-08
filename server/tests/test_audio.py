@@ -333,7 +333,8 @@ async def test_audio_chunks_close_together_merge_into_one_token(client):
     tok = await app.state.store.get(tid)
     assert tok.caption == 'Speech heard nearby: "so the plan is that we meet at the north entrance on Tuesday"'
     assert tok.ts == pytest.approx(T0) and tok.kind == "transcript"
-    assert tok.text_vec == pytest.approx(await app.state.text_embedder.embed(tok.caption), abs=1e-6)  # re-embedded
+    # re-embedded; abs=1e-3 because the lancedb store keeps vectors as float16 by default (main #94)
+    assert tok.text_vec == pytest.approx(await app.state.text_embedder.embed(tok.caption), abs=1e-3)
     assert await app.state.store.count() == 1
     hits = (await c.get("/v1/memories", params={"q": "plan north entrance"})).json()["results"]
     assert [h["id"] for h in hits] == [tid]
