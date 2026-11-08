@@ -45,8 +45,13 @@ Mirrors `MemoryToken` in `docs/api.md` plus one derived column:
 | `thumb_path` | string | relative path as given by ingest |
 | `frame_hash` | string | dHash hex, used by `recent_hashes` for dedupe |
 | `episode_id` | string \| null | assigned by `EpisodeTracker` on insert |
-| `text_vec` | fixed_size_list\<float32\>[D_t] \| null | D_t inferred from the first token that carries one (1024 for OpenAI via `EMBED_DIM`, 256 for the mock) |
-| `image_vec` | fixed_size_list\<float32\>[D_i] \| null | likewise (768 for SigLIP) |
+| `text_vec` | fixed_size_list\<float16\>[D_t] \| null | D_t inferred from the first token that carries one (1024 for OpenAI via `EMBED_DIM`, 256 for the mock) |
+| `image_vec` | fixed_size_list\<float16\>[D_i] \| null | likewise (768 for SigLIP) |
+
+Vectors are float16 in new tables (`LANCEDB_VECTOR_DTYPE=float16`, the default; `float32` to opt out): half the
+bytes (1024 + 768 dims: 7.2 → 3.6 KB/token) and the same nearest neighbours (tested against float32 on random
+unit vectors, and with an IVF index over a float16 column that contains nulls). The dtype of an existing table is
+read from its schema on open and never migrated, so stores created before this change stay float32.
 
 Vector dimensions are frozen once the table exists; switching embedders (e.g. mock 256-d → OpenAI 1024-d, or SigLIP B/16 768-d → B/32 512-d)
 requires a purge or a fresh `LANCEDB_PATH`.
@@ -57,10 +62,10 @@ requires a purge or a fresh `LANCEDB_PATH`.
 |---|---|
 | `base.py` | `MemoryStore` ABC + primitive contract (`vector_search`, `keyword_search`, `get_many`, `range`, `neighbors`, `search`, `purge`, …) |
 | `memory_store.py` / `lancedb_store.py` | the two backends (tests run every store test against both) |
-| `rrf.py` | reciprocal-rank fusion; `fuse_hits` drops non-positive scores so unrelated queries return nothing |
+| `rrf.py` | reciprocal-rank fusion; `fuse_hits` drops non-positive scores so unrelated queries return nothing; `weighted_rrf` + `image_conf` for calibrated image fusion (below) |
 | `episodes.py` | `EpisodeTracker`: online `episode_id` assignment (gap > 120 s or image cosine < 0.80 → new episode; detours may rejoin one of the last 4) |
 | `consolidate.py` | `Consolidator`: writes one `kind="episode"` summary token per closed episode; `python -m megamind.store.consolidate [--loop]` |
-| `embeddings.py` | `build_text_embedder` / `build_image_embedder`: OpenAI text-embedding-3-small, open_clip SigLIP (CPU), mocks |
+| `embeddings.py` | `build_text_embedder` / `build_image_embedder`: OpenAI text-embedding-3-small, local bge-small (sentence-transformers, CPU, query instruction via `embed_query`), open_clip SigLIP (CPU), mocks |
 | `purge.py` | retention CLI, see below |
 | `bench.py` (planned) | 10k-token latency benchmark of every primitive |
 
@@ -88,3 +93,15 @@ All memories are wearer data; deletion is total (rows **and** thumbnails) and sy
 * Every `add`/`add_many` is durable on return (Lance appends a new version). Crash-safe; no WAL to replay.
 * Index maintenance is incremental: FTS index is created on first write and Lance re-indexes new rows on
   `optimize()`; unindexed rows are still searched (brute force) in the meantime.
+
+## Calibrated image fusion
+
+SigLIP is trained with `p(match) = sigmoid(scale * cos + bias)`, so an image–text cosine converts to a match
+probability. When the image embedder exposes `calibration` (`OpenCLIPImageEmbedder` with a SigLIP model; CLIP
+models and mocks return `None`) and `SEARCH_CALIBRATE_IMAGE=true` (default), `main.py` sets
+`MemoryStore.image_calibration = (scale, bias)` and logs it. Each image-vector hit's RRF contribution is then
+multiplied by `p(cos)`, in hybrid mode, both in `store.search()` (`/v1/memories`) and in `HybridRetriever._fuse` (the
+`recall_memory` path). Visual mode ranks the image list alone and is left as it was. The nearest image of
+a question with no visual answer is usually still a poor match, and without calibration it got full rank-0 credit
+and could outrank the exact OCR/BM25 hit. Ported from PR #54, which measured sign-text questions going from 42% to
+89% right-frame-first. The planner's per-type image weights are unchanged and should be retuned with benchmark data.

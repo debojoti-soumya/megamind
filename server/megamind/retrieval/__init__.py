@@ -32,7 +32,8 @@ __all__ = [
 def build_retriever(settings, store, text_embedder, image_embedder=None) -> tuple[Retriever, UCCIndexer | None]:
     """Select the backend from `settings.retriever_backend` (default: our hybrid). With `ucc` (and a key) the
     second item is the store -> corpus sync job the app must start; otherwise it is None."""
-    hybrid = HybridRetriever(store, text_embedder, image_embedder, tz=getattr(settings, "wearer_tz", None))
+    cfg = HybridConfig(speech_link_s=getattr(settings, "speech_link_s", HybridConfig.speech_link_s))
+    hybrid = HybridRetriever(store, text_embedder, image_embedder, tz=getattr(settings, "wearer_tz", None), config=cfg)
     if getattr(settings, "retriever_backend", "hybrid") == "ucc":
         if getattr(settings, "ucc_api_key", ""):
             return build_ucc(settings, store, hybrid)

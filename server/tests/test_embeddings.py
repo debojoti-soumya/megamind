@@ -1,17 +1,21 @@
 import json
 import math
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from megamind.config import Settings
 from megamind.ingest.enrich import MockTextEmbedder
+from megamind.main import image_calibration
 from megamind.store.embeddings import (
     MockImageEmbedder,
     OpenAITextEmbedder,
+    OpenCLIPImageEmbedder,
     build_image_embedder,
     build_text_embedder,
     normalize,
+    siglip_calibration,
 )
 
 
@@ -157,3 +161,50 @@ async def test_openai_embedder_degrades_on_transport_error():
 
     emb = OpenAITextEmbedder("sk", dim=8, transport=httpx.MockTransport(handler))
     assert len(await emb.embed("x")) == 8 and emb.degraded == "last error ConnectError"
+
+
+# ---------------------------------------------------------------- SigLIP calibration (port of PR #54), no torch
+
+
+class _FakeTensor:
+    def __init__(self, v: float) -> None:
+        self.v = v
+
+    def detach(self):
+        return self
+
+    def item(self) -> float:
+        return self.v
+
+
+def _fake_openclip(model) -> OpenCLIPImageEmbedder:
+    emb = object.__new__(OpenCLIPImageEmbedder)  # skip __init__: no open_clip / torch needed
+    emb.model = model
+    return emb
+
+
+def test_siglip_calibration_from_model_attributes():
+    siglip = SimpleNamespace(logit_scale=_FakeTensor(math.log(117.3)), logit_bias=_FakeTensor(-12.9))
+    scale, bias = _fake_openclip(siglip).calibration
+    assert scale == pytest.approx(117.3) and bias == pytest.approx(-12.9)
+    assert siglip_calibration(SimpleNamespace(logit_scale=math.log(10.0), logit_bias=-1.0)) == pytest.approx(
+        (10.0, -1.0)
+    )
+
+
+def test_clip_models_and_mocks_are_uncalibrated():
+    clip = SimpleNamespace(logit_scale=_FakeTensor(math.log(100.0)))  # CLIP: scale but no sigmoid bias
+    assert _fake_openclip(clip).calibration is None
+    assert MockImageEmbedder().calibration is None
+
+
+def test_main_sets_store_calibration_only_when_enabled():
+    class _Cal(MockImageEmbedder):
+        calibration = (117.3, -12.9)
+
+    on = Settings(_env_file=None)
+    off = Settings(_env_file=None, search_calibrate_image=False)
+    assert image_calibration(on, _Cal()) == (117.3, -12.9)
+    assert image_calibration(off, _Cal()) is None
+    assert image_calibration(on, None) is None
+    assert image_calibration(on, MockImageEmbedder()) is None

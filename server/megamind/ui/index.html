@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Megamind — AR panel prototype</title>
+<style>
+  :root {
+    --panel-w: 560px;
+    --glass: rgba(14, 18, 28, 0.72);
+    --glass-border: rgba(255, 255, 255, 0.14);
+    --fg: #eef2f7;
+    --muted: #9aa6b8;
+    --accent: #6ea8ff;
+    --user: #2b5cff;
+    --assistant: rgba(255, 255, 255, 0.08);
+    --ok: #37d67a;
+    --warn: #ffb547;
+    --err: #ff5c6c;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: #000; color: var(--fg);
+    font: 15px/1.4 -apple-system, "Segoe UI", Inter, Roboto, sans-serif; overflow: hidden; }
+
+  /* ---------- passthrough ---------- */
+  #passthrough { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover;
+    background: radial-gradient(1200px 800px at 30% 20%, #223 0%, #0b0e14 60%, #000 100%); }
+  #passthrough.off { filter: brightness(0.9); }
+  #nocam { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; pointer-events: none; }
+  #nocam.show { display: flex; }
+
+  /* ---------- panel ---------- */
+  #panel {
+    position: fixed; left: 50%; top: 50%; width: var(--panel-w); max-width: calc(100vw - 24px);
+    height: min(720px, calc(100vh - 24px)); transform: translate(-50%, -50%);
+    display: flex; flex-direction: column;
+    background: var(--glass); backdrop-filter: blur(18px) saturate(140%); -webkit-backdrop-filter: blur(18px) saturate(140%);
+    border: 1px solid var(--glass-border); border-radius: 22px;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.08);
+    overflow: hidden;
+  }
+  #panel.dragging { cursor: grabbing; }
+
+  header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; cursor: grab; user-select: none;
+    border-bottom: 1px solid rgba(255,255,255,0.08); }
+  header .logo { font-weight: 700; letter-spacing: 0.02em; }
+  header .logo span { color: var(--accent); }
+  .hud { display: flex; gap: 14px; margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .hud .item { display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 0 transparent; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+  .dot.warn { background: var(--warn); }
+  .dot.err { background: var(--err); }
+  .dot.rec { background: var(--err); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(255,92,108,0.6);} 50% { box-shadow: 0 0 0 7px rgba(255,92,108,0);} }
+  .iconbtn { display: inline-flex; align-items: center; background: transparent; border: 0; color: var(--muted); font-size: 16px; cursor: pointer; padding: 4px 6px; border-radius: 8px; }
+  .iconbtn:hover { background: rgba(255,255,255,0.08); color: var(--fg); }
+
+  /* ---------- transcript ---------- */
+  #transcript { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; scroll-behavior: smooth; }
+  #transcript::-webkit-scrollbar { width: 6px; } #transcript::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+  .msg { display: flex; flex-direction: column; gap: 6px; max-width: 86%; animation: rise 0.25s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px);} to { opacity: 1; transform: none;} }
+  .msg.user { align-self: flex-end; align-items: flex-end; }
+  .msg.assistant { align-self: flex-start; }
+  .bubble { padding: 10px 14px; border-radius: 16px; white-space: pre-wrap; word-wrap: break-word; }
+  .user .bubble { background: var(--user); border-bottom-right-radius: 6px; }
+  .assistant .bubble { background: var(--assistant); border: 1px solid rgba(255,255,255,0.08); border-bottom-left-radius: 6px; }
+  .assistant .bubble.error { border-color: rgba(255,92,108,0.5); color: #ffb3ba; }
+  .meta { font-size: 11px; color: var(--muted); padding: 0 4px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .meta > span { white-space: nowrap; }
+  .meta .conf { padding: 0 6px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.12); }
+  .conf.high { color: var(--ok); } .conf.medium { color: var(--warn); } .conf.low, .conf.not_found { color: var(--muted); }
+  .thumbs { display: flex; gap: 8px; flex-wrap: wrap; }
+  .thumb { position: relative; width: 132px; height: 99px; border-radius: 10px; overflow: hidden; background: rgba(0,0,0,0.4);
+    border: 1px solid rgba(255,255,255,0.12); cursor: zoom-in; flex: none; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb .ts { position: absolute; left: 6px; bottom: 5px; font-size: 11px; padding: 1px 6px; border-radius: 6px;
+    background: rgba(0,0,0,0.6); color: #fff; font-variant-numeric: tabular-nums; }
+  .empty { margin: auto; text-align: center; color: var(--muted); font-size: 14px; max-width: 320px; }
+  .empty kbd { background: rgba(255,255,255,0.1); border-radius: 5px; padding: 1px 6px; font-family: inherit; }
+
+  /* ---------- indicators ---------- */
+  #indicator { height: 26px; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  #indicator .bars { display: none; gap: 3px; align-items: flex-end; height: 14px; }
+  #indicator .bars i { width: 3px; background: var(--err); border-radius: 2px; animation: eq 0.8s infinite ease-in-out; }
+  #indicator .bars i:nth-child(2) { animation-delay: 0.1s; } #indicator .bars i:nth-child(3) { animation-delay: 0.2s; }
+  #indicator .bars i:nth-child(4) { animation-delay: 0.3s; } #indicator .bars i:nth-child(5) { animation-delay: 0.15s; }
+  @keyframes eq { 0%,100% { height: 4px; } 50% { height: 14px; } }
+  #indicator.listening .bars { display: flex; }
+  #indicator .spin { display: none; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.2); border-top-color: var(--accent);
+    border-radius: 50%; animation: rot 0.8s linear infinite; }
+  @keyframes rot { to { transform: rotate(360deg);} }
+  #indicator.thinking .spin { display: block; }
+
+  /* ---------- composer ---------- */
+  footer { display: flex; gap: 10px; align-items: center; padding: 10px 14px 14px; border-top: 1px solid rgba(255,255,255,0.08); }
+  #ptt { flex: none; width: 56px; height: 56px; border-radius: 50%; border: 0; cursor: pointer; color: #fff;
+    background: linear-gradient(180deg, #4d7dff, #2b5cff); box-shadow: 0 8px 20px rgba(43,92,255,0.35); font-size: 22px;
+    display: flex; align-items: center; justify-content: center; transition: transform 0.1s, background 0.2s; user-select: none; -webkit-user-select: none; touch-action: none; }
+  #ptt:active, #ptt.on { transform: scale(0.94); background: linear-gradient(180deg, #ff6b78, #ff3d50); box-shadow: 0 0 0 8px rgba(255,92,108,0.2); }
+  #ptt:disabled { opacity: 0.4; cursor: not-allowed; }
+  #text { flex: 1; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.1); color: var(--fg); border-radius: 14px;
+    padding: 12px 14px; font: inherit; outline: none; }
+  #text:focus { border-color: var(--accent); }
+  #send { background: rgba(255,255,255,0.1); border: 0; color: var(--fg); border-radius: 12px; padding: 12px 14px; cursor: pointer; font: inherit; }
+  #send:hover { background: rgba(255,255,255,0.18); }
+
+  /* ---------- settings ---------- */
+  #settings { position: absolute; inset: 0; background: rgba(10,12,18,0.96); display: none; flex-direction: column; padding: 18px; gap: 12px; overflow-y: auto; }
+  #settings.show { display: flex; }
+  #settings h2 { margin: 0 0 4px; font-size: 16px; }
+  #settings label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  #settings input[type=text], #settings input[type=number] { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.1); color: var(--fg);
+    border-radius: 10px; padding: 9px 11px; font: inherit; font-size: 14px; }
+  #settings .row { display: flex; gap: 10px; align-items: center; }
+  #settings .row label { flex: 1; }
+  .toggle { display: flex !important; flex-direction: row !important; align-items: center; gap: 8px !important; color: var(--fg) !important; font-size: 14px !important; }
+  .btn { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.12); color: var(--fg); border-radius: 10px; padding: 9px 12px; cursor: pointer; font: inherit; }
+  .btn.danger { border-color: rgba(255,92,108,0.5); color: #ffb3ba; }
+  .btn.primary { background: var(--user); border-color: transparent; }
+  .hint { font-size: 12px; color: var(--muted); }
+
+  /* ---------- lightbox ---------- */
+  #lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: none; align-items: center; justify-content: center; z-index: 10; cursor: zoom-out; }
+  #lightbox.show { display: flex; }
+  #lightbox img { max-width: 80vw; max-height: 70vh; border-radius: 14px; border: 1px solid var(--glass-border); }
+  #lightbox .cap { position: absolute; bottom: 8vh; left: 50%; transform: translateX(-50%); max-width: 70vw; text-align: center;
+    background: var(--glass); padding: 10px 16px; border-radius: 12px; font-size: 14px; }
+
+  #capturedot { position: fixed; top: 14px; right: 16px; display: none; align-items: center; gap: 8px; font-size: 12px; color: #fff;
+    background: rgba(0,0,0,0.5); padding: 6px 10px; border-radius: 20px; }
+  #capturedot.show { display: flex; }
+</style>
+</head>
+<body>
+<video id="passthrough" autoplay muted playsinline></video>
+<div id="nocam">passthrough unavailable — no camera</div>
+<div id="capturedot"><span class="dot rec"></span><span id="capturetext">capturing</span></div>
+<canvas id="grab" hidden></canvas>
+
+<section id="panel" aria-label="Megamind chat panel">
+  <header id="drag">
+    <div class="logo">Mega<span>mind</span></div>
+    <div class="hud">
+      <div class="item" title="server connectivity"><span id="srvdot" class="dot"></span><span id="srvtext">connecting…</span></div>
+      <div class="item" title="memory tokens stored"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4a4 4 0 0 0-4 4v1a3 3 0 0 0-1 5.8V16a4 4 0 0 0 5 3.9A4 4 0 0 0 17 16v-1.2A3 3 0 0 0 16 9V8a4 4 0 0 0-4-4z"/><path d="M12 4v16"/></svg> <span id="storecount">–</span></div>
+      <div class="item" title="capture: accepted/sent"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg> <span id="capcount">off</span></div>
+      <div class="item" title="last round-trip"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> <span id="latency">–</span></div>
+    </div>
+    <button class="iconbtn" id="opensettings" title="settings"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+  </header>
+
+  <div id="transcript">
+    <div class="empty" id="empty">
+      Hold <kbd>Space</kbd> or the mic button and ask about something you saw.<br>
+      <span class="hint">e.g. “where did I leave my keys?”</span>
+    </div>
+  </div>
+
+  <div id="indicator">
+    <div class="bars"><i></i><i></i><i></i><i></i><i></i></div>
+    <div class="spin"></div>
+    <span id="indtext"></span>
+  </div>
+
+  <footer>
+    <button id="ptt" title="hold to talk (Space)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
+    <input id="text" placeholder="…or type a question" autocomplete="off">
+    <button id="send">Send</button>
+  </footer>
+
+  <div id="settings">
+    <div class="row"><h2>Settings</h2><button class="iconbtn" id="closesettings" style="margin-left:auto" aria-label="close">&times;</button></div>
+    <label>Server base URL <input type="text" id="s_server" placeholder="http://100.x.y.z:8000"></label>
+    <div class="row">
+      <label>Device id <input type="text" id="s_device"></label>
+      <label>Session id <input type="text" id="s_session"></label>
+    </div>
+    <label class="toggle"><input type="checkbox" id="s_capture"> Capture webcam frames → <code>/v1/frames</code></label>
+    <div class="row">
+      <label>Capture fps <input type="number" id="s_fps" min="0.2" max="5" step="0.2"></label>
+      <label>JPEG max width <input type="number" id="s_width" min="320" max="1920" step="40"></label>
+    </div>
+    <label class="toggle"><input type="checkbox" id="s_autoplay"> Speak answers (play TTS audio)</label>
+    <label class="toggle"><input type="checkbox" id="s_showtools"> Show tool calls under answers</label>
+    <div class="row" style="margin-top:8px">
+      <button class="btn primary" id="s_save">Save</button>
+      <button class="btn" id="s_newsession">New session</button>
+      <button class="btn danger" id="s_purge" style="margin-left:auto">Purge memory for device</button>
+    </div>
+    <p class="hint">The panel talks to the server only through <code>docs/api.md</code>. Drag the header to re-anchor the panel.
+      Mic and camera need a secure context (localhost or HTTPS).</p>
+  </div>
+</section>
+
+<div id="lightbox"><img id="lbimg" alt=""><div class="cap" id="lbcap"></div></div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const LS = 'megamind.ui.v1';
+
+  // ---------- settings ----------
+  const defaults = {
+    server: location.origin.startsWith('http') ? location.origin : 'http://localhost:8000',
+    device: 'browser-' + Math.random().toString(36).slice(2, 7),
+    session: crypto.randomUUID().replace(/-/g, ''),
+    capture: false, fps: 1, width: 960, autoplay: true, showtools: false,
+  };
+  let cfg = { ...defaults, ...(JSON.parse(localStorage.getItem(LS) || '{}')) };
+  const saveCfg = () => localStorage.setItem(LS, JSON.stringify(cfg));
+  saveCfg();
+  const url = (p) => cfg.server.replace(/\/+$/, '') + p;
+
+  const fillSettings = () => {
+    $('s_server').value = cfg.server; $('s_device').value = cfg.device; $('s_session').value = cfg.session;
+    $('s_capture').checked = cfg.capture; $('s_fps').value = cfg.fps; $('s_width').value = cfg.width;
+    $('s_autoplay').checked = cfg.autoplay; $('s_showtools').checked = cfg.showtools;
+  };
+  $('opensettings').onclick = () => { fillSettings(); $('settings').classList.add('show'); };
+  $('closesettings').onclick = () => $('settings').classList.remove('show');
+  $('s_save').onclick = () => {
+    cfg.server = $('s_server').value.trim() || defaults.server;
+    cfg.device = $('s_device').value.trim() || defaults.device;
+    cfg.session = $('s_session').value.trim() || defaults.session;
+    cfg.capture = $('s_capture').checked; cfg.fps = +$('s_fps').value || 1; cfg.width = +$('s_width').value || 960;
+    cfg.autoplay = $('s_autoplay').checked; cfg.showtools = $('s_showtools').checked;
+    saveCfg(); $('settings').classList.remove('show'); applyCapture(); pollHealth();
+  };
+  $('s_newsession').onclick = () => { $('s_session').value = crypto.randomUUID().replace(/-/g, ''); };
+  $('s_purge').onclick = async () => {
+    if (!confirm(`Delete all memory tokens for device "${cfg.device}"?`)) return;
+    try {
+      const r = await fetch(url('/v1/memories?device_id=' + encodeURIComponent(cfg.device)), { method: 'DELETE' });
+      const j = await r.json(); addAssistant(`Purged ${j.deleted} memory tokens for ${cfg.device}.`, [], null, false);
+    } catch (e) { addAssistant('Purge failed: ' + e, [], null, true); }
+    $('settings').classList.remove('show'); pollHealth();
+  };
+
+  // ---------- health HUD ----------
+  let healthTimer;
+  async function pollHealth() {
+    clearTimeout(healthTimer);
+    try {
+      const ctl = new AbortController(); setTimeout(() => ctl.abort(), 3000);
+      const r = await fetch(url('/v1/health'), { signal: ctl.signal });
+      const j = await r.json();
+      $('srvdot').className = 'dot ok'; $('srvtext').textContent = new URL(cfg.server).host;
+      $('storecount').textContent = j.store_count;
+      $('ptt').disabled = false;
+    } catch {
+      $('srvdot').className = 'dot err'; $('srvtext').textContent = 'offline';
+      $('ptt').disabled = true;
+    }
+    healthTimer = setTimeout(pollHealth, 4000);
+  }
+
+  // ---------- passthrough + capture ----------
+  const video = $('passthrough');
+  let stream = null;
+  async function startCamera() {
+    if (!navigator.mediaDevices?.getUserMedia) { $('nocam').classList.add('show'); return; }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 960 }, facingMode: 'environment' }, audio: false });
+      video.srcObject = stream;
+    } catch (e) { console.warn('camera unavailable', e); $('nocam').classList.add('show'); }
+  }
+
+  let capTimer = null, sent = 0, accepted = 0, pending = 0, lastReason = '-';
+  const grab = $('grab');
+  function applyCapture() {
+    clearInterval(capTimer); capTimer = null;
+    $('capturedot').classList.toggle('show', cfg.capture);
+    if (!cfg.capture) { $('capcount').textContent = 'off'; return; }
+    $('capcount').textContent = `${accepted}/${sent}`;
+    capTimer = setInterval(captureOnce, 1000 / Math.max(0.1, cfg.fps));
+  }
+  function captureOnce() {
+    if (!stream || video.videoWidth < 16 || pending >= 10) return;
+    const scale = Math.min(1, cfg.width / video.videoWidth);
+    grab.width = Math.round(video.videoWidth * scale); grab.height = Math.round(video.videoHeight * scale);
+    grab.getContext('2d').drawImage(video, 0, 0, grab.width, grab.height);
+    grab.toBlob(async (blob) => {
+      if (!blob) return;
+      const fd = new FormData();
+      fd.append('image', blob, 'frame.jpg');
+      fd.append('meta', JSON.stringify({ device_id: cfg.device, ts: Date.now() / 1000, pose: null }));
+      pending++;
+      try {
+        const r = await fetch(url('/v1/frames'), { method: 'POST', body: fd });
+        const j = await r.json(); sent++; if (j.accepted) accepted++; lastReason = j.reason || 'ok';
+      } catch (e) { sent++; lastReason = 'net'; }
+      pending--;
+      $('capcount').textContent = `${accepted}/${sent}`;
+      $('capturetext').textContent = `capturing · ${lastReason}`;
+    }, 'image/jpeg', 0.75);
+  }
+
+  // ---------- transcript ----------
+  const transcript = $('transcript');
+  const fmtTime = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const ago = (ts) => { const s = Math.max(0, Date.now() / 1000 - ts); if (s < 60) return `${Math.round(s)}s ago`; if (s < 3600) return `${Math.round(s / 60)} min ago`; return `${(s / 3600).toFixed(1)} h ago`; };
+  function scrollEnd() { transcript.scrollTop = transcript.scrollHeight; }
+  function addUser(text) {
+    $('empty')?.remove();
+    const el = document.createElement('div'); el.className = 'msg user';
+    el.innerHTML = `<div class="bubble"></div><div class="meta"><span>${fmtTime(Date.now() / 1000)}</span></div>`;
+    el.querySelector('.bubble').textContent = text; transcript.appendChild(el); scrollEnd();
+  }
+  function addAssistant(text, cited, toolCalls, isError, ms) {
+    $('empty')?.remove();
+    const el = document.createElement('div'); el.className = 'msg assistant';
+    const b = document.createElement('div'); b.className = 'bubble' + (isError ? ' error' : ''); b.textContent = text; el.appendChild(b);
+    if (cited && cited.length) {
+      const row = document.createElement('div'); row.className = 'thumbs';
+      for (const c of cited) {
+        const t = document.createElement('div'); t.className = 'thumb'; t.title = c.caption || '';
+        t.innerHTML = `<img alt="" loading="lazy"><span class="ts">${ago(c.ts)}</span>`;
+        t.querySelector('img').src = url(c.thumb_url);
+        t.onclick = () => { $('lbimg').src = url(c.thumb_url); $('lbcap').textContent = `${fmtTime(c.ts)} (${ago(c.ts)}) — ${c.caption || ''}`; $('lightbox').classList.add('show'); };
+        row.appendChild(t);
+      }
+      el.appendChild(row);
+    }
+    const meta = document.createElement('div'); meta.className = 'meta';
+    const conf = toolCalls?.find(t => t.confidence)?.confidence;
+    meta.innerHTML = `<span>${fmtTime(Date.now() / 1000)}</span>` + (ms ? `<span>${(ms / 1000).toFixed(1)}s</span>` : '') +
+      (conf ? `<span class="conf ${conf}">${conf.replace('_', ' ')}</span>` : '');
+    if (cfg.showtools && toolCalls?.length) {
+      const tc = document.createElement('span'); tc.textContent = toolCalls.map(t => `${t.name}(${JSON.stringify(t.args || {})})`).join(' · '); meta.appendChild(tc);
+    }
+    el.appendChild(meta); transcript.appendChild(el); scrollEnd();
+  }
+  $('lightbox').onclick = () => $('lightbox').classList.remove('show');
+
+  // ---------- indicators ----------
+  const ind = $('indicator');
+  const setListening = (on) => { ind.classList.toggle('listening', on); $('ptt').classList.toggle('on', on); if (on) $('indtext').textContent = 'listening… release to send'; else if (!ind.classList.contains('thinking')) $('indtext').textContent = ''; };
+  const setThinking = (on) => { ind.classList.toggle('thinking', on); $('indtext').textContent = on ? 'thinking…' : ''; };
+
+  // ---------- chat ----------
+  let speaker = null;
+  async function handleResponse(r, t0, echoTranscript) {
+    const ms = performance.now() - t0;
+    if (!r.ok) { addAssistant(`(server error ${r.status}: ${(await r.text()).slice(0, 200)})`, [], null, true); return; }
+    const j = await r.json();
+    if (echoTranscript && j.transcript) addUser(j.transcript);
+    addAssistant(j.answer, j.cited, j.tool_calls, false, ms);
+    $('latency').textContent = (ms / 1000).toFixed(1) + 's';
+    if (j.audio_url && cfg.autoplay) {
+      try { speaker?.pause(); speaker = new Audio(url(j.audio_url)); await speaker.play(); } catch (e) { console.warn('audio playback failed', e); }
+    }
+  }
+  async function sendText(text) {
+    text = text.trim(); if (!text) return;
+    addUser(text); setThinking(true); const t0 = performance.now();
+    try {
+      const r = await fetch(url('/v1/chat'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: cfg.session, device_id: cfg.device, text }) });
+      await handleResponse(r, t0, false);
+    } catch (e) { addAssistant('(network error: ' + e.message + ')', [], null, true); }
+    finally { setThinking(false); }
+  }
+  async function sendAudio(wav) {
+    setThinking(true); const t0 = performance.now();
+    try {
+      const fd = new FormData();
+      fd.append('session_id', cfg.session); fd.append('device_id', cfg.device);
+      fd.append('audio', new Blob([wav], { type: 'audio/wav' }), 'q.wav');
+      const r = await fetch(url('/v1/chat'), { method: 'POST', body: fd });
+      await handleResponse(r, t0, true);
+    } catch (e) { addAssistant('(network error: ' + e.message + ')', [], null, true); }
+    finally { setThinking(false); }
+  }
+  $('send').onclick = () => { sendText($('text').value); $('text').value = ''; };
+  $('text').addEventListener('keydown', (e) => { if (e.key === 'Enter') { sendText($('text').value); $('text').value = ''; } });
+
+  // ---------- push-to-talk: mic -> 16 kHz mono PCM -> WAV ----------
+  const SR = 16000;
+  let ac = null, micStream = null, node = null, chunks = [], recording = false, recStart = 0;
+  async function ensureMic() {
+    if (ac) return true;
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+      ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SR });
+      const src = ac.createMediaStreamSource(micStream);
+      if (ac.audioWorklet) {
+        const code = `class R extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0][0];if(c)this.port.postMessage(c.slice(0));return true}}registerProcessor('mm-rec',R)`;
+        await ac.audioWorklet.addModule(URL.createObjectURL(new Blob([code], { type: 'application/javascript' })));
+        node = new AudioWorkletNode(ac, 'mm-rec');
+        node.port.onmessage = (e) => { if (recording) chunks.push(e.data); };
+        src.connect(node);
+      } else {
+        node = ac.createScriptProcessor(4096, 1, 1);
+        node.onaudioprocess = (e) => { if (recording) chunks.push(e.inputBuffer.getChannelData(0).slice(0)); };
+        src.connect(node); node.connect(ac.destination);
+      }
+      return true;
+    } catch (e) {
+      addAssistant('(microphone unavailable: ' + e.message + ' — use the text box instead)', [], null, true);
+      return false;
+    }
+  }
+  function encodeWav(buffers, sampleRate) {
+    let n = 0; for (const b of buffers) n += b.length;
+    const out = new ArrayBuffer(44 + n * 2), v = new DataView(out);
+    const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVE'); str(12, 'fmt '); v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, n * 2, true);
+    let o = 44; for (const b of buffers) for (let i = 0; i < b.length; i++, o += 2) { const s = Math.max(-1, Math.min(1, b[i])); v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true); }
+    return out;
+  }
+  async function beginRecording() {
+    if (recording || $('ptt').disabled) return;
+    if (!(await ensureMic())) return;
+    if (ac.state === 'suspended') await ac.resume();
+    chunks = []; recording = true; recStart = performance.now(); setListening(true);
+    speaker?.pause();
+  }
+  async function endRecording() {
+    if (!recording) return;
+    recording = false; setListening(false);
+    if (performance.now() - recStart < 300 || !chunks.length) return; // ignore accidental taps
+    await sendAudio(encodeWav(chunks, ac.sampleRate));
+  }
+  const ptt = $('ptt');
+  ptt.addEventListener('pointerdown', (e) => { e.preventDefault(); ptt.setPointerCapture(e.pointerId); beginRecording(); });
+  ptt.addEventListener('pointerup', endRecording);
+  ptt.addEventListener('pointercancel', endRecording);
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && !e.repeat && document.activeElement !== $('text') && !$('settings').classList.contains('show')) { e.preventDefault(); beginRecording(); }
+    if (e.key === 'Escape') { $('settings').classList.remove('show'); $('lightbox').classList.remove('show'); }
+  });
+  window.addEventListener('keyup', (e) => { if (e.code === 'Space' && document.activeElement !== $('text')) { e.preventDefault(); endRecording(); } });
+
+  // ---------- re-anchor (drag the header) ----------
+  const panel = $('panel'), dragHandle = $('drag');
+  let drag = null;
+  dragHandle.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return;
+    const r = panel.getBoundingClientRect();
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top }; panel.classList.add('dragging'); dragHandle.setPointerCapture(e.pointerId);
+  });
+  dragHandle.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    panel.style.transform = 'none'; panel.style.left = (e.clientX - drag.dx) + 'px'; panel.style.top = (e.clientY - drag.dy) + 'px';
+  });
+  const endDrag = () => { drag = null; panel.classList.remove('dragging'); };
+  dragHandle.addEventListener('pointerup', endDrag); dragHandle.addEventListener('pointercancel', endDrag);
+
+  // ---------- boot ----------
+  startCamera(); pollHealth(); applyCapture();
+})();
+</script>
+</body>
+</html>

@@ -53,9 +53,11 @@ def render_mp4(
     max_width: int = 960,
     tail_s: float = 1.0,
     timeout_s: float = 120.0,
+    extra_vf: str = "",
 ) -> Path:
     """Each frame is held until the next one (like Recall's `frames_to_video`), so offsets in the mp4
-    equal wall-clock offsets from the first frame. The last frame is held for `tail_s`."""
+    equal wall-clock offsets from the first frame. The last frame is held for `tail_s`.
+    `extra_vf` is appended to the filter chain (the montage uses it for captions and fades)."""
     frames = sorted(frames, key=lambda f: f[0])
     if not frames:
         raise ValueError("no frames")
@@ -79,7 +81,7 @@ def render_mp4(
         vf = (
             f"scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
             f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},format=yuv420p"
-        )
+        ) + (f",{extra_vf}" if extra_vf else "")
         tmp_out = tmp / "out.mp4"
         cmd = [
             ffmpeg, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(tmp / "list.ffconcat"),
