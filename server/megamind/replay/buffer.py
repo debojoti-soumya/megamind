@@ -4,7 +4,8 @@ The keyframe filter keeps ~1 frame in 10, which is right for memory tokens but l
 replay. This buffer sits next to it, fed from `POST /v1/frames` before the filter runs, and keeps
 the raw JPEGs for a sliding window. Bounds are per device: frames older than `window_s` (measured
 against the newest frame's timestamp, so replaying recorded footage works) are dropped first, then
-the oldest frames until both `max_frames` and `max_bytes` hold.
+the oldest frames until both `max_frames` and `max_bytes` hold. At most `max_devices` rings are kept;
+a new device beyond that evicts the least recently fed one, so device_id churn can't grow memory.
 
 With `spool_dir` set, JPEGs live on disk (one file per frame) instead of in RAM, and the buffer is
 rehydrated from that directory on startup.
@@ -13,11 +14,13 @@ rehydrated from that directory on startup.
 from __future__ import annotations
 
 import bisect
-import itertools
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote, unquote
+
+from ulid import ULID
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +49,13 @@ def _key(f: BufferedFrame) -> float:
     return f.ts
 
 
+_DIR_PREFIX = "d_"  # spool dir per device; the prefix keeps ids like "." / ".." inside spool_dir
+
+
+def _device_dir(device_id: str) -> str:
+    return _DIR_PREFIX + quote(device_id, safe="")
+
+
 class ReplayBuffer:
     def __init__(
         self,
@@ -53,24 +63,30 @@ class ReplayBuffer:
         max_frames: int = 9000,
         max_bytes: int = 256 << 20,
         spool_dir: Path | None = None,
+        max_devices: int = 8,
     ) -> None:
         self.window_s = window_s
         self.max_frames = max_frames
         self.max_bytes = max_bytes
+        self.max_devices = max(1, max_devices)
         self.spool_dir = Path(spool_dir) if spool_dir else None
-        self._rings: dict[str, _Ring] = {}
-        self._seq = itertools.count()
+        self._rings: dict[str, _Ring] = {}  # least recently fed first
         if self.spool_dir is not None and self.spool_dir.is_dir():
             self._rehydrate()
 
     # ---- writes ----
 
     def add(self, device_id: str, ts: float, jpeg: bytes) -> None:
-        ring = self._rings.setdefault(device_id, _Ring())
+        if not math.isfinite(ts):
+            raise ValueError(f"non-finite ts {ts!r}")
+        ring = self._rings.pop(device_id, None) or _Ring()
+        self._rings[device_id] = ring  # mark most recently fed
+        while len(self._rings) > self.max_devices:
+            self.purge(next(iter(self._rings)))
         if self.spool_dir is not None:
-            d = self.spool_dir / quote(device_id, safe="")
+            d = self.spool_dir / _device_dir(device_id)
             d.mkdir(parents=True, exist_ok=True)
-            p = d / f"{ts:.6f}_{next(self._seq)}.jpg"
+            p = d / f"{ts:.6f}_{ULID()}.jpg"  # unique even for repeated ts / across restarts
             p.write_bytes(jpeg)
             frame = BufferedFrame(ts=ts, size=len(jpeg), path=p)
         else:
@@ -168,8 +184,9 @@ class ReplayBuffer:
     def _rehydrate(self) -> None:
         assert self.spool_dir is not None
         n = 0
-        for d in sorted(p for p in self.spool_dir.iterdir() if p.is_dir()):
-            ring = self._rings.setdefault(unquote(d.name), _Ring())
+        dirs = [p for p in self.spool_dir.iterdir() if p.is_dir() and p.name.startswith(_DIR_PREFIX)]
+        for d in dirs:
+            ring = self._rings.setdefault(unquote(d.name[len(_DIR_PREFIX) :]), _Ring())
             for p in d.glob("*.jpg"):
                 try:
                     ts = float(p.stem.split("_", 1)[0])
@@ -178,5 +195,10 @@ class ReplayBuffer:
                 self._insert(ring, BufferedFrame(ts=ts, size=p.stat().st_size, path=p))
                 n += 1
             self._evict(ring)
+        # keep the most recently fed devices
+        for dev in sorted(self._rings, key=lambda k: self._rings[k].items[-1].ts if self._rings[k].items else 0):
+            self._rings[dev] = self._rings.pop(dev)
+        while len(self._rings) > self.max_devices:
+            self.purge(next(iter(self._rings)))
         if n:
             log.info("replay buffer: rehydrated %d frames from %s", n, self.spool_dir)

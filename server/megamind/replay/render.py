@@ -94,13 +94,26 @@ def render_mp4(
     return out
 
 
-class ReplayCache:
-    """Rendered mp4s keyed by content; keeps the newest `max_files`, one render per key at a time."""
+def _read_frames(frames: Sequence[BufferedFrame]) -> list[tuple[float, bytes]]:
+    """Snapshot JPEG bytes; spooled frames evicted since the request was planned are skipped."""
+    out = []
+    for f in frames:
+        try:
+            out.append((f.ts, f.read()))
+        except FileNotFoundError:
+            continue
+    return out
 
-    def __init__(self, cache_dir: Path, max_files: int = 32) -> None:
+
+class ReplayCache:
+    """Rendered mp4s keyed by content; keeps the newest `max_files`, one render per key at a time,
+    and at most `max_concurrent` ffmpeg processes overall."""
+
+    def __init__(self, cache_dir: Path, max_files: int = 32, max_concurrent: int = 2) -> None:
         self.dir = Path(cache_dir)
         self.max_files = max_files
         self._locks: dict[str, asyncio.Lock] = {}
+        self._renders = asyncio.Semaphore(max(1, max_concurrent))
 
     def path(self, key: str) -> Path:
         return self.dir / f"{key}.mp4"
@@ -110,13 +123,23 @@ class ReplayCache:
     ) -> Path:
         p = self.path(key)
         lock = self._locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            if not p.exists():
-                payload = [(f.ts, f.read()) for f in frames]  # snapshot on the loop; render off it
-                await asyncio.to_thread(render_mp4, payload, p, ffmpeg=ffmpeg, fps=fps, max_width=max_width)
-                self._prune(keep=p)
-        self._locks.pop(key, None)
+        try:
+            async with lock:
+                if not p.exists():
+                    async with self._renders:
+                        await asyncio.to_thread(self._render, frames, p, ffmpeg, fps, max_width)
+                    self._prune(keep=p)
+        finally:
+            if not lock.locked():
+                self._locks.pop(key, None)
         return p
+
+    @staticmethod
+    def _render(frames: Sequence[BufferedFrame], p: Path, ffmpeg: str, fps: int, max_width: int) -> None:
+        payload = _read_frames(frames)  # off the event loop (spool mode reads from disk)
+        if not payload:
+            raise FileNotFoundError("buffered frames were evicted before rendering")
+        render_mp4(payload, p, ffmpeg=ffmpeg, fps=fps, max_width=max_width)
 
     def clear(self) -> None:
         if self.dir.is_dir():
@@ -124,7 +147,13 @@ class ReplayCache:
                 p.unlink(missing_ok=True)
 
     def _prune(self, keep: Path) -> None:
-        files = sorted(self.dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+        def mtime(p: Path) -> float:
+            try:
+                return p.stat().st_mtime
+            except FileNotFoundError:
+                return 0.0
+
+        files = sorted(self.dir.glob("*.mp4"), key=mtime, reverse=True)
         for p in files[self.max_files :]:
             if p != keep:
                 p.unlink(missing_ok=True)

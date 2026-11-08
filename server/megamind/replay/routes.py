@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -73,20 +75,22 @@ def ranged_file_response(p: Path, request: Request, media_type: str, headers: di
 
 
 def parse_ts(s: str | None, param: str) -> float | None:
-    """Unix seconds or ISO-8601 (naive = server local time)."""
+    """Unix seconds or ISO-8601 (naive = server local time); nan/inf are rejected."""
     if s is None or s == "":
         return None
     try:
-        return float(s)
+        v = float(s)
     except ValueError:
-        pass
-    try:
-        return datetime.fromisoformat(s).timestamp()
-    except ValueError:
-        raise HTTPException(400, f"{param}: expected ISO-8601 or unix seconds, got {s!r}") from None
+        try:
+            v = datetime.fromisoformat(s).timestamp()
+        except ValueError:
+            v = math.nan
+    if not math.isfinite(v):
+        raise HTTPException(400, f"{param}: expected ISO-8601 or unix seconds, got {s!r}")
+    return v
 
 
-@router.get("/replay.mp4")
+@router.api_route("/replay.mp4", methods=["GET", "HEAD"])  # HEAD: some video players probe first
 async def replay_mp4(
     request: Request,
     device_id: str | None = None,
@@ -123,7 +127,9 @@ async def replay_mp4(
     key = hashlib.sha1(raw.encode()).hexdigest()[:20]
     try:
         p = await st.replay_cache.get_or_render(key, frames, ffmpeg=ffmpeg, fps=cfg.out_fps, max_width=cfg.max_width)
-    except (RuntimeError, OSError) as e:
+    except FileNotFoundError:
+        raise HTTPException(404, "buffered frames were evicted; retry") from None
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
         raise HTTPException(500, f"replay render failed: {e}") from None
     headers = {
         "X-Replay-Device": dev,

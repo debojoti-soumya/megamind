@@ -57,11 +57,12 @@ Response:
 ## `GET /replay.mp4?device_id=...&from=...&to=...`
 Moment replay: an H.264 mp4 of **every** frame received from the device in `[from, to]` (not just the
 keyframes the filter kept), each frame held until the next, so mp4 offset 0 = the first frame's `ts`.
-The server keeps raw frames for a sliding window per device (default 15 min, bounded by count/bytes; `REPLAY_*`).
+The server keeps raw frames for a sliding window per device (default 15 min, bounded by count/bytes, at most
+`REPLAY_MAX_DEVICES` devices; `REPLAY_*`).
 - `from`/`to`: unix seconds or ISO-8601 (naive = server local time). Defaults: `to` = newest buffered frame,
-  `from` = `to - 30 s`. `to < from` or span > `REPLAY_MAX_SPAN_S` (300) → 400; unparseable → 400.
+  `from` = `to - 30 s`. `to < from` or span > `REPLAY_MAX_SPAN_S` (300) → 400; unparseable or nan/inf → 400.
 - `device_id`: optional; without it the device with the most frames in the window is used.
-- Supports `Range: bytes=...` (206 / 416) for seeking; `Accept-Ranges: bytes` on every 200.
+- `GET` or `HEAD`. Supports `Range: bytes=...` (206 / 416) for seeking; `Accept-Ranges: bytes` on every 200.
 - Headers: `X-Replay-Start` (unix ts at offset 0), `X-Replay-Device`, `X-Replay-Frames`.
 - 404 when no frames are buffered in the window; 503 when ffmpeg is not available on the server.
 Rendered clips are cached; `DELETE /memories` also purges the matching buffered frames and the clip cache.

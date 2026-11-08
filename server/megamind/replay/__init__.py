@@ -39,9 +39,11 @@ class ReplaySettings(BaseSettings):
     window_s: float = 900.0  # keep ~15 min per device ...
     max_frames: int = 9000  # ... bounded by count ...
     max_bytes: int = 256 << 20  # ... and bytes (per device)
+    max_devices: int = 8  # least recently fed device is dropped beyond this
     spool_dir: Path | None = None  # set to keep frames on disk instead of RAM (survives restarts)
     cache_dir: Path | None = None  # rendered mp4s; default <thumb_dir>/../replay
     cache_max_files: int = 32
+    max_concurrent_renders: int = 2
     max_span_s: float = 300.0
     pad_before_s: float = 5.0  # citation replay_url window around the cited token's ts
     pad_after_s: float = 5.0
@@ -107,8 +109,11 @@ def install(app: FastAPI, settings, replay_settings: ReplaySettings | None = Non
     st.replay_settings = cfg
     st.replay = None
     if cfg.enabled:
-        st.replay = ReplayBuffer(cfg.window_s, cfg.max_frames, cfg.max_bytes, spool_dir=cfg.spool_dir)
-        st.replay_cache = ReplayCache(cfg.cache_dir or Path(settings.thumb_dir).parent / "replay", cfg.cache_max_files)
+        st.replay = ReplayBuffer(
+            cfg.window_s, cfg.max_frames, cfg.max_bytes, spool_dir=cfg.spool_dir, max_devices=cfg.max_devices
+        )
+        cache_dir = cfg.cache_dir or Path(settings.thumb_dir).parent / "replay"
+        st.replay_cache = ReplayCache(cache_dir, cfg.cache_max_files, cfg.max_concurrent_renders)
         st.frame_taps = [*getattr(st, "frame_taps", []), st.replay.tap]
     app.include_router(router, prefix="/v1")
     app.add_middleware(_PurgeMirror, state=st)

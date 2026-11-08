@@ -100,6 +100,46 @@ def test_buffer_spool_on_disk(tmp_path):
     assert len(list(tmp_path.rglob("*.jpg"))) == 2
 
 
+def test_buffer_spool_dir_cannot_escape(tmp_path):
+    spool = tmp_path / "spool"
+    b = ReplayBuffer(spool_dir=spool)
+    for dev in ("..", ".", "../../etc", "a/../.."):
+        b.add(dev, 1.0, b"x")
+    assert {p.parent.parent for p in spool.rglob("*.jpg")} == {spool}
+    assert not list(tmp_path.glob("*.jpg"))  # nothing written next to the spool dir
+    b2 = ReplayBuffer(spool_dir=spool)
+    assert set(b2.stats()) == {"..", ".", "../../etc", "a/../.."}
+
+
+def test_buffer_spool_repeated_ts_and_restart_keep_distinct_files(tmp_path):
+    b = ReplayBuffer(window_s=0, spool_dir=tmp_path)
+    b.add("d", 1.0, b"first")
+    b2 = ReplayBuffer(window_s=0, spool_dir=tmp_path)  # restart, then replay the same footage again
+    b2.add("d", 1.0, b"second")
+    assert sorted(f.read() for f in b2.frames("d", 0, 2)) == [b"first", b"second"]
+    b2.purge("d", since_ts=1.0)
+    assert not list(tmp_path.rglob("*.jpg"))
+
+
+def test_buffer_device_cap_drops_least_recently_fed(tmp_path):
+    for spool in (None, tmp_path):
+        b = ReplayBuffer(max_devices=2, spool_dir=spool)
+        b.add("a", 1.0, b"a")
+        b.add("b", 1.0, b"b")
+        b.add("a", 2.0, b"a")  # a is now the most recently fed
+        b.add("c", 1.0, b"c")
+        assert set(b.stats()) == {"a", "c"}
+    assert len(list(tmp_path.rglob("*.jpg"))) == 3
+    assert set(ReplayBuffer(max_devices=1, spool_dir=tmp_path).stats()) == {"a"}  # newest frame wins
+
+
+def test_buffer_rejects_non_finite_ts():
+    b = ReplayBuffer()
+    with pytest.raises(ValueError):
+        b.add("d", float("nan"), b"x")
+    assert b.stats() == {}
+
+
 # ---- range parsing ----
 
 
@@ -158,6 +198,8 @@ async def test_replay_404s_and_400s(client):
     assert r.status_code == 400
     r = await c.get("/v1/replay.mp4", params={"from": "0", "to": "100000"})
     assert r.status_code == 400 and "REPLAY_MAX_SPAN_S" in r.json()["detail"]
+    for bad in ({"from": "nan", "to": "nan"}, {"from": "inf"}, {"to": "-inf"}):
+        assert (await c.get("/v1/replay.mp4", params=bad)).status_code == 400
 
 
 async def test_replay_ffmpeg_missing_is_503(client, monkeypatch):
@@ -211,6 +253,25 @@ def test_render_mp4_holds_frames(tmp_path):
 
 
 @needs_ffmpeg
+async def test_render_skips_frames_evicted_from_spool(tmp_path):
+    from megamind.replay import ReplayCache
+
+    b = ReplayBuffer(window_s=0, spool_dir=tmp_path / "spool")
+    for i in range(3):
+        b.add("d", float(i), _jpeg(i))
+    frames = b.frames("d", 0, 10)
+    frames[0].path.unlink()  # evicted between planning and rendering
+    cache = ReplayCache(tmp_path / "cache")
+    p = await cache.get_or_render("k", frames, ffmpeg=find_ffmpeg(), fps=5, max_width=320)
+    assert p.read_bytes()[4:8] == b"ftyp"
+    for f in frames[1:]:
+        f.path.unlink()
+    with pytest.raises(FileNotFoundError):
+        await cache.get_or_render("k2", frames, ffmpeg=find_ffmpeg(), fps=5, max_width=320)
+    assert cache._locks == {}
+
+
+@needs_ffmpeg
 async def test_replay_endpoint_renders_caches_and_ranges(client):
     c, app = client
     for i in range(6):
@@ -233,6 +294,8 @@ async def test_replay_endpoint_renders_caches_and_ranges(client):
     assert r.status_code == 206 and r.content == body[-10:]
     r = await c.get("/v1/replay.mp4", params=params, headers={"Range": f"bytes={len(body)}-"})
     assert r.status_code == 416 and r.headers["content-range"] == f"bytes */{len(body)}"
+    r = await c.head("/v1/replay.mp4", params=params)
+    assert r.status_code == 200 and r.content == b"" and int(r.headers["content-length"]) == len(body)
     assert list(app.state.replay_cache.dir.glob("*.mp4")) == cache  # served from cache
 
     # a new frame inside the window changes the cache key
