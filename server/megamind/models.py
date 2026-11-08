@@ -145,6 +145,24 @@ class ChatResponse(BaseModel):
     audio_url: str | None = None
     cited: list[Citation] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
+    # the device whose memories were searched (null = all devices); differs from the request's device_id only
+    # when CHAT_DEFAULT_DEVICE=latest fell back to the most recently active device
+    device_id_used: str | None = None
+    warning: str | None = None  # e.g. the request's device has no memories while other devices do
+
+
+class DeviceInfo(BaseModel):
+    """One entry of `GET /v1/devices`: a device that has stored memory tokens."""
+
+    device_id: str
+    count: int  # memory tokens of every kind
+    last_ts: float  # newest token of any kind
+    last_frame_ts: float | None = None  # newest kind="frame" token
+    last_audio_ts: float | None = None  # newest kind="transcript" token (heard speech)
+
+
+class DevicesResponse(BaseModel):
+    devices: list[DeviceInfo]  # most recently active (`last_ts`) first
 
 
 class ChatStreamRetrieval(BaseModel):

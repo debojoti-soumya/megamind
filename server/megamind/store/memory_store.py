@@ -8,8 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
-from megamind.models import MemoryHit, MemoryToken, SearchMode
-from megamind.store.base import MemoryStore, Scored, VectorField
+from megamind.models import DeviceInfo, MemoryHit, MemoryToken, SearchMode
+from megamind.store.base import MemoryStore, Scored, VectorField, device_infos
 from megamind.store.episodes import EpisodeTracker
 from megamind.store.rrf import MIN_SCORE, calibrated, fuse_hits
 
@@ -106,6 +106,9 @@ class InMemoryStore(MemoryStore):
         if device_id is None:
             return len(self._tokens)
         return sum(1 for t in self._tokens.values() if t.device_id == device_id)
+
+    async def devices(self) -> list[DeviceInfo]:
+        return device_infos((t.device_id, _kind(t), t.ts) for t in self._tokens.values())
 
     async def recent_hashes(self, device_id: str, since_ts: float) -> list[tuple[float, str]]:
         return [

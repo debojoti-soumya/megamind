@@ -17,6 +17,7 @@ from megamind.agent.stt import build_stt
 from megamind.agent.tools import RecallMemory
 from megamind.agent.tts import build_tts
 from megamind.config import Settings, get_settings
+from megamind.devices import router as devices_router
 from megamind.ingest.audio import TranscriptSink
 from megamind.ingest.audio import router as audio_router
 from megamind.ingest.enrich import build_enricher
@@ -162,6 +163,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ingest_router, prefix="/v1")
     app.include_router(audio_router, prefix="/v1")
     app.include_router(agent_router, prefix="/v1")
+    app.include_router(devices_router, prefix="/v1")  # GET /v1/devices
     app.include_router(ui_router)
     # the browser panel may be served from a different origin (e.g. file:// or another laptop)
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])

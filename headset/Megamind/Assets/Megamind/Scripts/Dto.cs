@@ -35,6 +35,8 @@ namespace Megamind
         public string audio_url;
         public List<Citation> cited = new List<Citation>();
         public List<ToolCallRecord> tool_calls = new List<ToolCallRecord>();
+        public string device_id_used;  // device whose memories were searched; null/"" = all devices
+        public string warning;         // e.g. "device 'x' has no memories; active devices: quest3-1"; null/"" = none
 
         /// <summary>Confidence of the recall_memory call, or null if the agent did not recall.</summary>
         public string Confidence()
