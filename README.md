@@ -116,7 +116,9 @@ laptop. Set `ANTHROPIC_API_KEY`, `READER_API_KEY` + `READER_BASE_URL`, `EMBED_PR
 
 **Reader.** Default: Sail Research (`READER_BASE_URL=https://api.sailresearch.com/v1`, OpenAI-compatible)
 serving `READER_MODEL=google/gemma-4-31B-it` with image input; `READER_FALLBACK_MODEL=nvidia/Gemma-4-31B-IT-NVFP4`
-takes the single retry after a 429/503/timeout. Calls take ~3 s; a turn with Claude is ~5–6 s. Any
+starts in parallel when the primary hasn't answered after `READER_HEDGE_S=3.3` s (healthy calls take ~3.1 s), or at
+once after a 429/503/timeout, and the first good answer wins within `READER_DEADLINE_S=6.5`; past that the
+reader degrades to the captions + OCR of every hit. A turn with Claude is ~5–7 s. Any
 OpenAI-compatible endpoint works by changing those two variables. Plan B if Sail is unavailable:
 self-host a VLM (e.g. Qwen2.5-VL-7B) on vLLM on Modal and point `READER_BASE_URL` at it.
 

@@ -7,9 +7,10 @@ called again until it stops with ``end_turn`` (or we hit ``MAX_TOOL_ROUNDS``).
 Per-session history is kept in memory, capped at ``MAX_TURNS`` exchanges.
 
 Latency: with ``RECALL_PREFETCH`` the turn starts ``recall_memory`` on the raw question
-concurrently with the first model call; Claude's first tool call reuses it when it adds no
-time bounds and its keywords come from the question (:func:`prefetch_reusable`), otherwise
-the prefetch is cancelled and the tool runs with Claude's arguments.
+concurrently with the first model call; Claude's first tool call reuses it when its keywords
+mostly come from what the prefetch searched (the question plus the planner's rewrite) and any
+time bounds it adds match the planner's window (:func:`prefetch_reusable`), otherwise the
+prefetch is cancelled and the tool runs with Claude's arguments.
 
 Without ``ANTHROPIC_API_KEY`` (or when the API fails) the deterministic
 ``_no_llm_fallback`` path answers straight from the reader's evidence so the
@@ -35,13 +36,15 @@ from ulid import ULID
 from megamind.agent.tools import OCR_MATCH_PREFIX, RECALL_MEMORY_TOOL, RecallMemory, keywords
 from megamind.config import Settings
 from megamind.models import ChatResponse, Citation, RecallResult, ToolCallRecord
+from megamind.retrieval.planner import QueryPlan, plan_query
 
 log = logging.getLogger("megamind.agent")
 
 MAX_TOOL_ROUNDS = 4
 MAX_TURNS = 10
 MAX_TOKENS = 400
-PREFETCH_MIN_OVERLAP = 0.5  # share of Claude's query keywords that must appear in the question to reuse the prefetch
+PREFETCH_MIN_OVERLAP = 0.5  # share of Claude's query keywords the prefetch searched for, to reuse it
+PREFETCH_MIN_TIME_IOU = 0.5  # Claude's time window vs the planner's window for the raw question
 NOT_FOUND_ANSWER = "I don't have a memory of that."
 _CITES_RE = re.compile(r"\s*<cites>(.*?)</cites>\s*", re.DOTALL)
 
@@ -69,8 +72,9 @@ people; describe them neutrally. If the evidence is marked "reader unavailable",
 the captions but add that you could not check the images.
 
 After your spoken answer, on the same message, append the token ids of the evidence your
-answer relies on inside a trailer like <cites>id1,id2</cites>. The trailer is stripped
-before speech. Omit it when you cite nothing."""
+answer relies on inside a trailer like <cites>id1,id2</cites>, including ids from tool results
+earlier in this conversation when you answer from those. The trailer is stripped before
+speech. Omit it when you cite nothing."""
 
 
 @dataclass
@@ -146,15 +150,49 @@ def _tool_result_payload(r: RecallResult, now: float, zone: ZoneInfo) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def prefetch_reusable(args: dict, question: str) -> bool:
-    """Claude's first recall_memory call can reuse the raw-question prefetch when it adds no explicit
-    time bounds / mode / k and its keywords mostly come from the question itself."""
-    if args.get("time_from") or args.get("time_to"):
-        return False
+def _stem(w: str) -> str:
+    """Crude suffix strip so "parked"/"parking"/"park" and "eating"/"eat" compare equal."""
+    for suf in ("ing", "ed"):
+        if w.endswith(suf) and len(w) - len(suf) >= 3:
+            w = w[: -len(suf)]
+            break
+    w = w.removesuffix("e") if len(w) > 3 else w
+    return w[:-1] if len(w) > 3 and w[-1] == w[-2] else w
+
+
+def _stems(text: str) -> set[str]:
+    return {_stem(w) for w in keywords(text)}
+
+
+def _iso_ts(s: object) -> float | None:
+    return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp() if s else None
+
+
+def _iou(a: tuple[float, float], b: tuple[float, float]) -> float:
+    inter = max(0.0, min(a[1], b[1]) - max(a[0], b[0]))
+    union = max(a[1], b[1]) - min(a[0], b[0])
+    return inter / union if union > 0 else 0.0
+
+
+def prefetch_reusable(args: dict, question: str, plan: QueryPlan | None = None) -> bool:
+    """Claude's first recall_memory call can reuse the raw-question prefetch when it keeps the default
+    mode / k, its keywords mostly come from what the prefetch searched (the question, plus the planner's
+    rewrite `plan.search_text`), and any time bounds it adds overlap the planner's window for the question."""
     if args.get("mode", "hybrid") not in (None, "hybrid") or args.get("k", 12) not in (None, 12):
         return False
-    q = keywords(str(args.get("query") or ""))
-    return bool(q) and len(q & keywords(question)) / len(q) >= PREFETCH_MIN_OVERLAP
+    try:
+        t_from, t_to = _iso_ts(args.get("time_from")), _iso_ts(args.get("time_to"))
+    except ValueError:
+        return False
+    if t_from is not None or t_to is not None:
+        if plan is None or plan.time_from is None or plan.time_to is None:
+            return False
+        window = (plan.time_from if t_from is None else t_from, plan.time_to if t_to is None else t_to)
+        if _iou(window, (plan.time_from, plan.time_to)) < PREFETCH_MIN_TIME_IOU:
+            return False
+    q = _stems(str(args.get("query") or ""))
+    searched = _stems(question) | (_stems(plan.search_text) if plan else set())
+    return bool(q) and len(q & searched) / len(q) >= PREFETCH_MIN_OVERLAP
 
 
 async def _cancel(task: asyncio.Task | None) -> None:
@@ -182,6 +220,7 @@ class ClaudeAgent:
         self.settings = settings
         self.recall = recall
         self.histories: dict[str, list[list[dict]]] = {}
+        self.cite_histories: dict[str, list[list[Citation]]] = {}  # per turn, trimmed with `histories`
         self._client = client
         if self._client is None and settings.anthropic_api_key:
             self._client = anthropic.AsyncAnthropic(
@@ -239,15 +278,22 @@ class ClaudeAgent:
         turn: list[dict] = [{"role": "user", "content": text}]
         prior = [m for t in self.histories.get(session_id, []) for m in t]
         tool_calls: list[ToolCallRecord] = []
-        retrieved: dict[str, Citation] = {}
+        # ids from earlier turns stay citable: a follow-up answered from history still gets thumbnails
+        retrieved: dict[str, Citation] = {c.id: c for t in self.cite_histories.get(session_id, []) for c in t}
         reader_cited: list[Citation] = []
+        turn_cites: list[Citation] = []
         answer_text = ""
 
         prefetch: asyncio.Task[RecallResult] | None = None
+        plan: QueryPlan | None = None
         if self.settings.recall_prefetch:
             # overlap retrieval + reader with Claude's first call; most first tool calls are the question's keywords
             prefetch = asyncio.create_task(self._run_tool("recall_memory", {"query": text}, device_id, now))
             stats.extra["prefetch"] = "unused"
+            try:
+                plan = plan_query(text, now=datetime.fromtimestamp(now, UTC), tz=self.settings.wearer_tz)
+            except Exception as e:  # noqa: BLE001 - the plan only widens reuse; never fail the turn on it
+                log.warning("req=%s prefetch plan failed: %r", stats.request_id, e)
         try:
             for _round in range(MAX_TOOL_ROUNDS + 1):
                 t_llm = time.perf_counter()
@@ -276,7 +322,7 @@ class ClaudeAgent:
                 for use in uses:
                     args = dict(use.input) if isinstance(use.input, dict) else {}
                     t_tool = time.perf_counter()
-                    if prefetch is not None and use.name == "recall_memory" and prefetch_reusable(args, text):
+                    if prefetch is not None and use.name == "recall_memory" and prefetch_reusable(args, text, plan):
                         r, stats.extra["prefetch"] = await prefetch, "hit"
                     else:
                         if prefetch is not None:
@@ -289,10 +335,10 @@ class ClaudeAgent:
                     stats.tool_ms += (time.perf_counter() - t_tool) * 1000
                     stats.tool_calls += 1
                     tool_calls.append(ToolCallRecord(name=use.name, args=args, confidence=r.confidence))
-                    for c in r.all_retrieved:
+                    for c in [*r.all_retrieved, *r.cited]:
                         retrieved.setdefault(c.id, c)
+                        turn_cites.append(c)
                     for c in r.cited:
-                        retrieved.setdefault(c.id, c)
                         if c.id not in {x.id for x in reader_cited}:
                             reader_cited.append(c)
                     log.info(
@@ -325,6 +371,9 @@ class ClaudeAgent:
         hist = self.histories.setdefault(session_id, [])
         hist.append(turn)
         del hist[:-MAX_TURNS]
+        cite_hist = self.cite_histories.setdefault(session_id, [])
+        cite_hist.append(turn_cites)
+        del cite_hist[:-MAX_TURNS]
         return ChatResponse(transcript=text, answer=answer, cited=cited, tool_calls=tool_calls)
 
     async def _run_tool(self, name: str, args: dict, device_id: str | None, now: float | None = None) -> RecallResult:
@@ -360,8 +409,10 @@ class ClaudeAgent:
     def reset(self, session_id: str | None = None) -> None:
         if session_id is None:
             self.histories.clear()
+            self.cite_histories.clear()
         else:
             self.histories.pop(session_id, None)
+            self.cite_histories.pop(session_id, None)
 
     def system_prompt(self, now: float | None = None) -> str:
         return render_system_prompt(now, self.settings.wearer_tz)
