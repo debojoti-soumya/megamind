@@ -39,7 +39,9 @@ def main() -> None:
         print(f"[{time.time() - t0:.1f}s] transcript: {body['transcript']}")
         print(f"answer: {body['answer']}")
         for c in body.get("cited", []):
-            print(f"  cited {c['id']} @ {time.strftime('%H:%M:%S', time.localtime(c['ts']))}: {c['caption'][:100]}")
+            when = time.strftime("%H:%M:%S", time.localtime(c["ts"]))
+            thumb = args.server.rstrip("/") + (c.get("thumb_url") or f"/v1/thumbs/{c['id']}.jpg")
+            print(f"  cited {c['id']} @ {when}: {c['caption'][:100]}\n    thumb: {thumb}")
         if body.get("tool_calls"):
             print("tool_calls:", json.dumps(body["tool_calls"], indent=1))
         if body.get("audio_url"):
