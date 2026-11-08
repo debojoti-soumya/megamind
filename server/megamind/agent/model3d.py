@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import struct
 import threading
 from dataclasses import dataclass, field
@@ -431,7 +432,7 @@ class Model3DCache:
     def put(self, key: str, fmt: str, data: bytes) -> Path:
         self.dir.mkdir(parents=True, exist_ok=True)
         p = self.dir / f"{key}.{fmt}"
-        tmp = p.with_suffix(f".{os.getpid()}.tmp")
+        tmp = p.with_suffix(f".{os.getpid()}.{secrets.token_hex(4)}.tmp")
         tmp.write_bytes(data)
         tmp.replace(p)
         files = sorted(
