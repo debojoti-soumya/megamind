@@ -3,6 +3,7 @@ ranking, id validation, time bounds and the hybrid fallback."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -213,25 +214,27 @@ async def test_large_note_backlog_builds_in_background_not_inline():
 
 
 async def test_inline_notes_skip_the_rollups_which_land_in_the_background():
-    store, llm = await _store(), FakeLLM(stage1={"blocks": []}, stage2={"ids": []})
+    class SlowRollup(FakeLLM):
+        gate = asyncio.Event()
+
+        async def __call__(self, system, user, **kw):
+            if "Log entries" in user:
+                await self.gate.wait()
+            return await super().__call__(system, user, **kw)
+
+    store, llm = await _store(), SlowRollup(stage1={"blocks": []}, stage2={"ids": []})
     mem = HierMemory(store, llm, tz="UTC")
     r = HierRetriever(store, FixedRetriever([await store.get("a1")]), mem)
     now = datetime.fromtimestamp(T0 + 3700, UTC)  # the hour closed too: 3 block notes + an hour rollup are due
-
-    def kinds():
-        return [
-            "note" if "Lines from" in c else "rollup" if "Log entries" in c else "pick" if "Pick up to" in c else "rank"
-            for c in llm.calls
-        ]
-
-    await r.retrieve("keys", k=1, now=now)
-    assert kinds()[:4] == ["note", "note", "note", "pick"]  # block notes before stage 1, the rollup not
-    assert r._bg is not None
+    await r.retrieve("keys", k=1, now=now)  # answers while the rollup is still stuck -> it is off the query path
+    notes = [c for c in llm.calls if "Lines from" in c]
+    assert len(notes) == 3 and len(mem.notes) == 3 and r._bg is not None and not r._bg.done()
+    llm.gate.set()
     await r._bg
-    assert f"hour:{T0:.0f}" in mem.notes and kinds().count("rollup") == 1 and kinds().count("note") == 3
+    assert f"hour:{T0:.0f}" in mem.notes and len([c for c in llm.calls if "Lines from" in c]) == 3  # no rewrites
     n = len(llm.calls)
     await r.retrieve("keys", k=1, now=now)
-    assert kinds()[n:] == kinds()[3:n] and r._bg.done()  # nothing left to write: stages only, no new background task
+    assert all("Log entries" not in c and "Lines from" not in c for c in llm.calls[n:]) and r._bg.done()
 
 
 async def test_gate_margin_skips_the_llm_when_the_hybrid_is_confident():
