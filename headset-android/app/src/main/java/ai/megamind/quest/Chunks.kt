@@ -20,7 +20,8 @@ import org.json.JSONObject
  * On-disk layout (app-private storage):
  * ```
  * files/chunks/<id>.partial/   chunk being recorded: start.txt, frames.tsv, 000000.jpg..., audio.pcm16
- * files/chunks/<id>/           closed chunk waiting for upload: meta.json, *.jpg, audio.pcm16, sent.txt (parts already uploaded)
+ * files/chunks/<id>/           closed chunk waiting for upload: meta.json, *.jpg, audio.pcm16, sent.txt (parts already uploaded),
+ *                              video.mp4 (H.264, video-only; described by meta.video; see VideoRecorder)
  * files/chunks_failed/<id>/    rejected by the backend (HTTP 400/413/415/422); can be re-queued
  * ```
  * A `.partial` chunk is recoverable after a crash: start.txt + frames.tsv are enough to rebuild
@@ -63,7 +64,7 @@ object ChunkStore {
         }
   }
 
-  /** Upper bound for queued + failed chunks on disk (~8 h of 1 fps + audio backlog). */
+  /** Upper bound for queued + failed chunks on disk (~8 h of 1 fps + audio backlog; ~1.7 h with video on). */
   const val MAX_QUEUE_BYTES = 3L * 1024 * 1024 * 1024
 
   private fun dirBytes(dir: File): Long = dir.listFiles()?.sumOf { it.length() } ?: 0L
@@ -133,6 +134,17 @@ object ChunkStore {
               .put("frames", frames)
               .put("audio_sample_rate", sampleRate)
               .put("device", DEVICE_NAME)
+      // video.json is written only after MediaMuxer.stop() succeeded; a video.mp4 without it
+      // (crash mid-chunk: no moov atom) is unplayable, so drop it.
+      val videoInfo = File(partial, VideoRecorder.INFO_NAME)
+      val videoFile = File(partial, VideoRecorder.FILE_NAME)
+      if (videoInfo.exists() && videoFile.exists() && videoFile.length() > 0) {
+        runCatching { meta.put("video", JSONObject(videoInfo.readText())) }
+            .onFailure { videoFile.delete() }
+      } else {
+        videoFile.delete()
+      }
+      videoInfo.delete()
       File(partial, "meta.json").writeText(meta.toString())
       File(partial, "start.txt").delete()
       File(partial, "frames.tsv").delete()
@@ -167,6 +179,9 @@ class ChunkWriter(private val root: File) {
   private var audioOut: BufferedOutputStream? = null
   private var audioBytesInChunk = 0L
 
+  /** Gets chunk open/close so per-chunk video.mp4 boundaries match start_time (see VideoRecorder). */
+  @Volatile var video: VideoRecorder? = null
+
   /** Sample rate of the PCM written into chunks opened from now on. */
   @Volatile var audioSampleRate: Int = 16000
 
@@ -192,6 +207,7 @@ class ChunkWriter(private val root: File) {
       frameCount = 0
       audioBytesInChunk = 0L
       dir = d
+      video?.beginChunk(d, now)
     }
   }
 
@@ -246,6 +262,7 @@ class ChunkWriter(private val root: File) {
   fun close(): Boolean {
     synchronized(lock) {
       val d = dir ?: return false
+      runCatching { video?.endChunk(d) } // finalize video.mp4 before finalize() renames the dir
       runCatching { framesIndex?.close() }
       runCatching { audioOut?.close() }
       framesIndex = null

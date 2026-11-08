@@ -395,10 +395,15 @@ def _as_text(t: MemoryToken) -> MemoryToken:
 
 
 async def run_aging(state: Any, **kwargs: Any) -> dict:
-    """`MediaStore.age` for the server: also drops rendered replay clips once pixels were dropped."""
+    """`MediaStore.age` for the server: also drops real video clips (POST /v1/video) older than the hot
+    retention (`hot_s` when given, else VIDEO_RETENTION_H / HOT_RETENTION_H) and rendered replay clips once
+    pixels were dropped."""
     stats = await state.media.age(**kwargs)
+    video = getattr(state, "video", None)
+    if video is not None:
+        stats["video_deleted"] = video.age(retention_s=kwargs.get("hot_s"))
     cache = getattr(state, "replay_cache", None)
-    if stats["to_text"] and cache is not None:
+    if (stats["to_text"] or stats.get("video_deleted")) and cache is not None:
         cache.clear()
     return stats
 

@@ -139,7 +139,8 @@ with developer mode, Unity 2022.3 LTS or Unity 6, Meta XR Core SDK v74+, and Met
 Build and run Meta's *unmodified* sample first; only then add our scripts.
 
 Optional, capture only: [`headset-android/`](headset-android/README.md) is a small native Kotlin app (no Unity) that
-streams passthrough frames to `/v1/frames` and ambient audio to `/v1/audio`, keeps capturing behind the Quest
+streams passthrough frames to `/v1/frames`, ambient audio to `/v1/audio` and 5 s H.264 clips of real 30 fps video to
+`/v1/video` (replays and montages then use real video instead of 1 fps frames), keeps capturing behind the Quest
 Browser (foreground service), and queues uploads on disk while offline. Its capture code is verified on a Quest 3
 (Horizon OS v209). The Unity app above remains the full experience (capture plus the AR chat panel).
 

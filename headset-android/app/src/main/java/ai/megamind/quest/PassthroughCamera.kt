@@ -21,6 +21,7 @@ import android.os.HandlerThread
 import android.util.Log
 import android.util.Range
 import android.util.Size
+import android.view.Surface
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executor
 
@@ -31,10 +32,16 @@ import java.util.concurrent.Executor
  * Camera selection uses Meta's vendor metadata (see RESEARCH.md):
  *  com.meta.extra_metadata.camera_source == 0  -> passthrough RGB camera
  *  com.meta.extra_metadata.position      == 0  -> left (preferred), 1 -> right
+ *
+ * Real video (ported from Recall): when [video] is set and [videoWanted] returns true at open time, the
+ * session gets a second output, the [VideoRecorder]'s H.264 encoder surface, and runs at [TARGET_FPS].
+ * If the encoder or the 2-output session fails, the camera reopens JPEG-only (15 fps, as before).
  */
 class PassthroughCamera(
     context: Context,
     private val intervalMs: () -> Long,
+    private val video: VideoRecorder? = null,
+    private val videoWanted: () -> Boolean = { video != null },
     private val onFrame: (jpeg: ByteArray, wallMs: Long, luma: Int) -> Unit,
 ) {
   companion object {
@@ -47,6 +54,10 @@ class PassthroughCamera(
     /** docs/api.md recommends <= 960 px wide for /v1/frames; the camera streams 1280x960. */
     const val MAX_UPLOAD_WIDTH = 960
     private const val REOPEN_DELAY_MS = 3_000L
+    /** Camera (and video) frame rate with the encoder on. AE target ranges on Quest 3 are [15,15], [30,30], [60,60]. */
+    const val TARGET_FPS = 30
+    /** JPEG-only frame rate (unchanged from before video). */
+    private const val JPEG_ONLY_FPS = 15
   }
 
   private val manager = context.getSystemService(CameraManager::class.java)
@@ -60,6 +71,21 @@ class PassthroughCamera(
   private var reader: ImageReader? = null
   private var lastKeptMs = 0L
   private var openAttempts = 0
+  /** Cleared after a session with the encoder surface fails, so we retry with JPEG frames only. */
+  private var videoInSession = true
+
+  init {
+    video?.onFailure = {
+      handler.post {
+        // Encoder died: rebuild the session without its surface (JPEG-only behaviour).
+        Log.w(TAG, "Encoder failed; restarting camera without video")
+        if (wanted) {
+          closeAll()
+          open()
+        }
+      }
+    }
+  }
 
   fun start() {
     handler.post {
@@ -141,6 +167,14 @@ class PassthroughCamera(
     }
     val chars = manager.getCameraCharacteristics(cand.id)
     val size = chooseSize(chars)
+    val useVideo = video != null && videoInSession && videoWanted()
+    val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
+    val fps =
+        (if (useVideo) ranges.firstOrNull { it.lower == TARGET_FPS && it.upper == TARGET_FPS } else null)
+            ?: ranges.firstOrNull { it.lower == JPEG_ONLY_FPS && it.upper == JPEG_ONLY_FPS }
+            ?: ranges.minByOrNull { it.upper }
+    val encoderSurface = if (useVideo) video?.startCodec(size.width, size.height, fps?.upper ?: JPEG_ONLY_FPS) else null
+    if (video != null && !useVideo && !video.failed) Status.videoInfo = "video: off (setting)"
     val r = ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 3)
     r.setOnImageAvailableListener({ onImage(it) }, handler)
     reader = r
@@ -158,7 +192,7 @@ class PassthroughCamera(
               }
               device = cam
               Log.i(TAG, "Camera ${cam.id} opened")
-              createSession(cam, r, chars, "id=${cand.id} ($side) ${size.width}x${size.height}")
+              createSession(cam, r, encoderSurface, fps, "id=${cand.id} ($side) ${size.width}x${size.height}")
             }
 
             override fun onDisconnected(cam: CameraDevice) {
@@ -194,12 +228,13 @@ class PassthroughCamera(
     }
   }
 
-  private fun createSession(cam: CameraDevice, r: ImageReader, chars: CameraCharacteristics, label: String) {
+  private fun createSession(cam: CameraDevice, r: ImageReader, enc: Surface?, fps: Range<Int>?, label: String) {
+    val outputs = listOfNotNull(OutputConfiguration(r.surface), enc?.let { OutputConfiguration(it) })
     try {
       cam.createCaptureSession(
           SessionConfiguration(
               SessionConfiguration.SESSION_REGULAR,
-              listOf(OutputConfiguration(r.surface)),
+              outputs,
               executor,
               object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
@@ -208,18 +243,32 @@ class PassthroughCamera(
                     return
                   }
                   session = s
-                  val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(r.surface) }
-                  val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
-                  val fps = ranges.firstOrNull { it.lower == 15 && it.upper == 15 } ?: ranges.minByOrNull { it.upper }
+                  val template = if (enc != null) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW
+                  val req = cam.createCaptureRequest(template).apply {
+                    addTarget(r.surface)
+                    if (enc != null) addTarget(enc)
+                  }
                   if (fps != null) req.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(fps.lower, fps.upper))
-                  s.setRepeatingRequest(req.build(), null, handler)
+                  try {
+                    s.setRepeatingRequest(req.build(), null, handler)
+                  } catch (e: Exception) {
+                    Log.e(TAG, "setRepeatingRequest failed (video=${enc != null})", e)
+                    if (enc != null) videoInSession = false // retry without the encoder surface
+                    fail("Camera repeating request failed: ${e.message}")
+                    closeAll()
+                    scheduleReopen()
+                    return
+                  }
                   openAttempts = 0
-                  Status.cameraInfo = "camera: streaming $label @ ${fps ?: "default"} fps"
-                  Log.i(TAG, "Capture session started: $label fps=$fps")
+                  val v = if (enc != null) " + H.264" else " (JPEG only)"
+                  Status.cameraInfo = "camera: streaming $label @ ${fps ?: "default"} fps$v"
+                  Log.i(TAG, "Capture session started: $label fps=$fps video=${enc != null}")
+                  if (enc != null) watchVideoSession(s)
                 }
 
                 override fun onConfigureFailed(s: CameraCaptureSession) {
-                  Log.e(TAG, "Session configure failed")
+                  Log.e(TAG, "Session configure failed (video=${enc != null})")
+                  if (enc != null) videoInSession = false // retry without the encoder surface
                   fail("Camera session configure failed")
                   closeAll()
                   scheduleReopen()
@@ -228,10 +277,33 @@ class PassthroughCamera(
           ))
     } catch (e: Exception) {
       Log.e(TAG, "createCaptureSession failed", e)
+      if (enc != null) videoInSession = false // retry without the encoder surface
       fail("createCaptureSession failed: ${e.message}")
       closeAll()
       scheduleReopen()
     }
+  }
+
+  /**
+   * Fallback guard: if the session with the encoder surface configured but delivers no camera frames
+   * (HAL can't feed both outputs), rebuild it JPEG-only instead of silently capturing nothing.
+   */
+  private fun watchVideoSession(s: CameraCaptureSession) {
+    val framesBefore = Status.framesReceived
+    val encodedBefore = Status.videoFramesEncoded
+    handler.postDelayed({
+      if (!wanted || session !== s) return@postDelayed
+      if (Status.framesReceived == framesBefore) {
+        Log.e(TAG, "No camera frames 5 s after starting with the encoder surface; retrying JPEG-only")
+        videoInSession = false
+        fail("No camera frames with video on; retrying without video")
+        closeAll()
+        open()
+      } else if (Status.videoFramesEncoded == encodedBefore) {
+        Log.w(TAG, "Camera frames arrive but the encoder produced nothing in 5 s")
+        Status.videoInfo = "video: encoder idle (no frames from camera)"
+      }
+    }, 5_000L)
   }
 
   private fun onImage(r: ImageReader) {
@@ -239,6 +311,9 @@ class PassthroughCamera(
     try {
       Status.framesReceived++
       val now = System.currentTimeMillis()
+      // Same sensor timestamp as the encoder's frame for this capture: publish the mapping so
+      // video offsets use the same clock as the JPEG timestamps (delivery time).
+      video?.clockOffsetMs = now - img.timestamp / 1_000_000L
       if (now - lastKeptMs < intervalMs()) return
       lastKeptMs = now
       val nv21 = toNv21(img)
@@ -352,5 +427,6 @@ class PassthroughCamera(
     device = null
     runCatching { reader?.close() }
     reader = null
+    video?.stopCodec()
   }
 }

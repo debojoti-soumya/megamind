@@ -108,6 +108,9 @@ async def replay_mp4(
     t0 = parse_ts(from_, "from")
     if t1 is None:
         t1 = buf.newest_ts(device_id) if t0 is None else t0 + DEFAULT_SPAN_S
+        if t0 is None and (video := getattr(st, "video", None)) is not None:
+            # newest footage of either kind: stored real video (megamind.video) can end after the newest frame
+            t1 = max((t for t in (t1, video.newest_ts(device_id)) if t is not None), default=None)
         if t1 is None:
             raise HTTPException(404, "no buffered frames")
     if t0 is None:
@@ -122,6 +125,12 @@ async def replay_mp4(
     source, tag, toks = "buffer", "", []
     if not frames:  # older than the ring buffer: fall back to the kept keyframes (hot or cold tier)
         dev, toks = await kept_tokens(st, t0, t1, device_id)
+    if (video_replay := getattr(st, "video_replay", None)) is not None:
+        # real video from the headset (megamind.video) wins when it covers the window; else frames as before
+        frame_ts = [f.ts for f in frames] or [t.ts for t in toks]
+        if (cut := await video_replay(st, device_id or dev, t0, t1, frame_ts)) is not None:
+            return ranged_file_response(cut[0], request, "video/mp4", cut[1])
+    if not frames:
         if not toks:
             raise HTTPException(
                 404, f"no buffered or kept frames for device={device_id or '*'} in [{t0:.3f}, {t1:.3f}]"
