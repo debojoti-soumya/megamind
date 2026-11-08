@@ -90,7 +90,8 @@ self-host a VLM (e.g. Qwen2.5-VL-7B) on vLLM on Modal and point `READER_BASE_URL
 
 ### Headset
 
-See [`headset/README.md`](headset/README.md). Requirements: Quest 3 / 3S on Horizon OS v74+
+See [`headset/README.md`](headset/README.md), and the [Quest 3 guide](docs/quest3-guide.md) for first-time
+Quest users (connections, sideloading, test runbook, demo-day card). Requirements: Quest 3 / 3S on Horizon OS v74+
 with developer mode, Unity 2022.3 LTS or Unity 6, Meta XR Core SDK v74+, and Meta's
 [Passthrough Camera API samples](https://github.com/oculus-samples/Unity-PassthroughCameraApiSamples).
 Build and run Meta's *unmodified* sample first; only then add our scripts.
