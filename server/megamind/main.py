@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from megamind.agent.claude_agent import ClaudeAgent
 from megamind.agent.collage import agent_tool as collage_tool
 from megamind.agent.collage import install as install_collage
+from megamind.agent.locate import build_locator
 from megamind.agent.montage import install as install_montage
 from megamind.agent.reader import build_reader
 from megamind.agent.router import router as agent_router
@@ -142,6 +143,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.agent = ClaudeAgent(settings, st.recall, collage=collage_tool(st))
         st.stt = build_stt(settings)
         st.tts = build_tts(settings)
+        st.locator = build_locator(st, settings)  # "where is X": X's box in a cited frame (ChatResponse.markers)
         st.audio_stt = build_audio_stt(settings, st.stt)
         st.consolidator = Consolidator(
             st.store,

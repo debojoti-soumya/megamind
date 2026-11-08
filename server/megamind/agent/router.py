@@ -64,8 +64,9 @@ async def _chat_input(request: Request) -> ChatInput:
 
 
 async def _finish(app, resp: ChatResponse, dev: ChatDevice, speaker: StreamingSpeaker | None = None) -> ChatResponse:
-    """Replay links + TTS, concurrently (independent: one reads `cited`, the other `answer`). With a `speaker`
-    (streamed turn, TTS_STREAM) most sentences are already rendered: this speaks the tail and joins the clips."""
+    """Replay links + TTS + object markers, concurrently (each reads `cited` / `answer`, writes its own field).
+    With a `speaker` (streamed turn, TTS_STREAM) most sentences are already rendered: this speaks the tail and joins
+    the clips."""
 
     async def tts() -> None:
         if speaker is not None:
@@ -73,7 +74,12 @@ async def _finish(app, resp: ChatResponse, dev: ChatDevice, speaker: StreamingSp
         else:
             resp.audio_url = await app.tts.synthesize(resp.answer, str(ULID()))
 
-    await asyncio.gather(annotate_citations(app, resp.cited, dev.device_id), tts())
+    async def markers() -> None:
+        locator = getattr(app, "locator", None)
+        if locator is not None and resp.cited:
+            resp.markers = await locator.markers(resp.transcript, resp.answer, list(resp.cited))
+
+    await asyncio.gather(annotate_citations(app, resp.cited, dev.device_id), tts(), markers())
     resp.device_id_used, resp.warning = dev.device_id, dev.warning
     return resp
 

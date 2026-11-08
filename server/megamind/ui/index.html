@@ -76,6 +76,10 @@
   .thumb { position: relative; width: 132px; height: 99px; border-radius: 10px; overflow: hidden; background: rgba(0,0,0,0.4);
     border: 1px solid rgba(255,255,255,0.12); cursor: zoom-in; flex: none; }
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb.marked img { object-fit: fill; } /* uncropped, so the marker box lines up */
+  .mbox { position: absolute; border: 2px solid #ffcc1a; border-radius: 3px; box-shadow: 0 0 0 1px rgba(0,0,0,0.6); pointer-events: none; }
+  .mbox span { position: absolute; left: -2px; bottom: 100%; font-size: 11px; padding: 0 4px; background: #ffcc1a; color: #000; white-space: nowrap; border-radius: 3px 3px 0 0; }
+  #lbwrap { position: relative; line-height: 0; }
   .thumb .ts { position: absolute; left: 6px; bottom: 5px; font-size: 11px; padding: 1px 6px; border-radius: 6px;
     background: rgba(0,0,0,0.6); color: #fff; font-variant-numeric: tabular-nums; }
   .memcard { width: min(100%, 560px); border-radius: 18px; overflow: hidden; background: rgba(255,255,255,0.04);
@@ -231,7 +235,7 @@
   </div>
 </section>
 
-<div id="lightbox"><button class="nav" id="lbprev" aria-label="previous">&#8249;</button><img id="lbimg" alt=""><button class="nav" id="lbnext" aria-label="next">&#8250;</button><div class="count" id="lbcount"></div><div class="cap" id="lbcap"></div><div id="lbstrip"></div></div>
+<div id="lightbox"><button class="nav" id="lbprev" aria-label="previous">&#8249;</button><div id="lbwrap"><img id="lbimg" alt=""></div><button class="nav" id="lbnext" aria-label="next">&#8250;</button><div class="count" id="lbcount"></div><div class="cap" id="lbcap"></div><div id="lbstrip"></div></div>
 
 <script>
 (() => {
@@ -365,7 +369,15 @@
     el.innerHTML = `<div class="bubble"></div><div class="meta"><span>${fmtTime(Date.now() / 1000)}</span></div>`;
     el.querySelector('.bubble').textContent = text; transcript.appendChild(el); scrollEnd();
   }
-  function addAssistant(text, cited, toolCalls, isError, ms, collage) {
+  // ChatResponse.markers: normalized box (origin top-left) on the cited frame token_id.
+  function markerBox(m) {
+    const [x0, y0, x1, y1] = m.box;
+    const d = document.createElement('div'); d.className = 'mbox';
+    Object.assign(d.style, { left: `${x0 * 100}%`, top: `${y0 * 100}%`, width: `${(x1 - x0) * 100}%`, height: `${(y1 - y0) * 100}%` });
+    const s = document.createElement('span'); s.textContent = m.label; d.appendChild(s);
+    return d;
+  }
+  function addAssistant(text, cited, toolCalls, isError, ms, markers, collage) {
     $('empty')?.remove();
     const el = document.createElement('div'); el.className = 'msg assistant';
     const b = document.createElement('div'); b.className = 'bubble' + (isError ? ' error' : ''); b.textContent = text; el.appendChild(b);
@@ -377,7 +389,9 @@
         const t = document.createElement('div'); t.className = 'thumb'; t.title = c.caption || '';
         t.innerHTML = `<img alt="" loading="lazy"><span class="ts">${ago(c.ts)}</span>`;
         t.querySelector('img').src = media(c.thumb_url);
-        t.onclick = () => openGallery([{ src: media(c.thumb_url), cap: `${fmtTime(c.ts)} (${ago(c.ts)}) — ${c.caption || ''}` }], 0);
+        const marks = (markers || []).filter(m => m.token_id === c.id && m.box?.length === 4);
+        if (marks.length) { t.classList.add('marked'); for (const m of marks) t.appendChild(markerBox(m)); }
+        t.onclick = () => openGallery([{ src: media(c.thumb_url), cap: `${fmtTime(c.ts)} (${ago(c.ts)}) — ${c.caption || ''}`, marks }], 0);
         row.appendChild(t);
       }
       el.appendChild(row);
@@ -447,6 +461,7 @@
   let gal = null;
   function showGallery() {
     const it = gal.items[gal.i]; $('lbimg').src = it.src; $('lbcap').textContent = it.cap;
+    $('lbwrap').querySelectorAll('.mbox').forEach(e => e.remove()); for (const m of it.marks || []) $('lbwrap').appendChild(markerBox(m));
     $('lbcount').textContent = gal.items.length > 1 ? `${gal.i + 1} of ${gal.items.length}` : '';
     [...$('lbstrip').children].forEach((im, k) => im.classList.toggle('on', k === gal.i));
     $('lbstrip').children[gal.i]?.scrollIntoView({ block: 'nearest', inline: 'center' });
@@ -518,7 +533,7 @@
     const j = await r.json();
     if (echoTranscript && j.transcript) addUser(j.transcript);
     if (j.warning) addAssistant('Note: ' + j.warning, [], null, true);
-    addAssistant(j.answer, j.cited, j.tool_calls, false, ms, j.collage);
+    addAssistant(j.answer, j.cited, j.tool_calls, false, ms, j.markers, j.collage);
     $('latency').textContent = (ms / 1000).toFixed(1) + 's';
     if (j.audio_url && cfg.autoplay) {
       try { speaker?.pause(); speaker = new Audio(media(j.audio_url)); await speaker.play(); } catch (e) { console.warn('audio playback failed', e); }

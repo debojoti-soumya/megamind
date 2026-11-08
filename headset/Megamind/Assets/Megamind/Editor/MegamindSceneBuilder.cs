@@ -121,6 +121,11 @@ namespace Megamind.EditorTools
             ambient.uploader = uploader;
             ambient.headPose = centerEye;
             hud.audioRecorder = ambient;
+            var markers = mm.AddComponent<ObjectMarkers>(); // ChatClient is found at runtime (built by step 1b)
+            markers.uploader = uploader;
+            markers.cameraAccess = pca;
+            markers.head = centerEye;
+            markers.raycast = new GameObject("EnvironmentRaycastManager").AddComponent<EnvironmentRaycastManager>();
 
             Directory.CreateDirectory(Path.GetDirectoryName(ScenePath));
             EditorSceneManager.SaveScene(scene, ScenePath);

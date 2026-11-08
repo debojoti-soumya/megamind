@@ -328,7 +328,7 @@ namespace Megamind
             // command discards that answer. The stream path matches on the early `transcript` event and cancels instead.
             if (echoTranscript && menu != null && menu.TryVoiceCommand(resp.transcript)) return;
             if (echoTranscript && !string.IsNullOrEmpty(resp.transcript)) panel?.AddUserMessage(resp.transcript);
-            panel?.AddAssistantMessage(resp.answer, resp.cited, false, resp.Confidence(), LastLatencySeconds,
+            panel?.AddAssistantMessage(resp.answer, resp.cited, false, resp.Confidence(), LastLatencySeconds, 0f, resp.markers,
                 resp.HasCollage() ? resp.collage : null);
             OnResponse?.Invoke(resp);
             if (!string.IsNullOrEmpty(resp.audio_url) && config.speakAnswers) StartCoroutine(PlayAudio(config.Url(resp.audio_url)));
@@ -510,7 +510,7 @@ namespace Megamind
                 if (!string.IsNullOrEmpty(resp.transcript)) panel?.AddUserMessage(resp.transcript);
             }
             turn.Released = true;
-            panel?.FinishDraft(resp.answer, resp.cited, resp.Confidence(), LastLatencySeconds, turn.FirstText,
+            panel?.FinishDraft(resp.answer, resp.cited, resp.Confidence(), LastLatencySeconds, turn.FirstText, resp.markers,
                 resp.HasCollage() ? resp.collage : null);
             OnResponse?.Invoke(resp);
             string audioUrl = string.IsNullOrEmpty(resp.audio_url) ? null : config.Url(resp.audio_url);
