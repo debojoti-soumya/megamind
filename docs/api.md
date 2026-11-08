@@ -342,12 +342,14 @@ local time and a short caption). Cheap enough to run inside a chat turn (`make_c
 - `query` required. Subject = the query minus framing and time phrase, as for smart montages ("pictures of",
   "a collage of every ..."). A query that is only a time phrase ("photos from this afternoon") or has no subject
   but a `time_from`/`time_to` samples that period instead (unverified); neither -> 400.
-- Candidates / verification: exactly the smart-montage path (`MONTAGE_SMART_MAX_CANDIDATES`, `MONTAGE_VERIFY_*`;
-  unverified retrieval hits without `ANTHROPIC_API_KEY` or when every verifier call failed). Only tokens with
-  pixels count.
+- Candidates / verification: exactly the smart-montage path (`MONTAGE_SMART_MAX_CANDIDATES`, `MONTAGE_VERIFY_*`).
+  Without `ANTHROPIC_API_KEY`, or when every verifier call failed, the retrieval hits are kept unverified but only
+  when their caption names the subject (plural-insensitive: "dogs" ~ "a dog"), so an absent subject is a 404, not
+  the nearest unrelated photos. Only tokens with pixels count.
 - One photo per moment (`COLLAGE_MOMENT_GAP_S`, 60 s), chronological, at most `COLLAGE_MAX_IMAGES` (9, or
-  `max_images` if smaller), evenly spread in time. Grid: 1, 2x1, 2x2, 3x2, 3x3, 4x3 ... tiles of `COLLAGE_TILE_PX`
-  (360) x 3/4.
+  `max_images` if smaller), evenly spread in time. Layout: justified rows (each photo keeps its aspect ratio,
+  clamped to 0.6..2.2; rows ~`COLLAGE_TILE_PX` (360) x 3/4 tall, 2 / 3 / 4 photo widths wide for up to 4 / 9 / more
+  photos), rounded corners, local date-time + caption on each photo, a "not visually checked" chip when unverified.
 Response:
 ```json
 { "id": "5d0c...", "url": "/v1/collages/5d0c....jpg", "title": "The red car",

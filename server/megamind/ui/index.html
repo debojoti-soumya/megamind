@@ -79,6 +79,14 @@
   .thumb .ts { position: absolute; left: 6px; bottom: 5px; font-size: 11px; padding: 1px 6px; border-radius: 6px;
     background: rgba(0,0,0,0.6); color: #fff; font-variant-numeric: tabular-nums; }
   .collage { display: block; max-width: min(100%, 560px); border-radius: 12px; border: 1px solid rgba(255,255,255,0.12); cursor: zoom-in; }
+  .collage-strip { display: flex; gap: 6px; overflow-x: auto; max-width: min(100%, 560px); padding-bottom: 2px; }
+  .collage-strip img { height: 56px; border-radius: 8px; cursor: zoom-in; opacity: 0.85; flex: none; }
+  .collage-strip img:hover { opacity: 1; }
+  #lightbox .nav { position: absolute; top: 50%; transform: translateY(-50%); width: 48px; height: 48px; border-radius: 24px; border: 0;
+    background: var(--glass); color: #fff; font-size: 26px; cursor: pointer; display: none; }
+  #lightbox.gallery .nav { display: block; }
+  #lbprev { left: 4vw; } #lbnext { right: 4vw; }
+  #lightbox .count { position: absolute; top: 6vh; left: 50%; transform: translateX(-50%); font-size: 13px; color: var(--muted); }
   .empty { margin: auto; text-align: center; color: var(--muted); font-size: 14px; max-width: 320px; }
   .empty kbd { background: rgba(255,255,255,0.1); border-radius: 5px; padding: 1px 6px; font-family: inherit; }
 
@@ -197,7 +205,7 @@
   </div>
 </section>
 
-<div id="lightbox"><img id="lbimg" alt=""><div class="cap" id="lbcap"></div></div>
+<div id="lightbox"><button class="nav" id="lbprev" aria-label="previous">&#8249;</button><img id="lbimg" alt=""><button class="nav" id="lbnext" aria-label="next">&#8250;</button><div class="count" id="lbcount"></div><div class="cap" id="lbcap"></div></div>
 
 <script>
 (() => {
@@ -338,15 +346,22 @@
     if (collage?.url) {
       const img = document.createElement('img'); img.className = 'collage'; img.alt = collage.title || 'photo montage';
       img.src = media(collage.url);
-      img.onclick = () => { $('lbimg').src = media(collage.url); $('lbcap').textContent = collage.narration || collage.title || ''; $('lightbox').classList.add('show'); };
+      const photos = (collage.images || []).map(p => ({ src: media(p.thumb_url), cap: `${fmtTime(p.ts)} (${ago(p.ts)}) — ${p.title || ''}` }));
+      const items = [{ src: media(collage.url), cap: collage.narration || collage.title || '' }, ...photos];
+      img.onclick = () => openGallery(items, 0);
       el.appendChild(img);
+      if (photos.length > 1) {
+        const strip = document.createElement('div'); strip.className = 'collage-strip';
+        photos.forEach((p, i) => { const t = document.createElement('img'); t.loading = 'lazy'; t.alt = ''; t.src = p.src; t.title = p.cap; t.onclick = () => openGallery(items, i + 1); strip.appendChild(t); });
+        el.appendChild(strip);
+      }
     } else if (cited && cited.length) {
       const row = document.createElement('div'); row.className = 'thumbs';
       for (const c of cited) {
         const t = document.createElement('div'); t.className = 'thumb'; t.title = c.caption || '';
         t.innerHTML = `<img alt="" loading="lazy"><span class="ts">${ago(c.ts)}</span>`;
         t.querySelector('img').src = media(c.thumb_url);
-        t.onclick = () => { $('lbimg').src = media(c.thumb_url); $('lbcap').textContent = `${fmtTime(c.ts)} (${ago(c.ts)}) — ${c.caption || ''}`; $('lightbox').classList.add('show'); };
+        t.onclick = () => openGallery([{ src: media(c.thumb_url), cap: `${fmtTime(c.ts)} (${ago(c.ts)}) — ${c.caption || ''}` }], 0);
         row.appendChild(t);
       }
       el.appendChild(row);
@@ -360,7 +375,19 @@
     }
     el.appendChild(meta); transcript.appendChild(el); scrollEnd();
   }
-  $('lightbox').onclick = () => $('lightbox').classList.remove('show');
+  // gallery: the collage first, then each of its photos full size (arrows / keys to step)
+  let gal = null;
+  function showGallery() {
+    const it = gal.items[gal.i]; $('lbimg').src = it.src; $('lbcap').textContent = it.cap;
+    $('lbcount').textContent = gal.items.length > 1 ? (gal.i === 0 ? `collage · ${gal.items.length - 1} photos` : `photo ${gal.i} of ${gal.items.length - 1}`) : '';
+  }
+  function openGallery(items, i) {
+    gal = { items, i }; $('lightbox').classList.toggle('gallery', items.length > 1); showGallery(); $('lightbox').classList.add('show');
+  }
+  function stepGallery(d) { if (!gal || gal.items.length < 2) return; gal.i = (gal.i + d + gal.items.length) % gal.items.length; showGallery(); }
+  $('lbprev').onclick = e => { e.stopPropagation(); stepGallery(-1); };
+  $('lbnext').onclick = e => { e.stopPropagation(); stepGallery(1); };
+  $('lightbox').onclick = () => { $('lightbox').classList.remove('show', 'gallery'); $('lbcount').textContent = ''; gal = null; };
 
   // ---------- indicators ----------
   const ind = $('indicator');
@@ -495,7 +522,8 @@
   ptt.addEventListener('pointercancel', endRecording);
   window.addEventListener('keydown', (e) => {
     if (e.code === 'Space' && !e.repeat && document.activeElement !== $('text') && !$('settings').classList.contains('show')) { e.preventDefault(); beginRecording(); }
-    if (e.key === 'Escape') { $('settings').classList.remove('show'); $('lightbox').classList.remove('show'); }
+    if (e.key === 'Escape') { $('settings').classList.remove('show'); $('lightbox').classList.remove('show', 'gallery'); gal = null; }
+    if (gal && $('lightbox').classList.contains('show') && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { stepGallery(e.key === 'ArrowLeft' ? -1 : 1); e.preventDefault(); }
   });
   window.addEventListener('keyup', (e) => { if (e.code === 'Space' && document.activeElement !== $('text')) { e.preventDefault(); endRecording(); } });
 

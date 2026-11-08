@@ -250,4 +250,4 @@ def test_unverified_picks_keep_captions_naming_the_subject():
     picks = [pick(0, "A herd of giraffe in a field"), pick(1, "A red stop sign"), pick(2, "Two puppies playing")]
     assert [p.token.id for p in _caption_matches(picks, phrase="giraffes")] == ["p0"]
     assert [p.token.id for p in _caption_matches(picks, phrase="a puppy")] == ["p2"]
-    assert _caption_matches(picks, phrase="a zebra") == picks  # nothing names it: keep retrieval's picks
+    assert _caption_matches(picks, phrase="a zebra") == []  # nothing names it: retrieval noise, not zebras

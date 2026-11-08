@@ -90,7 +90,7 @@ class CollageSettings(BaseSettings):
     agent_tool: bool = True  # offer make_collage to the chat agent
     max_images: int = 9
     moment_gap_s: float = 60.0  # matching photos closer than this (same device) are one moment -> one tile
-    tile_px: int = 360  # tile width; tiles are 4:3
+    tile_px: int = 360  # nominal tile width (rows ~3/4 of it tall); photos keep their own aspect ratio
     quality: int = 85
     font: str = ""
     cache_dir: Path | None = None  # default <thumb_dir>/../collages
@@ -162,46 +162,127 @@ def grid(n: int) -> tuple[int, int]:
     return cols, math.ceil(max(n, 1) / cols)
 
 
+def _aspect(img: Image.Image) -> float:
+    return min(max(img.width / max(img.height, 1), 0.6), 2.2)  # very tall/wide photos are center-cropped to this
+
+
+def justify(aspects: list[float], width: float, row_h: float, gap: float) -> list[list[int]]:
+    """Split photos (in order) into rows that each fill `width` at roughly `row_h` (a justified gallery): the
+    row count follows from the total aspect, the split balances the rows' aspect sums (linear partition)."""
+    n = len(aspects)
+    if n == 0:
+        return []
+    k = max(1, min(n, round(sum(aspects) * row_h / max(width, 1.0) + 0.25)))  # lean to more, taller rows
+    pre = [0.0]
+    for a in aspects:
+        pre.append(pre[-1] + a)
+    target = pre[-1] / k
+    inf = float("inf")
+    cost = [[inf] * (n + 1) for _ in range(k + 1)]
+    back = [[0] * (n + 1) for _ in range(k + 1)]
+    cost[0][0] = 0.0
+    for r in range(1, k + 1):
+        for j in range(r, n + 1):
+            for i in range(r - 1, j):
+                c = cost[r - 1][i] + (pre[j] - pre[i] - target) ** 2
+                if c < cost[r][j]:
+                    cost[r][j], back[r][j] = c, i
+    rows, j = [], n
+    for r in range(k, 0, -1):
+        i = back[r][j]
+        rows.append(list(range(i, j)))
+        j = i
+    return rows[::-1]
+
+
+def _rounded(img: Image.Image, radius: int) -> Image.Image:
+    mask = Image.new("L", img.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, img.width - 1, img.height - 1), radius=radius, fill=255)
+    out = img.convert("RGBA")
+    out.putalpha(mask)
+    return out
+
+
+def _shade(w: int, h: int) -> Image.Image:
+    """Bottom caption gradient: transparent -> ~70% black."""
+    col = Image.linear_gradient("L").resize((1, h)).point(lambda v: int(v * 0.7))
+    over = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    over.putalpha(col.resize((w, h)))
+    return over
+
+
 def render_collage(tiles: list[Tile], title: str, subtitle: str, cfg: CollageSettings, tz: str) -> bytes:
+    """Justified gallery: every photo keeps its shape (no 4:3 crop), rows fill the width, rounded corners and a
+    gradient caption (local time + what it shows) on each photo."""
     zone = _zone(tz)
-    cols, rows = grid(len(tiles))
+    cols, _ = grid(len(tiles))
     tw = max(120, cfg.tile_px)
-    th = tw * 3 // 4
-    gap, margin, header = max(6, tw // 45), max(12, tw // 22), max(56, tw // 4)
-    w = margin * 2 + cols * tw + (cols - 1) * gap
-    h = margin * 2 + header + rows * th + (rows - 1) * gap
-    canvas = Image.new("RGB", (w, h), (16, 20, 24))
-    draw = ImageDraw.Draw(canvas, "RGBA")
-    f_title, f_sub, f_cap = _font(cfg, max(18, tw // 13)), _font(cfg, max(12, tw // 24)), _font(cfg, max(11, tw // 26))
-    draw.text((margin, margin), _fit_text(draw, title, f_title, w - 2 * margin), font=f_title, fill=(236, 240, 244))
-    draw.text(
-        (margin, margin + f_title.size + 6),
-        _fit_text(draw, subtitle, f_sub, w - 2 * margin),
-        font=f_sub,
-        fill=(150, 160, 172),
-    )
-    bar = f_cap.size * 2 + 10
-    for i, t in enumerate(tiles):
-        x = margin + (i % cols) * (tw + gap)
-        y = margin + header + (i // cols) * (th + gap)
+    gap, margin = max(8, tw // 36), max(16, tw // 16)
+    width = cols * tw + (cols - 1) * gap
+    row_h = tw * 3 / 4 if len(tiles) > 1 else tw * 1.2
+    imgs = []
+    for t in tiles:
         try:
-            img = Image.open(io.BytesIO(t.jpeg))
-            img = ImageOps.fit(ImageOps.exif_transpose(img).convert("RGB"), (tw, th), Image.Resampling.LANCZOS)
+            imgs.append(ImageOps.exif_transpose(Image.open(io.BytesIO(t.jpeg))).convert("RGB"))
         except (OSError, ValueError):
-            img = Image.new("RGB", (tw, th), (40, 44, 50))
-        canvas.paste(img, (x, y))
-        draw.rectangle((x, y + th - bar, x + tw, y + th), fill=(0, 0, 0, 150))
-        when = datetime.fromtimestamp(t.token.ts, zone).strftime("%a %H:%M")
-        draw.text((x + 8, y + th - bar + 4), when, font=f_cap, fill=(255, 214, 102))
-        cap = _fit_text(draw, t.title, f_cap, tw - 16)
-        draw.text((x + 8, y + th - bar + 6 + f_cap.size), cap, font=f_cap, fill=(240, 240, 240))
+            imgs.append(Image.new("RGB", (4, 3), (40, 44, 50)))
+    aspects = [_aspect(im) for im in imgs]
+    rows = justify(aspects, width, row_h, gap)
+    if len(tiles) == 1:
+        width = round(min(row_h * aspects[0], tw * 2.2))
+    layout, y = [], 0
+    for row in rows:
+        total = sum(aspects[i] for i in row)
+        h = (width - gap * (len(row) - 1)) / total
+        h = min(h, row_h * (1.6 if len(row) > 1 else 1.15))  # a short last row doesn't blow its photo up
+        x = (width - (h * total + gap * (len(row) - 1))) / 2
+        for i in row:
+            w = h * aspects[i]
+            layout.append((i, round(x), round(y), round(x + w) - round(x), round(h)))
+            x += w + gap
+        y += h + gap
+    grid_h = round(y - gap)
+
+    f_title = _font(cfg, max(22, tw // 11))
+    f_sub, f_when, f_cap = _font(cfg, max(13, tw // 24)), _font(cfg, max(12, tw // 26)), _font(cfg, max(12, tw // 24))
+    header = f_title.size + f_sub.size + 22
+    w_canvas, h_canvas = width + 2 * margin, margin * 2 + header + grid_h
+    canvas = Image.new("RGB", (w_canvas, h_canvas), (14, 17, 22))
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    draw.text((margin, margin - 4), _fit_text(draw, title, f_title, width), font=f_title, fill=(240, 243, 247))
+    unverified = subtitle.endswith(" · unverified")
+    sub = subtitle.removesuffix(" · unverified")
+    sy = margin + f_title.size + 8
+    draw.text((margin, sy), _fit_text(draw, sub, f_sub, width - 120), font=f_sub, fill=(148, 158, 172))
+    if unverified:
+        cx = margin + draw.textlength(sub, font=f_sub) + 12
+        label = "not visually checked"
+        cw = draw.textlength(label, font=f_when) + 16
+        draw.rounded_rectangle((cx, sy - 2, cx + cw, sy + f_sub.size + 4), radius=8, fill=(255, 196, 0, 40))
+        draw.text((cx + 8, sy + 1), label, font=f_when, fill=(255, 205, 90))
+
+    radius = max(8, tw // 28)
+    top = margin + header
+    for i, x, y, w, h in layout:
+        t, img = tiles[i], imgs[i]
+        photo = ImageOps.fit(img, (max(w, 1), max(h, 1)), Image.Resampling.LANCZOS)
+        band = min(h, f_when.size + f_cap.size + 28)
+        photo = photo.convert("RGBA")
+        photo.alpha_composite(_shade(w, band), (0, h - band))
+        pd = ImageDraw.Draw(photo)
+        when = datetime.fromtimestamp(t.token.ts, zone).strftime("%a %b %-d · %H:%M")
+        pd.text((10, h - band + 8), when, font=f_when, fill=(255, 210, 110))
+        pd.text(
+            (10, h - band + 12 + f_when.size), _fit_text(pd, t.title, f_cap, w - 20), font=f_cap, fill=(245, 245, 245)
+        )
+        canvas.paste(_rounded(photo, radius), (margin + x, top + y), _rounded(photo, radius))
     buf = io.BytesIO()
     canvas.save(buf, format="JPEG", quality=max(30, min(cfg.quality, 95)), optimize=True)
     return buf.getvalue()
 
 
 def collage_key(title: str, tiles: list[Tile], cfg: CollageSettings) -> str:
-    raw = repr((title, [(t.token.id, t.title) for t in tiles], cfg.tile_px, cfg.quality))
+    raw = repr(("v2", title, [(t.token.id, t.title) for t in tiles], cfg.tile_px, cfg.quality))
     return hashlib.sha1(raw.encode()).hexdigest()[:20]
 
 
@@ -225,15 +306,15 @@ def _forms(w: str) -> set[str]:
 
 def _caption_matches(picks: list[smart.Pick], *, phrase: str) -> list[smart.Pick]:
     """Unverified picks whose caption names the subject ("dogs" ~ "a dog on the couch"): without the visual check,
-    a vector-search neighbour that never mentions it is more likely noise than a photo of it. All picks when no
-    caption does (a synonym the embedder knew: "puppy" for "dog")."""
+    a vector-search neighbour that never mentions it is more likely noise than a photo of it. None when no caption
+    does: retrieval always returns its nearest neighbours, so "elephants" would otherwise get any photos at all."""
     want = [_forms(w) for w in smart._content_words(phrase)]
     hits = []
     for p in picks:
         words = {f for w in re.findall(r"[a-z0-9']+", p.token.caption.lower()) for f in _forms(w)}
         if any(f & words for f in want):
             hits.append(p)
-    return hits or picks
+    return hits
 
 
 async def make_collage(
