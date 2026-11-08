@@ -107,6 +107,9 @@ def _settings(**cfg) -> Settings:
     cfg.setdefault("recall_prefetch", True)
     cfg.setdefault("reader_skip_on_ocr", True)
     cfg.setdefault("recall_first", False)  # the scripted tests below drive Claude's first (tool-picking) call
+    # these tests assert the pre-caching request shape (clock in the system prompt, plain string question); the
+    # cached shape (default on) is covered in test_chat_stream.py
+    cfg.setdefault("claude_prompt_cache", False)
     return Settings(_env_file=None, **cfg)
 
 
@@ -150,10 +153,11 @@ async def test_single_tool_call_with_claude_cites(recall):
     assert "Pass short keywords as query" in first["system"]
     assert first["messages"] == [{"role": "user", "content": "where did I leave my keys?"}]
     assert second["messages"][1]["role"] == "assistant"
-    assert second["messages"][1]["content"][0]["type"] == "tool_use"
-    tr = second["messages"][2]["content"][0]
-    assert tr["type"] == "tool_result" and tr["tool_use_id"] == "toolu_1"
-    payload = json.loads(tr["content"])
+    # CLAUDE_TOOL_RESULTS_AS_TEXT (default): the tool round goes back as text so Sonnet streams the answer
+    assert second["messages"][1]["content"][0] == {"type": "text", "text": 'recall_memory({"query": "keys", "k": 6})'}
+    label, tr = second["messages"][2]["content"][:2]
+    assert label == {"type": "text", "text": "tool result:"}
+    payload = json.loads(tr["text"])
     assert payload["confidence"] == "low"
     assert payload["cited"][0]["id"] == "t_keys"
     assert "ago" in payload["cited"][0]["when"] and payload["cited"][0]["time_local"]
@@ -236,7 +240,7 @@ async def test_bad_tool_args_are_reported_not_raised(recall):
     agent = _agent(recall, script)
     resp = await agent.chat("s6", "keys?", "dev1")
     assert resp.tool_calls[0].confidence == "not_found"
-    payload = json.loads(script.requests[1]["messages"][2]["content"][0]["content"])
+    payload = json.loads(script.requests[1]["messages"][2]["content"][1]["text"])
     assert payload["evidence"].startswith("Tool error")
 
 
@@ -398,7 +402,7 @@ async def test_ocr_match_skips_reader_on_claude_path(recall):
         ]
     )
     _, stats = await _agent(recall, script).chat_with_stats("s", "when is standup and the demo", "dev1", now=NOW)
-    payload = json.loads(script.requests[1]["messages"][2]["content"][0]["content"])
+    payload = json.loads(script.requests[1]["messages"][2]["content"][1]["text"])
     assert (
         payload["evidence"].startswith("[exact text match") and "Standup 10am / Ship demo Sunday" in payload["evidence"]
     )
@@ -481,10 +485,11 @@ async def test_recall_first_skips_the_tool_picking_call(recall):
     assert len(script.requests) == 1 and stats.extra["prefetch"] == "first" and stats.tool_calls == 1
     assert [c["query"] for c in spy.calls] == ["where did I leave my keys?"]
     msgs = script.requests[0]["messages"]
-    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
-    use, result = msgs[1]["content"][0], msgs[2]["content"][0]
-    assert use["type"] == "tool_use" and use["name"] == "recall_memory" and result["tool_use_id"] == use["id"]
-    assert "t_keys" in json.dumps(result["content"])
+    # the result rides on the question, not a synthetic tool_result: Sonnet streams its answer only then (#138)
+    assert [m["role"] for m in msgs] == ["user"] and "tool_result" not in json.dumps(msgs)
+    blocks = msgs[0]["content"]
+    assert blocks[0] == {"type": "text", "text": "where did I leave my keys?"} and "recall_memory" in blocks[1]["text"]
+    assert "t_keys" in json.dumps(blocks[2:])
     assert [c.id for c in resp.cited] == ["t_keys"] and resp.tool_calls[0].args == {
         "query": "where did I leave my keys?"
     }
@@ -493,7 +498,7 @@ async def test_recall_first_skips_the_tool_picking_call(recall):
     script.responses = [_message([text("Still the counter. <cites>t_keys</cites>")])]
     resp, stats = await agent.chat_with_stats("s", "and after that?", "dev1", now=NOW)
     assert stats.extra.get("prefetch") != "first" and [c.id for c in resp.cited] == ["t_keys"]
-    assert [m["role"] for m in script.requests[1]["messages"]] == ["user", "assistant", "user", "assistant", "user"]
+    assert [m["role"] for m in script.requests[1]["messages"]] == ["user", "assistant", "user"]
 
 
 async def test_recall_first_lets_claude_re_query(recall):
@@ -531,9 +536,9 @@ async def test_vision_reader_sends_images_to_claude_and_strips_them_from_history
     agent = ClaudeAgent(_settings(anthropic_api_key="k", recall_first=True), recall, client=script.client())
     resp = await agent.chat("s", "where did I leave my keys?", "dev1")
     assert [c.id for c in resp.cited] == ["t_keys"]
-    content = script.requests[0]["messages"][2]["content"][0]["content"]
+    content = script.requests[0]["messages"][0]["content"]
     kinds = [b["type"] for b in content]
-    assert kinds[0] == "text" and kinds.count("image") >= 1
+    assert kinds[:3] == ["text", "text", "text"] and kinds.count("image") >= 1
     img = next(b for b in content if b["type"] == "image")
     assert img["source"]["media_type"] == "image/jpeg" and img["source"]["data"]
     assert "look at them" in script.requests[0]["system"]
