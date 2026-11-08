@@ -189,3 +189,12 @@ async def test_health_reports_live_providers_and_unwired_ones(tmp_path):
     assert models["embed"] == "mock (openai configured, not implemented)"
     # ElevenLabs TTS is wired (agent/tts.py), so a key makes it the live provider
     assert models["tts"] == "elevenlabs"
+
+
+async def test_health_says_not_installed_for_local_embeddings_without_torch(tmp_path, monkeypatch):
+    import importlib.util
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name == "torch" else real(name, *a))
+    models = await _health(tmp_path, embed_provider="local")
+    assert models["embed"] == "mock (local configured, not installed)"

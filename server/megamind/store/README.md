@@ -37,7 +37,7 @@ Mirrors `MemoryToken` in `docs/api.md` plus one derived column:
 | `id` | string (PK) | ULID-ish; `merge_insert("id")` makes `add` an upsert |
 | `device_id` | string | filter column on every primitive |
 | `ts` | float64 | unix seconds; `range`/`neighbors` order by it |
-| `kind` | string | `"frame"` \| `"episode"` |
+| `kind` | string | `"frame"` \| `"episode"` \| `"transcript"` (heard speech from `POST /v1/audio`; empty `thumb_path`/`frame_hash`) |
 | `caption`, `ocr_text` | string | empty string until enriched |
 | `entities` | list\<string\> | |
 | `search_text` | string | **derived**: `caption + "\n" + ocr_text + "\n" + " ".join(entities)`; BM25 target |

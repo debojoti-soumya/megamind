@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     lancedb_path: Path = Path("./data/lancedb")
     thumb_dir: Path = Path("./data/thumbs")
     audio_dir: Path = Path("./data/audio")
+    privacy_blur_faces: bool = False  # blur bystander faces in stored thumbnails (needs the privacy extra)
+    privacy_blur_faces_vlm: bool = False  # also blur before the caption VLM / image embedder; implies the above
 
     filter_min_gap_s: float = 2.0
     filter_dhash_max_distance: int = 6
@@ -87,6 +89,13 @@ class Settings(BaseSettings):
     consolidate_interval_s: float = 600.0
     consolidate_min_tokens: int = 3
     summarizer_provider: str = "mock"
+
+    # ambient audio (POST /v1/audio): "" = openai if STT_PROVIDER=openai + key, else the chat STT | mock | openai |
+    # faster-whisper (needs the local-stt extra + ffmpeg)
+    audio_stt_provider: str = ""
+    audio_stt_model: str = ""  # "" -> whisper-1 (openai) / small.en (faster-whisper)
+    audio_window_s: float = 15.0  # transcript segments are merged into memory tokens spanning at most this long
+    audio_enhance: bool = True  # band-pass + loudnorm when ffmpeg decodes (low-rate headset mics)
 
     def provider_key(self, provider: str) -> str | None:
         """The API key `provider` authenticates with ("" if unset), or None for keyless/unknown providers."""

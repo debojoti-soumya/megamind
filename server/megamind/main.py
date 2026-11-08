@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.util
 import logging
 from contextlib import asynccontextmanager
 
@@ -15,9 +16,12 @@ from megamind.agent.stt import build_stt
 from megamind.agent.tools import RecallMemory
 from megamind.agent.tts import build_tts
 from megamind.config import Settings, get_settings
+from megamind.ingest.audio import router as audio_router
 from megamind.ingest.enrich import build_enricher, build_image_embedder, build_text_embedder
 from megamind.ingest.filter import KeyframeFilter
+from megamind.ingest.privacy import build_face_blur
 from megamind.ingest.router import router as ingest_router
+from megamind.ingest.transcribe import build_audio_stt
 from megamind.ingest.worker import EnrichmentWorker
 from megamind.models import HealthResponse
 from megamind.replay import install as install_replay
@@ -29,6 +33,9 @@ from megamind.ui.router import router as ui_router
 logging.basicConfig(level=logging.INFO)
 
 
+_LOCAL_DEPS = {"local": ("torch", "sentence_transformers"), "openclip": ("torch", "open_clip")}  # .[local-embeddings]
+
+
 def active_provider(settings: Settings, configured: str, impl: object, active: str) -> str:
     """Health label for what is really serving a role: `active` when a real backend was built, otherwise
     e.g. "mock (openai configured, no key)" so an empty key can't masquerade as a live provider."""
@@ -37,7 +44,12 @@ def active_provider(settings: Settings, configured: str, impl: object, active: s
         return active
     if configured in ("", "mock"):
         return "mock"
-    why = "no key" if settings.provider_key(configured) == "" else "not implemented"
+    if settings.provider_key(configured) == "":
+        why = "no key"
+    elif any(importlib.util.find_spec(m) is None for m in _LOCAL_DEPS.get(configured, ())):
+        why = "not installed"
+    else:
+        why = "not implemented"
     return f"mock ({configured} configured, {why})"
 
 
@@ -55,7 +67,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.pending_hashes = {}
         st.text_embedder = build_text_embedder(settings)
         st.image_embedder = build_image_embedder(settings)
-        st.worker = EnrichmentWorker(st.store, build_enricher(settings), st.text_embedder, st.image_embedder)
+        st.worker = EnrichmentWorker(
+            st.store,
+            build_enricher(settings),
+            st.text_embedder,
+            st.image_embedder,
+            face_blur=build_face_blur(settings),
+        )
         st.reader = build_reader(settings)
         st.retriever, st.ucc_indexer = build_retriever(settings, st.store, st.text_embedder, st.image_embedder)
         st.recall = RecallMemory(
@@ -64,6 +82,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.agent = ClaudeAgent(settings, st.recall)
         st.stt = build_stt(settings)
         st.tts = build_tts(settings)
+        st.audio_stt = build_audio_stt(settings, st.stt)
         st.consolidator = Consolidator(
             st.store,
             build_summarizer(settings),
@@ -88,6 +107,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Megamind", version="0.1.0", lifespan=lifespan)
     app.include_router(ingest_router, prefix="/v1")
+    app.include_router(audio_router, prefix="/v1")
     app.include_router(agent_router, prefix="/v1")
     app.include_router(ui_router)
     # the browser panel may be served from a different origin (e.g. file:// or another laptop)
