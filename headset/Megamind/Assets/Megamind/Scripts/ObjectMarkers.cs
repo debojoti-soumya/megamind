@@ -1,10 +1,12 @@
-// "Where is my pen?" -> a world-locked pin on the pen. For "where is X" questions the server returns
+// "Where is my pen?" -> a world-locked arrow pointing down at the pen. For "where is X" questions the server returns
 // ChatResponse.markers: X's box in a frame this headset uploaded (normalized, origin top-left) plus that frame's ts.
 // FrameUploader remembers the camera pose of every uploaded frame, so the box centre becomes a world ray from where
 // the camera was (PassthroughCameraAccess.ViewportPointToRay), hit-tested against the real room
 // (EnvironmentRaycastManager = Depth API; needs com.oculus.permission.USE_SCENE, see MegamindPermissions).
 // No hit yet (depth not ready, or that spot is out of view now): the pin waits on the ray at fallbackDistance and
-// re-casts until it lands. The ring is sized to the box, so a loose box reads as "around here".
+// re-casts until it lands. The ring under the arrow is sized to the box, so a loose box reads as "around here".
+// When the marker is outside the view (behind you, off to a side), a head-locked arrow at the edge of the view points
+// toward it.
 // Self-installs at scene load (next to FrameUploader) so scenes built before this component get it too.
 using System.Collections.Generic;
 using Meta.XR;
@@ -26,6 +28,12 @@ namespace Megamind
         public float retrySeconds = 0.25f;
         public float minRingDiameter = 0.06f; // metres
         public Color color = new Color(1f, 0.8f, 0.1f, 1f);
+        public float bobAmplitude = 12f; // mm
+        public float guideAngle = 30f; // degrees off view centre before the edge arrow appears
+        public float guideRadius = 0.18f; // metres from view centre, at guideDistance
+        public float guideDistance = 0.8f;
+
+        public bool GuideVisible => _guide != null && _guide.activeSelf;
 
         public int ActivePins => _pins.Count;
         public string LastStatus { get; private set; } = "-";
@@ -33,14 +41,16 @@ namespace Megamind
         private class Pin
         {
             public GameObject root;
-            public RectTransform ring, stem, label;
+            public RectTransform ring, stem, arrow, label;
+            public float arrowY;
             public Ray ray;
             public float halfAngleRad, until, nextTry;
             public bool landed;
         }
 
         private readonly List<Pin> _pins = new List<Pin>();
-        private static Sprite s_ring;
+        private static Sprite s_ring, s_arrow;
+        private GameObject _guide;
         private static Font s_font;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -70,6 +80,7 @@ namespace Megamind
         {
             if (chat != null) chat.OnResponse -= Show;
             Clear();
+            if (_guide != null) Destroy(_guide);
         }
 
         public void Show(ChatResponse resp)
@@ -124,12 +135,44 @@ namespace Megamind
                     continue;
                 }
                 if (!p.landed && Time.time >= p.nextTry) TryLand(p);
+                p.arrow.anchoredPosition = new Vector2(0f, p.arrowY + bobAmplitude * (0.5f + 0.5f * Mathf.Sin(Time.time * 4f)));
                 if (head != null)
                 {
                     var away = p.root.transform.position - head.position;
                     if (away.sqrMagnitude > 1e-6f) p.root.transform.rotation = Quaternion.LookRotation(away, Vector3.up);
                 }
             }
+            UpdateGuide();
+        }
+
+        private void UpdateGuide()
+        {
+            var target = _pins.Count > 0 && head != null ? _pins[0].root : null;
+            var local = target != null ? head.InverseTransformPoint(target.transform.position) : Vector3.forward;
+            bool show = target != null && Vector3.Angle(Vector3.forward, local) > guideAngle;
+            if (!show) { if (_guide != null) _guide.SetActive(false); return; }
+            if (_guide == null) _guide = BuildGuide();
+            var dir = new Vector2(local.x, local.y);
+            dir = dir.sqrMagnitude > 1e-6f ? dir.normalized : Vector2.right;
+            _guide.SetActive(true);
+            _guide.transform.SetPositionAndRotation(
+                head.TransformPoint(new Vector3(dir.x * guideRadius, dir.y * guideRadius, guideDistance)),
+                head.rotation * Quaternion.Euler(0f, 0f, Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg + 90f));
+        }
+
+        private GameObject BuildGuide()
+        {
+            var root = new GameObject("ObjectMarkers: guide");
+            var canvas = root.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.WorldSpace;
+            canvas.sortingOrder = 60;
+            var rt = (RectTransform)root.transform;
+            rt.sizeDelta = new Vector2(10f, 10f);
+            rt.localScale = Vector3.one * 0.001f;
+            var img = NewImage("Arrow", rt, color);
+            img.sprite = ArrowSprite(); // points down (-Y); the root's roll aims it at the marker
+            img.rectTransform.sizeDelta = new Vector2(40f, 40f);
+            return root;
         }
 
         private void TryLand(Pin p)
@@ -148,7 +191,8 @@ namespace Megamind
             float d = Mathf.Max(minRingDiameter, 2f * distance * Mathf.Tan(p.halfAngleRad)) * 1000f; // canvas units = mm
             p.ring.sizeDelta = new Vector2(d, d);
             p.stem.anchoredPosition = new Vector2(0f, d * 0.5f);
-            p.label.anchoredPosition = new Vector2(0f, d * 0.5f + p.stem.sizeDelta.y);
+            p.arrowY = d * 0.5f + 6f;
+            p.label.anchoredPosition = new Vector2(0f, p.arrowY + p.stem.sizeDelta.y + bobAmplitude);
         }
 
         private void Build(Pin p, string text)
@@ -169,7 +213,14 @@ namespace Megamind
             var stem = NewImage("Stem", rt, color);
             p.stem = stem.rectTransform;
             p.stem.pivot = new Vector2(0.5f, 0f);
-            p.stem.sizeDelta = new Vector2(3f, 80f);
+            p.stem.sizeDelta = new Vector2(10f, 110f);
+            p.stem.gameObject.SetActive(false); // spacer only: the arrow below is the visible stem
+
+            var arrow = NewImage("Arrow", rt, color);
+            arrow.sprite = ArrowSprite();
+            p.arrow = arrow.rectTransform;
+            p.arrow.pivot = new Vector2(0.5f, 0f);
+            p.arrow.sizeDelta = new Vector2(60f, 110f);
 
             var bg = NewImage("Label", rt, new Color(0f, 0f, 0f, 0.65f));
             p.label = bg.rectTransform;
@@ -216,6 +267,27 @@ namespace Megamind
             tex.Apply(false);
             s_ring = Sprite.Create(tex, new Rect(0, 0, n, n), new Vector2(0.5f, 0.5f));
             return s_ring;
+        }
+
+        // Down-pointing arrow: shaft on top, head at the bottom tip (the tip is the sprite's bottom edge).
+        private static Sprite ArrowSprite()
+        {
+            if (s_arrow != null) return s_arrow;
+            const int w = 64, h = 128, headH = 56;
+            var tex = new Texture2D(w, h, TextureFormat.RGBA32, false) { wrapMode = TextureWrapMode.Clamp };
+            var px = new Color32[w * h];
+            float c = (w - 1) * 0.5f;
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    float half = y < headH ? (w * 0.5f) * y / headH : w * 0.14f;
+                    float a = Mathf.Clamp01(half - Mathf.Abs(x - c) + 0.5f);
+                    px[y * w + x] = new Color32(255, 255, 255, (byte)(a * 255));
+                }
+            tex.SetPixels32(px);
+            tex.Apply(false);
+            s_arrow = Sprite.Create(tex, new Rect(0, 0, w, h), new Vector2(0.5f, 0f));
+            return s_arrow;
         }
 
         private static Font LoadFont()
