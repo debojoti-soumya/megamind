@@ -159,10 +159,20 @@ class KeyframeFilter:
             st.tokens = min(float(self.s.filter_max_per_min), st.tokens + refill)
         st.tokens_ts = ts if st.tokens_ts is None else max(st.tokens_ts, ts)
 
-    def decide(self, img: Image.Image, meta: FrameMeta, recent: list[tuple[float, str]]) -> FilterDecision:
-        """`recent` = (ts, dhash) of frames already kept for this device (store + in-flight)."""
+    def decide(
+        self,
+        img: Image.Image | None,
+        meta: FrameMeta,
+        recent: list[tuple[float, str]],
+        metrics: tuple[str, float, float] | None = None,
+    ) -> FilterDecision:
+        """`recent` = (ts, dhash) of frames already kept for this device (store + in-flight).
+
+        Pass `metrics` (from `frame_metrics`, e.g. computed in a worker thread) instead of `img`
+        to keep this call cheap; the stateful part always runs on the caller's thread.
+        """
         st = self._state.setdefault(meta.device_id, self._new_state())
-        d = self._decide(img, meta, recent, st)
+        d = self._decide(metrics or frame_metrics(img), meta, recent, st)
         st.prev_hash = d.frame_hash
         st.prev_unstable = (not d.accepted) and (
             d.reason == "blurry" or (d.reason == "too_soon" and self._changed(d.frame_hash, st))
@@ -180,10 +190,10 @@ class KeyframeFilter:
         return st.last_kept_hash is None or hamming(h, st.last_kept_hash) >= self.s.filter_dhash_max_distance
 
     def _decide(
-        self, img: Image.Image, meta: FrameMeta, recent: list[tuple[float, str]], st: _DeviceState
+        self, metrics: tuple[str, float, float], meta: FrameMeta, recent: list[tuple[float, str]], st: _DeviceState
     ) -> FilterDecision:
         s = self.s
-        h, luma, sharp = frame_metrics(img)
+        h, luma, sharp = metrics
         if luma < s.filter_min_luma:
             return FilterDecision(False, "dark", h)
         if sharp < s.filter_min_sharpness:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -9,7 +10,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from ulid import ULID
 
-from megamind.ingest.filter import decode_frame
+from megamind.ingest.filter import decode_frame, frame_metrics
 from megamind.ingest.worker import purge_all
 from megamind.models import FrameAccepted, FrameMeta, MemoryToken, PurgeResponse, SearchMode, SearchResponse
 
@@ -26,6 +27,18 @@ def _iso_to_ts(s: str | None, param: str = "from/to") -> float | None:
         raise HTTPException(400, f"{param}: expected ISO-8601, got {s!r}") from None
 
 
+class _Undecodable(Exception):
+    pass
+
+
+def _frame_metrics(jpeg: bytes) -> tuple[str, float, float]:
+    try:
+        img = decode_frame(jpeg)
+    except Exception as exc:  # noqa: BLE001
+        raise _Undecodable from exc
+    return frame_metrics(img)
+
+
 @router.post("/frames", response_model=FrameAccepted, status_code=202)
 async def post_frame(request: Request, image: UploadFile = File(...), meta: str = Form(...)):
     app = request.app.state
@@ -36,8 +49,8 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
 
     jpeg = await image.read()
     try:
-        img = decode_frame(jpeg)
-    except Exception as exc:  # noqa: BLE001
+        metrics = await asyncio.to_thread(_frame_metrics, jpeg)  # ~4 ms of PIL/NumPy, mostly GIL-free
+    except _Undecodable as exc:
         raise HTTPException(400, "image is not a decodable JPEG") from exc
     for tap in getattr(app, "frame_taps", ()):  # every decodable frame, before the filter (e.g. replay buffer)
         tap(fm, jpeg)
@@ -46,7 +59,7 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
     kf = app.keyframe_filter
     recent = await app.store.recent_hashes(fm.device_id, fm.ts - kf.history_window_s)
     recent += app.pending_hashes.get(fm.device_id, [])
-    decision = kf.decide(img, fm, recent)
+    decision = kf.decide(None, fm, recent, metrics)
     if sum(kf.counts.values()) % 60 == 0:
         log.info("filter counts %s", dict(kf.counts))
     if not decision.accepted:
@@ -58,7 +71,7 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
     ]
 
     thumb_path = app.settings.thumb_dir / f"{frame_id}.jpg"
-    thumb_path.write_bytes(jpeg)
+    await asyncio.to_thread(thumb_path.write_bytes, jpeg)
 
     token = MemoryToken(
         id=frame_id,
