@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import Coroutine
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
@@ -63,6 +64,10 @@ class HybridRetriever(Retriever):
         self.tz = tz
         self.cfg = config or HybridConfig()
         self._cache: dict[str, MemoryToken] = {}
+        # query text -> vector (LRU): the prefetch and the agent's own recall often embed the same text, and a
+        # hosted embedder is a network round trip on the critical path
+        self._qvecs: OrderedDict[tuple[str, str], list[float]] = OrderedDict()
+        self.qvec_cache_size = 256
 
     # ------------------------------------------------------------------ public
 
@@ -145,7 +150,7 @@ class HybridRetriever(Retriever):
         n = self.cfg.pool
 
         async def vec(embed, field: str) -> list[tuple[str, float]]:
-            return await self.adapter.vector_search(await embed(text), n, field, **flt)
+            return await self.adapter.vector_search(await self._embed_query(field, embed, text), n, field, **flt)
 
         # the legs are independent store calls (LanceDB runs each in a worker thread): run them concurrently
         legs: list[tuple[str, float, Coroutine[Any, Any, list[tuple[str, float]]]]] = []
@@ -222,6 +227,17 @@ class HybridRetriever(Retriever):
             except ValueError:
                 pass
         return bool(a.caption) and a.caption == b.caption and a.ocr_text == b.ocr_text
+
+    async def _embed_query(self, field: str, embed: Callable[[str], Awaitable[list[float]]], text: str) -> list[float]:
+        key = (field, text)
+        if (v := self._qvecs.get(key)) is not None:
+            self._qvecs.move_to_end(key)
+            return v
+        v = await embed(text)
+        self._qvecs[key] = v
+        while len(self._qvecs) > self.qvec_cache_size:
+            self._qvecs.popitem(last=False)
+        return v
 
     async def _expand(
         self, ranked: list[RetrievedToken], k: int, lo: float | None = None, hi: float | None = None

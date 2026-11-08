@@ -72,13 +72,25 @@ async def _store(backend: str, n: int, devices: int, tmp: Path):
     return st, toks
 
 
-async def bench(backend: str, n: int, devices: int, reps: int, tmp: Path) -> list[str]:
+class SlowEmbedder(MockTextEmbedder):
+    """The mock embedder plus a fixed delay, standing in for a hosted embedding API round trip."""
+
+    def __init__(self, delay_s: float) -> None:
+        self.delay_s = delay_s
+
+    async def embed(self, text: str) -> list[float]:
+        await asyncio.sleep(self.delay_s)
+        return await super().embed(text)
+
+
+async def bench(backend: str, n: int, devices: int, reps: int, tmp: Path, embed_ms: float = 0.0) -> list[str]:
     st, toks = await _store(backend, n, devices, tmp)
-    retr = HybridRetriever(st, MockTextEmbedder(), None, tz="America/Los_Angeles")
+    emb = SlowEmbedder(embed_ms / 1000) if embed_ms else MockTextEmbedder()
+    retr = HybridRetriever(st, emb, None, tz="America/Los_Angeles")
     acc: dict[str, float] = defaultdict(float)
     _instrument(retr, acc)
     now = datetime.fromtimestamp(toks[-1].ts + 30, UTC)
-    rows = [f"\n## {backend}: {n} tokens, {devices} device(s), {reps} reps per query type"]
+    rows = [f"\n## {backend}: {n} tokens, {devices} device(s), {reps} reps per query type, embed {embed_ms:g} ms"]
     rows.append(f"{'type':<9} {'p50 ms':>7} {'p95 ms':>7}  " + " ".join(f"{s:>14}" for s in STAGES))
     for qtype, qs in QUERIES.items():
         await retr.retrieve(qs[0], k=12, device_id="quest-0", now=now)  # warm-up
@@ -100,7 +112,7 @@ async def run(args) -> None:
     with tempfile.TemporaryDirectory() as d:
         for backend in args.backends:
             for n, dev in sizes:
-                print("\n".join(await bench(backend, n, dev, args.reps, Path(d))), flush=True)
+                print("\n".join(await bench(backend, n, dev, args.reps, Path(d), args.embed_ms)), flush=True)
     print("\n(stage columns: mean ms per retrieve spent in that primitive; fusion legs overlap)")
 
 
@@ -110,6 +122,7 @@ def main() -> None:
     ap.add_argument("--devices", type=int, default=1)
     ap.add_argument("--backends", nargs="+", default=["memory", "lancedb"])
     ap.add_argument("--reps", type=int, default=20)
+    ap.add_argument("--embed-ms", type=float, default=0.0, help="simulated query-embedding latency (hosted API)")
     asyncio.run(run(ap.parse_args()))
 
 
