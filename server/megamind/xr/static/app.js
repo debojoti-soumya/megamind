@@ -180,7 +180,13 @@ async function submit(question, body) {
     renderCards();
     const first = cited.find((c) => c.replay_url) || cited.find((c) => c.thumb_url);
     if (first) theater.play(first);
-    if (resp.audio_url) new Audio(resp.audio_url).play().catch(() => {});
+    if (resp.audio_url) {
+      // The spoken answer first; the replay's own sound comes back when it ends.
+      const tts = new Audio(resp.audio_url);
+      theater.duckReplay(true);
+      tts.onended = tts.onerror = () => theater.duckReplay(false);
+      tts.play().catch(() => theater.duckReplay(false));
+    }
     return q;
   } catch (e) {
     if (token !== askToken) return null;
@@ -232,6 +238,7 @@ if (els.voiceBtn) renderVoiceButton = mountVoiceButton(els.voiceBtn, els.voiceTi
 
 els.form.addEventListener("submit", (e) => {
   e.preventDefault();
+  theater.unlockAudio(); // a submitted question is the user gesture the replay's sound needs
   const q = els.input.value;
   els.input.value = "";
   ask(q);
