@@ -300,11 +300,14 @@ class MontageVerifier:
 
         zone = _zone(self.tz)
         content: list[dict] = [{"type": "text", "text": f"Subject: {subject}\nCandidates follow ({len(batch)})."}]
-        for lab, t in batch:
+        if load_image is not None:  # thumbnails come from disk/object storage: fetch the batch at once
+            images = await asyncio.gather(*(load_image(t) for _, t in batch))
+        else:
+            images = [None] * len(batch)
+        for (lab, t), data in zip(batch, images, strict=True):
             parts = [f"caption: {t.caption.strip() or '(none)'}"]
             if t.ocr_text.strip():
                 parts.append(f"text: {t.ocr_text.strip()[:300]}")
-            data = await load_image(t) if load_image is not None else None
             block = None
             if data:
                 try:
