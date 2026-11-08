@@ -1,4 +1,5 @@
-// Small head-locked status line: capture state, accepted/sent, last server reason, latency, server URL.
+// Small head-locked status line: capture state, accepted/sent, last server reason, latency, server URL,
+// plus the ambient-audio line (mic: chunks sent/accepted).
 // Also the visible "recording" indicator (privacy: capture is never silent).
 // Builds its own world-space Canvas at runtime so no prefab is needed; assign `target` to use your own Text instead.
 using UnityEngine;
@@ -9,6 +10,8 @@ namespace Megamind
     public class CaptureHud : MonoBehaviour
     {
         public FrameUploader uploader;
+        [Tooltip("Ambient audio recorder for the mic line. Found automatically when empty.")]
+        public AmbientAudioRecorder audioRecorder;
         [Tooltip("CenterEyeAnchor; the HUD is parented here. Found automatically when empty.")]
         public Transform head;
         [Tooltip("Optional existing UI Text. When empty a canvas is created under `head`.")]
@@ -26,6 +29,7 @@ namespace Megamind
         private void Start()
         {
             if (uploader == null) uploader = FindAnyObjectByType<FrameUploader>();
+            if (audioRecorder == null) audioRecorder = FindAnyObjectByType<AmbientAudioRecorder>();
             if (head == null)
             {
                 var rig = FindAnyObjectByType<OVRCameraRig>();
@@ -43,7 +47,7 @@ namespace Megamind
             canvas.sortingOrder = 100;
             var rt = go.GetComponent<RectTransform>();
             const float pxPerMeter = 1000f;
-            rt.sizeDelta = new Vector2(widthMeters * pxPerMeter, 0.14f * pxPerMeter);
+            rt.sizeDelta = new Vector2(widthMeters * pxPerMeter, 0.17f * pxPerMeter);
             rt.localScale = Vector3.one / pxPerMeter;
             if (head != null)
             {
@@ -122,12 +126,32 @@ namespace Megamind
                 $"{line1}\n" +
                 $"sent {u.Sent}  accepted {u.Accepted}  last {u.LastReason}  {u.LastLatencyMs:0} ms  {u.LastJpegBytes / 1024} KB" +
                 (u.SkippedMotion + u.SkippedBacklog + u.SkippedBackoff > 0 ? $"  skipped m{u.SkippedMotion}/b{u.SkippedBacklog}/r{u.SkippedBackoff}" : "") + "\n" +
+                MicLine() +
                 $"{u.ServerBaseUrl}  [{u.DeviceId}, url:{cfg.overrideSource}]{net}";
             if (_dot != null)
             {
                 bool rec = u.CurrentState == FrameUploader.State.Capturing;
                 _dot.enabled = rec && (Time.unscaledTime % 1f) < 0.7f;
             }
+        }
+
+        private string MicLine()
+        {
+            var a = audioRecorder;
+            if (a == null) return "";
+            string state = a.CurrentState switch
+            {
+                AmbientAudioRecorder.State.Off => "off",
+                AmbientAudioRecorder.State.WaitingForPermission => "waiting for mic permission",
+                AmbientAudioRecorder.State.NoMicrophone => "no microphone",
+                AmbientAudioRecorder.State.Paused => "paused",
+                AmbientAudioRecorder.State.PushToTalk => "push-to-talk",
+                _ => $"on {a.LastLevelDb:0} dB",
+            };
+            string extra = (a.DroppedSilent > 0 ? $"  silent {a.DroppedSilent}" : "") +
+                           (a.Queued > 1 ? $"  queued {a.Queued}" : "") +
+                           (a.Failed > 0 && !a.ServerReachable ? $"  ERR {a.LastError}" : "");
+            return $"mic: chunks sent {a.Sent}  accepted {a.Accepted}  ({state}){extra}\n";
         }
     }
 }

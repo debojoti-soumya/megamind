@@ -92,6 +92,12 @@ namespace Megamind.EditorTools
             var hud = mm.AddComponent<CaptureHud>();
             hud.uploader = uploader;
             hud.head = centerEye;
+            var ambient = mm.AddComponent<AmbientAudioRecorder>();
+            ambient.config = config;
+            ambient.settings = capture;
+            ambient.uploader = uploader;
+            ambient.headPose = centerEye;
+            hud.audioRecorder = ambient;
 
             Directory.CreateDirectory(Path.GetDirectoryName(ScenePath));
             EditorSceneManager.SaveScene(scene, ScenePath);
@@ -199,6 +205,7 @@ namespace Megamind.EditorTools
             Check(manifest.Contains(OVRPermissionsRequester.PassthroughCameraAccessPermission), $"{ManifestPath} has horizonos.permission.HEADSET_CAMERA");
             Check(manifest.Contains("android.permission.CAMERA\""), "manifest declares android.permission.CAMERA (digest #0; runtime flow only asks for HEADSET_CAMERA)");
             Check(manifest.Contains("android.permission.INTERNET"), "manifest has INTERNET");
+            Check(manifest.Contains("android.permission.RECORD_AUDIO"), "manifest has RECORD_AUDIO (push-to-talk + ambient audio)");
             Check(manifest.Contains("usesCleartextTraffic=\"true\""), "manifest allows cleartext HTTP (needed for http:// server URLs)");
             Check(File.Exists(ScenePath), $"{ScenePath} exists (Megamind > 1)");
             Check(EditorBuildSettings.scenes.Any(s => s.enabled && s.path == ScenePath), "scene is in Build Settings");

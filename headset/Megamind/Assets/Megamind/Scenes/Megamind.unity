@@ -596,6 +596,7 @@ GameObject:
   - component: {fileID: 220276570}
   - component: {fileID: 220276569}
   - component: {fileID: 220276568}
+  - component: {fileID: 220276572}
   m_Layer: 0
   m_Name: Megamind
   m_TagString: Untagged
@@ -616,6 +617,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   uploader: {fileID: 220276569}
+  audioRecorder: {fileID: 220276572}
   head: {fileID: 185550582}
   target: {fileID: 0}
   localOffset: {x: 0, y: -0.22, z: 1}
@@ -638,6 +640,22 @@ MonoBehaviour:
   config: {fileID: 11400000, guid: d89be1dfdd95b755c8e72bbddd079ba3, type: 2}
   settings: {fileID: 11400000, guid: 0ea0616a2bca0d2f3a08ef4b8b90811f, type: 2}
   cameraAccess: {fileID: 1818299442}
+  headPose: {fileID: 185550582}
+--- !u!114 &220276572
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 220276567}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 354ddb6e7c3b432ebd2814ce7ef20086, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  config: {fileID: 11400000, guid: d89be1dfdd95b755c8e72bbddd079ba3, type: 2}
+  settings: {fileID: 11400000, guid: 0ea0616a2bca0d2f3a08ef4b8b90811f, type: 2}
+  uploader: {fileID: 220276569}
   headPose: {fileID: 185550582}
 --- !u!114 &220276570
 MonoBehaviour:
