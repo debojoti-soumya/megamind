@@ -10,6 +10,7 @@ Settings come from `REPLAY_*` env vars (see `.env.example`).
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode
 
@@ -69,9 +70,8 @@ async def annotate_citations(state, cited: list[Citation], device_id: str | None
     if buf is None:
         return
     cfg: ReplaySettings = state.replay_settings
-    for i, c in enumerate(cited):
-        if c.replay_url:
-            continue
+
+    async def one(i: int, c: Citation) -> None:
         t0, t1 = c.ts - cfg.pad_before_s, c.ts + cfg.pad_after_s
         dev = buf.resolve_device(t0, t1, device_id)
         if dev is None:
@@ -81,6 +81,10 @@ async def annotate_citations(state, cited: list[Citation], device_id: str | None
             dev = plan[0] if plan else None
         if dev is not None:
             cited[i] = c.model_copy(update={"replay_url": replay_url(dev, t0, t1)})
+
+    # concurrently: a store query per citation outside the buffer adds up over ~15 stream candidates; each
+    # citation is replaced in place as soon as its link is known (a cancelled caller keeps those)
+    await asyncio.gather(*(one(i, c) for i, c in enumerate(cited) if not c.replay_url))
 
 
 class _PurgeMirror:

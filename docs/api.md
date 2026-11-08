@@ -22,8 +22,15 @@ Response bodies are unchanged: `thumb_url`/`replay_url`/`audio_url` stay token-f
 { "status": "ok", "store_count": 1234,
   "models": { "claude": "claude-sonnet-5-5", "reader": "google/gemma-4-31B-it",
               "embed": "mock (openai configured, no key)", "enrich": "vlm:google/gemma-4-31B-it",
-              "stt": "mock", "tts": "mock", "store": "lancedb" } }
+              "stt": "mock", "tts": "mock", "store": "lancedb" },
+  "warmup": "done" }
 ```
+`warmup` (additive; older servers omit it): the startup warmup's state, `"off"` (`WARMUP=false`), `"running"`, `"done"`
+or `"done (failed: <steps>)"`. At startup the server runs one background pass over the question path (free Claude
+`count_tokens`, one tiny embedding, a LanceDB retrieval, SigLIP, reader image encoding, the STT/TTS clients), so the
+first question after a cold start doesn't pay first-use costs. It never delays startup or any request and a failed
+step is only logged; `"running"` means the first question may still be a little slower. `/health` itself is cheap
+(a row count, no provider calls), so clients can poll it every few seconds to keep a container warm.
 `models` names what is actually serving each role. When the configured provider has no key, or isn't wired up yet,
 the value is `mock (<provider> configured, no key | not installed | not implemented)`. Claude without a key reports
 `fallback (<model> configured, no key)`, meaning the no-LLM caption path. `enrich` is the keyframe captioner
@@ -146,6 +153,40 @@ Debug / companion-app route: the headset does not call it, so it has no `Dto.cs`
 Keyframe thumbnail (JPEG) on every media tier: hot frames are served from their JPEG, cold frames are decoded
 from their AV1 chunk (recent decodes are cached). 404 for tokens without an image (`tier="text"`, transcripts).
 
+## `POST /stt`  (headset -> server; voice turns, step 1)
+Transcript only: no agent turn, no TTS, so a spoken **voice command** ("open menu", "pause recording") costs one
+STT call (~0.4 s live) instead of a full `POST /chat` (Claude + TTS, several seconds and a paid call).
+`multipart/form-data`
+- `audio`: the same clip `POST /chat` accepts (16 kHz mono WAV from the headset / browser panel; whatever the
+  configured STT provider decodes, e.g. m4a with OpenAI). Max 25 MB.
+- `command_hints` (optional): the client's command phrases, as a JSON array of strings (`["open menu","close menu",
+  ...]`) or one list separated by `|` / newlines; at most 200. When sent, the server matches the transcript against
+  them (below) so every client shares one matcher.
+Response `200 OK`:
+```json
+{ "transcript": "pause recording", "duration_s": 1.9, "model": "openai:gpt-transcribe",
+  "command": { "phrase": "pause recording", "score": 1.0 } }
+```
+- `transcript`: trimmed text; `""` for silence (then the client should do nothing). `duration_s`: clip length when
+  the upload is a parseable WAV, else `null`. `model`: what transcribed it (`"mock"` without keys).
+- `command`: `null` when no `command_hints` were sent or none matched. Matching normalizes both sides like the
+  headset's `VoiceCommands.Normalize` (lower-case, letters/digits only, filler words `please hey ok okay megamind
+  can you could would the a my now up` dropped), then an exact match scores `1.0`, else the closest hint by
+  `difflib` ratio with `score >= 0.8` ("paws recording" -> `pause recording`, 0.89) among hints with the same
+  number of words, each word a likely mishearing of the hint's (same first letter or one clipped leading letter,
+  similar spelling), so `start recording` never matches `stop recording` and `unmute` never matches `mute`. A transcript longer than 6
+  words after normalization is a question, never a command. `phrase` is the hint as the client sent it.
+- Errors: not multipart → 415; missing/empty `audio` or bad `command_hints` → 400; > 25 MB → 413; STT provider
+  failure → 502 `{"detail": "STT failed: ..."}`.
+
+Recommended voice flow (the headset, `ChatClient.cs`):
+1. `POST /stt` with the clip (+ `command_hints`). Show `transcript` as the user's bubble immediately.
+2. `command` set (or a local match on `transcript`) → run the command; done (no chat request).
+3. Otherwise `POST /chat/stream` as **JSON** `{"text": transcript, ...}` (same session) and consume the SSE events.
+Net effect: commands react in ~0.5 s; questions show their transcript before retrieval starts and never pay for
+STT twice. Sending the clip straight to `POST /chat` (multipart) still works and is the fallback on a 404/405
+from an older server.
+
 ## `POST /chat`
 Either `application/json` with `text`, or `multipart/form-data` with `audio` (16 kHz mono WAV).
 ```json
@@ -199,10 +240,12 @@ early. Each event is `event: <name>` + one `data:` line of JSON:
 
 | event | data | when |
 |---|---|---|
+| `transcript` | `{ "text": "where did I leave my keys?" }` | voice (multipart) questions only: first event, right after speech-to-text, before retrieval (same text as `final.transcript`) |
 | `retrieval` | `{ "confidence": "high", "candidates": [Citation, ...] }` | after each memory search, before the answer (cited first, then the other retrieved moments; `thumb_url` / `replay_url` as in `cited`) |
 | `delta` | `{ "text": "On the kitchen" }` | answer text as Claude generates it; append (the `<cites>` trailer is never sent) |
-| `reset` | `{}` | discard the text streamed so far (that model round turned into another search, or Claude failed and the caption fallback answers) |
-| `final` | exactly the `POST /chat` response body | last event of a successful turn; authoritative (`answer`, `cited`, `tool_calls`, `audio_url`) |
+| `reset` | `{}` | discard the text streamed so far **and any `audio` clips received so far** (that model round turned into another search, or Claude failed and the caption fallback answers) |
+| `audio` | `{ "seq": 0, "url": "/v1/audio/01J...-0.wav", "text": "On the kitchen counter next to the coffee machine." }` | TTS of one sentence of the answer, as soon as that sentence is rendered, while Claude is still writing the rest (`TTS_STREAM`, default on). `seq` is 0, 1, 2, ... in sentence order, each sent exactly once and always in that order (a sentence whose TTS failed is skipped: `seq` can then have gaps): queue the clips and play them back to back, starting on `seq` 0. `text` is the sentence the clip speaks. Never sent with the mock TTS provider |
+| `final` | exactly the `POST /chat` response body | last event of a successful turn; authoritative (`answer`, `cited`, `tool_calls`, `audio_url`). All `audio` events of the turn precede it; `audio_url` is the whole answer as one file (the clips joined, or one fresh TTS call when a clip failed), for clients that don't play the clips, or `null` with the mock provider |
 | `error` | `{ "detail": "RuntimeError: ..." }` | last event when the turn fails after the stream started (no `final`) |
 
 ```
@@ -212,10 +255,27 @@ data: {"confidence": "high", "candidates": [{"id": "...", "ts": 1731000000.1, "c
 event: delta
 data: {"text": "On the kitchen counter"}
 
+event: audio
+data: {"seq": 0, "url": "/v1/audio/01J...-0.wav", "text": "On the kitchen counter next to the coffee machine."}
+
+event: delta
+data: {"text": " You put them there about"}
+
+event: audio
+data: {"seq": 1, "url": "/v1/audio/01J...-1.wav", "text": "You put them there about 20 minutes ago."}
+
 event: final
-data: {"transcript": "where did I leave my keys?", "answer": "On the kitchen counter ...", "audio_url": null, "cited": [...], "tool_calls": [...]}
+data: {"transcript": "where did I leave my keys?", "answer": "On the kitchen counter ...", "audio_url": "/v1/audio/01J....wav", "cited": [...], "tool_calls": [...]}
 ```
 `device_id_used` / `warning` arrive only in `final` (same rules as `POST /chat`).
+**Audio**: play each `audio` clip as it arrives (`GET url` with the bearer token, same as `audio_url`), in `seq`
+order, one after the other; a client that only knows `audio_url` keeps working unchanged (it just waits for
+`final`, exactly as before). Speech starts after the first sentence of the answer instead of after the whole
+answer plus one TTS call for all of it. `POST /chat` is unchanged: no clips, it blocks until `audio_url` is ready.
+Server env `TTS_STREAM=false` turns the clips off (one TTS call after the turn, `final.audio_url` as before).
+
+`retrieval` waits at most `STREAM_REPLAY_BUDGET_S` (0.15 s) for `replay_url` lookups so answer text is never held
+back; a link not found in time is `null` in that event and present in `final.cited`.
 Clients can swap it in for `POST /chat` and fall back to `POST /chat` on 404/405 (older servers). The model
 requests are identical to `POST /chat` apart from streaming, so answers are the same. With `RECALL_FIRST` a
 standalone question's `retrieval` arrives before Claude is called at all.
@@ -352,7 +412,7 @@ The rendered montage (H.264, `MONTAGE_WIDTH`x`MONTAGE_HEIGHT`, default 960x540).
 Not a Claude tool: chat answers do not include a montage (call this endpoint from a "show me" UI action).
 
 ## `GET /audio/{id}.wav`
-TTS output for a chat response.
+TTS output for a chat response: `final.audio_url` (the whole answer) or a `/chat/stream` `audio` clip (`{id}-{seq}.wav`, one sentence).
 
 ## `DELETE /memories?device_id=...&since=...`
 Purge memory tokens (rows **and** thumbnails; frames already aged into an AV1 chunk are cut out of it by

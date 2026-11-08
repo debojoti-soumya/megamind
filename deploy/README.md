@@ -104,6 +104,31 @@ MEGAMIND_API_TOKEN=$T python tools/ask.py --server $U "what did I just see?"
   (or `modal app rollback megamind v<N>` to the previous version without rebuilding). Memories live on the Volume
   and are untouched by either.
 - **After the demo:** `modal deploy deploy/modal_app.py` (back to `min_containers=0`) or `modal app stop megamind -y`.
+
+### Demo window without a redeploy (keep-warm)
+
+```sh
+export MEGAMIND_API_TOKEN=<token>
+python deploy/keep_warm.py on              # min_containers=1 now, boots the container, waits for "warmup": "done"
+python deploy/keep_warm.py on --hours 3    # same, flips back to 0 after 3 h (keep the terminal open)
+python deploy/keep_warm.py status          # containers + /v1/health
+python deploy/keep_warm.py off             # back to min_containers=0: idle cost 0 again
+```
+
+This calls `Function.update_autoscaler` on the deployed app. The next `modal deploy` resets it to the deploy-time
+value (0 by default), so a forgotten `off` lasts at most until the next deploy. Idle cost is unchanged by default.
+
+- **Startup warmup** (`WARMUP=true`, set in `COMMON_ENV`; `server/megamind/warmup.py`): right after startup the
+  server runs one background pass over the question path: a free Claude `count_tokens`, one tiny embedding, a LanceDB
+  hybrid retrieval plus the reader's image encode, one SigLIP text encode, and a free `models.list` on the STT/TTS
+  clients. It never blocks startup or a request, failures are only logged, and it makes no paid model turn.
+  `GET /v1/health` reports `"warmup": "running" | "done" | "done (failed: ...)"`.
+- **`/v1/health` is cheap** (a row count, no provider calls). The headset and `/ui` poll it every 4 s, so an open
+  client keeps the container inside its 10 min `scaledown_window`. The first poll after the app opens boots a cold
+  container, and warmup runs while the wearer is still getting ready.
+- **Opt-in, not yet verified on our image:** `MEGAMIND_MEMORY_SNAPSHOT=1 modal deploy deploy/modal_app.py` turns on
+  Modal memory snapshots of the heavy imports (torch, open_clip, lancedb, SDKs) to cut cold-start time. Settings and
+  secrets are read after restore. Measure it before you rely on it.
 - **Headset:** URL above, a unique `deviceId` per headset, `apiToken` = the `megamind-auth` secret's `API_TOKEN`
   (Unity: launch-intent extras / `megamind.json`; native: `--es api_token`).
 
@@ -112,7 +137,8 @@ MEGAMIND_API_TOKEN=$T python tools/ask.py --server $U "what did I just see?"
 - Idle: 0 (`min_containers=0`); after the last request the container stays warm 10 min. For a demo window set
   `min_containers=1` (no cold starts, ~1 vCPU-hour per hour) and set it back afterwards. hier does not need it
   (notes are on the Volume and caught up at query time), but a warm container keeps them fresher during a demo.
-- Cold start ~10-15 s (image is cached; time is container boot + Python import + LanceDB open). Frames the headset sends
+- Cold start ~10-15 s (image is cached; time is container boot + Python import + LanceDB open). The startup warmup
+  then pays the first-use costs (TLS, SDK, LanceDB indices, SigLIP) in the background before the first question. Frames the headset sends
   during a cold start may time out and be dropped (verify on device).
 - Warm round trip measured from a US cloud VM: `GET /v1/health` ~0.37 s, mock `POST /v1/chat` ~0.5 s (local:
   1.5 ms / 11-28 ms). Real turns are dominated by Claude + the reader (~5 s), so the extra hop is small.

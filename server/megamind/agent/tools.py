@@ -7,6 +7,7 @@ stream-4 (harness) owns the reader call and the `RecallResult` mapping below it.
 from __future__ import annotations
 
 import re
+import time
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -47,6 +48,10 @@ RECALL_MEMORY_TOOL = {
 
 DEGRADED_PREFIX = "[reader unavailable: evidence below is from captions only, the images were not inspected]"
 OCR_MATCH_PREFIX = "[exact text match: the images were not inspected; answer from the text below]"
+LIVE_ONLY_PREFIX = (
+    "[live view only: the newest camera frames and speech, no memory search was run; "
+    "call recall_memory if the question needs anything earlier]"
+)
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 _STOPWORDS = frozenset(
@@ -165,5 +170,32 @@ class RecallMemory:
             confidence=out.confidence,
             cited=[_cite(by_id[i]) for i in out.cited_ids if i in by_id],
             all_retrieved=[_cite(h) for h in hits],
+            images=[(i, uri) for i, uri in out.images if i in by_id],
+        )
+
+    async def recall_now(
+        self, query: str, *, device_id: str | None = None, now: float | None = None
+    ) -> RecallResult | None:
+        """Live-only evidence for a "right now" question: the newest raw frames + recent speech from live
+        short-term memory (`megamind.live`), read like any recall, without embedding the query or searching the
+        store. None when live memory is off or has no fresh frame (the caller then searches as usual)."""
+        live = getattr(self.retriever, "live", None)
+        if live is None or not hasattr(live, "now_items"):
+            return None
+        now_ts = time.time() if now is None else now
+        items = await live.now_items([], device_id, now_ts)  # newest first
+        if not any(t.kind == "frame" for t in items):
+            return None
+        cites = [Citation(id=t.id, ts=t.ts, caption=t.caption, thumb_url=t.thumb_url) for t in items]
+        by_id = {c.id: c for c in cites}
+        out = await self.reader.read(query, items, now=now_ts)
+        evidence = f"{LIVE_ONLY_PREFIX} {out.evidence}"
+        if out.degraded:
+            evidence = f"{DEGRADED_PREFIX} {evidence}"
+        return RecallResult(
+            evidence=evidence,
+            confidence=out.confidence,
+            cited=[by_id[i] for i in out.cited_ids if i in by_id],
+            all_retrieved=cites,
             images=[(i, uri) for i, uri in out.images if i in by_id],
         )

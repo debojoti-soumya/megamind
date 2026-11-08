@@ -330,37 +330,52 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | `CaptureHud.cs` | 1 | capture status data source (`ShortStatus()` header strip, `FullReport()` Debug view) + A/X or middle-pinch pause; the old head-locked canvas only with `showOwnCanvas` |
 | `ChatClient.cs` | 3 | push-to-talk (trigger or index pinch) → 16 kHz WAV → `POST /v1/chat/stream` (answer text as it streams, sentence `audio` clips queued; `POST /v1/chat` fallback on older servers, `streamAnswers` off) → play audio; barge-in, latency; tells `AmbientAudioRecorder` to release the mic while recording |
 | `SseParser.cs`, `SseDownloadHandler.cs`, `SpeechClipCodec.cs` | 3 | incremental SSE parsing for `/v1/chat/stream` (pure C# parser + `DownloadHandlerScript`), inline sentence-clip decoding (WAV / PCM16) |
-| `ChatPanel.cs` | 3 | transcript bubbles, cited thumbnails, confidence/latency line, status HUD (`/v1/health` poll) |
+| `ChatPanel.cs` | 3 | transcript bubbles (`ChatBubble` rows, streaming draft bubble), system chips, cited thumbnails, confidence/latency line, status HUD (`/v1/health` poll) |
+| `MegamindTheme.cs` | 3 | design system: palette (dark glass, coral accent, teal secondary, REC/paused/error/success), type scale, 8-pt grid, radii, button `ColorBlock`s, generated rounded-rect/circle sprites |
+| `ChatBubble.cs` | 3 | one transcript row: `ChatBubble` (label + background, `Append` for streaming) and `ChatBubbleFit` (shrink-wraps the bubble to its text up to a max width) |
 | `PanelAnchor.cs` | 3 | tag-along panel: eye height, `panelDistance` m ahead, glides back when the head leaves a 25° / 0.5 m dead zone; Pin/Unpin (world-lock), hold B/Y 0.5 s to drag; A-/A+ UI scale (PlayerPrefs `megamind.uiScale`) |
 | `SettingsPanel.cs` | 3 | runtime server URL / device id, new session, purge memory |
-| `PanelMenu.cs` | 3 | header **Menu** dropdown (Settings, Debug, Pin/Unpin, Text size, New session, Purge) + voice-command execution |
+| `SessionStore.cs` | 3 | ChatGPT-style chats persisted as JSON in `Application.persistentDataPath/megamind-sessions.json` (id = server `session_id`, title, created/updated, messages with cited memories) |
+| `SessionListView.cs` | 3 | the drawer's chat list: Today / Yesterday / Earlier, active highlighted, tap = switch, long-press or `…` = Rename (Quest keyboard) / Delete |
+| `PanelMenu.cs` | 3 | the right-side drawer's actions (New chat, Settings, Debug, Pin/Unpin, Text size, Controls, Purge) + voice-command execution |
+| `PanelDrawer.cs` | 3 | slides the drawer down the right edge of the panel (150 ms ease-out, `CanvasGroup` fade, chevron rotates) |
 | `VoiceCommands.cs` | 3 | normalized-string matcher for short spoken commands (no wake word, no dependencies) |
 | `PanelControls.cs` | 3 | footer Record/Pause toggle + state text, Type (TouchScreenKeyboard → `ChatClient.SendText`), Hide/Show (collapse to header) |
 | `HoldToTalkButton.cs` | 3 | footer Hold-to-talk: pointer down/up → `ChatClient.BeginRecording` / `EndRecordingAndSendNow` |
 | `PanelHover.cs` | 3 | pointer enter/exit on the panel root; `ChatClient` ignores trigger/pinch push-to-talk while the ray is over the panel |
 | `Editor/MegamindSceneBuilder.cs` | 1 | the `Megamind` menu: create scene, apply player settings, build, build & run, push config, check project |
-| `Editor/MegamindChatPanelBuilder.cs` | 3 | `Megamind > 1b. Add Chat Panel To Current Scene`: bubble/thumb prefabs + the chat panel, all references wired |
+| `Editor/MegamindChatPanelBuilder.cs` | 3 | `Megamind > 1b. Add Chat Panel To Current Scene`: generated sprites (`Assets/Megamind/Art`), bubble/chip/thumb prefabs + the chat panel styled from `MegamindTheme`, all references wired |
 
 ## Stream 3 chat panel
 
 After **Megamind > 1. Create Capture Scene**, run **Megamind > 1b. Add Chat Panel To Current Scene** before
-building. It creates `Assets/Megamind/Prefabs/{UserBubble,AssistantBubble,ThumbRow,Thumb}.prefab` and this
+building. It renders the UI sprites into `Assets/Megamind/Art/*.png` (rounded rectangles 10/16/20/24 px, a circle; imported
+as 9-sliced sprites), creates `Assets/Megamind/Prefabs/{UserBubble,AssistantBubble,SystemChip,MetaLine,ThumbRow,Thumb}.prefab` and this
 hierarchy (one World Space Canvas, 600x720 px, scaled by `PanelAnchor` to `panelWidthMeters` x the UI scale), wires every
 field on `ChatPanel`/`ChatClient`/`PanelAnchor`/`SettingsPanel`, finds `CenterEyeAnchor`, `OVRHand`s and the
 `FrameUploader`, and adds an `EventSystem` with Meta's `OVRInputModule` + `OVRRaycaster` (right-controller
 ray) when the SDK provides them:
 ```
 MegamindPanel (Canvas + CanvasScaler)  + PanelAnchor + ChatPanel + ChatClient + SettingsPanel + PanelMenu + PanelControls + PanelHover + AudioSource
-  Background, Header (RecDot, ServerDot, StatusLine, Hide/Show button, Menu button)
+  Background, Header (RecDot, ServerDot, StatusLine, Hide/Show button, MenuTab = bars + chevron in the corner)
   Scroll -> Viewport -> Content (VerticalLayoutGroup)        = ChatPanel.content
   EmptyHint (push-to-talk + voice phrases)
   Footer: StateLabel, Indicators (ListeningIndicator, ThinkingIndicator), Buttons (RecordButton + Knob, HoldToTalkButton, TypeButton)
   Settings (inactive): ServerUrl, DeviceId, Save / New session / Purge, Reset / Close, Feedback
   Debug (inactive): Title, Close, Scroll -> Viewport -> Text (CaptureHud.FullReport)
   Controls (inactive): Title, Close, Text (controller / hand / panel / voice cheat-sheet)
-  MenuBackdrop (inactive, click = close), MenuDropdown (inactive): Settings, Debug, Pin panel, Text size, Controls, New session, Purge
+  MenuBackdrop (inactive, click = close), DrawerClip (RectMask2D) -> Drawer (216 px column, slides in from above): Chats, + New chat,
+    Sessions (scroll list), divider, Settings, Debug stats, Pin panel, Text size, Controls, Purge memory
 ```
 Re-running the menu item replaces a previous `MegamindPanel`; tweak the result in the Inspector and save.
+
+**Look & feel** lives in `Scripts/MegamindTheme.cs` (one place for every colour, size and radius): dark glass panel,
+coral accent for the user's own bubbles and primary buttons, teal for Megamind's avatar glyph and the thinking state,
+red/grey/red/green for REC / paused / error / success. Type scale 28 / 24 / 20 / 17 / 16 px (title / body / button /
+caption / mono), 8-pt spacing grid, ≤ 3 controls per row. Bubbles are shrink-wrapped to their text up to 80 % of the
+width: user right-aligned on coral with dark text, assistant left with a small **M** avatar on a translucent bubble,
+voice-command feedback as a small centred chip. Buttons use a white Image + `ColorBlock` (ghost / accent / danger) so
+hover, pressed and disabled are real tints. Change the theme, re-run 1b.
 Push-to-talk: hold the controller trigger (or index pinch); hold B/Y 0.5 s to drag the panel to your gaze.
 
 ### Footer controls, Hide/Show, Controls cheat-sheet (verify on device)
@@ -378,9 +393,9 @@ Push-to-talk: hold the controller trigger (or index pinch); hold B/Y 0.5 s to dr
   run like spoken ones. The Quest keyboard renders as a system overlay in front of the app — how it looks next to a
   World-Space canvas, and whether `TouchScreenKeyboard.Status` reports `Done` on the Quest IME, has **not** been
   checked here (no device).
-- **Hide / Show** (header, left of Menu): collapses the panel to the header strip — REC dot, status line and the two
-  buttons stay — and closes any open overlay. Show restores it. Not persisted.
-- **Menu → Controls**: a cheat-sheet of every mapping (trigger = talk, trigger on a button = click, A/X = record toggle,
+- **Hide / Show** (header, left of the corner tab): collapses the panel to the header strip — REC dot, status line, Hide
+  and the corner tab stay — and closes any open overlay. Show restores it. Not persisted.
+- **Tab → Controls**: a cheat-sheet of every mapping (trigger = talk, trigger on a button = click, A/X = record toggle,
   B/Y hold = move panel, index pinch = talk, middle pinch = record toggle, the footer buttons, the voice phrases).
   Voice: "show controls" / "controls" / "help".
 - **No push-to-talk while clicking** (the #146 quirk): `PanelHover` on the panel root receives uGUI pointer enter/exit
@@ -388,7 +403,7 @@ Push-to-talk: hold the controller trigger (or index pinch); hold B/Y 0.5 s to dr
   the panel (`ignorePushToTalkOverUi`, plus `EventSystem.current.IsPointerOverGameObject()` as a fallback). A trigger
   press on a button is now only a click; recording from the panel goes through Hold to talk.
 
-### Header status strip, Menu dropdown and voice commands (verify on device)
+### Header status strip, corner tab + drawer and voice commands (verify on device)
 
 The separate head-locked `CaptureHud` canvas is gone from the default scene (`CaptureHud.showOwnCanvas` now defaults to
 false, and menu 1b sets it explicitly). A scene that is **not** rebuilt with 1b after pulling has neither the old HUD nor
@@ -400,11 +415,29 @@ toggle. The chat panel header shows:
 - **Status strip**: `CaptureHud.ShortStatus()`, one line — `REC 1 fps · 143 sent · mic 9 · url:intent` (`143/150 sent`
   when some frames were rejected, `PAUSED`, `camera starting…`, `· NET ERR`), prefixed with `OFFLINE ·` when `/v1/health`
   fails (the small server dot next to the REC dot is green/red too).
-- **Menu** (right): a dropdown over the panel with *Settings* (the existing settings sub-panel), *Debug* (everything
-  the old HUD showed — state, resolution, head °/s, sent/accepted/last reason/latency/KB, skipped and bg/unfocus
-  counters, the `mic:` line, server URL + `url:<source>` — as a scrollable text block refreshed 4x/s), *Pin panel* /
-  *Unpin panel*, *Text size 1x → 1.25x → 1.5x → 2x*, *New session*, *Purge memory*. Only one overlay is open at a time;
-  the dropdown closes on the Menu button, on any menu entry, or by clicking anywhere else on the panel.
+- **Corner tab** (top-right: three bars + a chevron, 72x40 px, visible even when the panel is Hidden): click / trigger /
+  pinch or say "open menu" and a **drawer** slides down the right edge of the panel (216 px ≈ 35 % of the width,
+  `PanelDrawer`: 150 ms ease-out on `anchoredPosition`, `CanvasGroup` fade, the chevron turns upside down; clipped by a
+  `RectMask2D` while it moves). Top to bottom: **Chats** — *+ New chat* (coral) and the chats list (see *Sessions*
+  below) — then a divider and the actions, each with a coloured one-letter disc:
+  *Settings* (the settings sheet), *Debug stats* (everything the old HUD showed — state, resolution, head °/s,
+  sent/accepted/last reason/latency/KB, skipped and bg/unfocus counters, the `mic:` line, server URL + `url:<source>` —
+  as a scrollable mono block refreshed 4x/s), *Pin panel* / *Unpin panel*, *Text size 1x → 1.25x → 1.5x → 2x*,
+  *Controls*, *Purge memory* (red on hover). Only one overlay is open at a time; the drawer closes on the tab, on any
+  entry, by clicking anywhere else on the panel, or by voice ("close menu").
+
+**Sessions (ChatGPT-style).** `SessionStore` keeps every chat in `Application.persistentDataPath/megamind-sessions.json`
+(`{ activeId, sessions: [{ id, title, created, updated, messages: [{ role, text, ts, cited: [Citation] }] }] }`, written
+atomically on the next frame after a change and on pause/quit). The chat's `id` *is* the server `session_id`
+(`ChatClient.SessionId`), so tapping an older chat in the drawer resumes Claude's history for it while the server still
+holds that session. `ChatPanel` appends every user / assistant / system message to the active chat (errors are not
+stored) and `ChatPanel.Render(session)` replays one — on launch the last active chat comes back, thumbnails re-load
+from their stored `thumb_url`. The title is the first user message (≤ 36 chars, "New chat" until then). The drawer list
+(`SessionListView`) groups by last activity — **Today / Yesterday / Earlier** — highlights the active chat in coral,
+tap switches (and closes the drawer), long-press (0.6 s) or the `…` button reveals **Rename** (opens the Quest keyboard)
+and **Delete** (deleting the active chat switches to the newest remaining one). *+ New chat* (drawer) and *New session*
+(Settings) both go through `SessionStore.NewSession()`; a blank active chat is reused rather than stacking blanks, and
+blank chats are dropped on save. Up to 60 chats x 200 messages are kept.
 
 **Voice commands.** With a server that sends the stream's early `transcript` event, `ChatClient` matches commands on it and closes the stream, so the server stops the turn before Claude/TTS finish. Otherwise: STT runs inside `POST /v1/chat` (there is no STT-only endpoint), so `ChatClient` hands the returned
 `transcript` to `PanelMenu.TryVoiceCommand` before showing the answer: a short utterance (≤ 6 words after dropping
@@ -430,8 +463,8 @@ pose: with the FloorLevel tracking origin `CenterEyeAnchor` reports y = 0 until 
 leave the panel at floor level ("near my legs") on launch.
 
 Text: the canvas has a `CanvasScaler` with `dynamicPixelsPerUnit` = 3 so uGUI glyphs are rasterised at 3x (a 1x atlas is
-upscaled ~1.4x on Quest 3 and looks soft); transcript bubbles are 26 px (≈1.5° per line at 1 m), status/buttons 17–20
-px, thumbnails 180x135 (3 per row). **A-** / **A+** step the whole panel through 1x / 1.25x / 1.5x / 2x
+upscaled ~1.4x on Quest 3 and looks soft); transcript text is 24 px (≈1.4° per line at 1 m), status/buttons 17–20
+px, thumbnails 176x132 with rounded corners (3 per row). **A-** / **A+** step the whole panel through 1x / 1.25x / 1.5x / 2x
 (`PanelAnchor.uiScale`, saved in PlayerPrefs `megamind.uiScale`, so it survives relaunches). The server has no thumbnail
 size parameter (`GET /v1/thumbs/{id}.jpg` returns the stored keyframe), so thumbnails are just drawn larger.
 

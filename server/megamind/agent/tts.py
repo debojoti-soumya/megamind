@@ -44,6 +44,7 @@ def pcm16_to_wav(pcm: bytes, sample_rate: int, channels: int = 1) -> bytes:
 
 
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'])")
+SENTENCE_END = _SENTENCE_END  # shared with agent/speech.py (sentence-by-sentence TTS while Claude streams)
 _GAP_24K = bytes(2 * 24000 * 15 // 100)  # 150 ms of silence
 
 

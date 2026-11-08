@@ -9,8 +9,9 @@ namespace Megamind
 {
     public class PanelMenu : MonoBehaviour
     {
-        public GameObject root;         // the dropdown list (inactive until opened)
-        public GameObject backdrop;     // transparent full-panel raycast target behind the list; click = close
+        public GameObject root;         // the drawer (inactive until opened)
+        public GameObject backdrop;     // transparent full-panel raycast target behind the drawer; click = close
+        public PanelDrawer drawer;      // optional: animates root/backdrop (slide down the right edge); without it they just toggle
         public GameObject debugRoot;    // debug sub-panel
         public GameObject controlsRoot; // controls cheat-sheet sub-panel
         public Text debugText;
@@ -23,7 +24,7 @@ namespace Megamind
         public PanelAnchor anchor;
         public ChatPanel chatPanel;
 
-        public bool IsOpen => root != null && root.activeSelf;
+        public bool IsOpen => drawer != null ? drawer.IsOpen : root != null && root.activeSelf;
         public bool IsDebugOpen => debugRoot != null && debugRoot.activeSelf;
         public bool IsControlsOpen => controlsRoot != null && controlsRoot.activeSelf;
 
@@ -31,8 +32,11 @@ namespace Megamind
 
         private void Awake()
         {
-            if (root) root.SetActive(false);
-            if (backdrop) backdrop.SetActive(false);
+            if (drawer == null)
+            {
+                if (root) root.SetActive(false);
+                if (backdrop) backdrop.SetActive(false);
+            }
             if (debugRoot) debugRoot.SetActive(false);
             if (controlsRoot) controlsRoot.SetActive(false);
         }
@@ -54,12 +58,14 @@ namespace Megamind
             CloseDebug();
             CloseControls();
             RefreshLabels();
+            if (drawer) { drawer.Open(); return; }
             if (backdrop) backdrop.SetActive(true);
             if (root) root.SetActive(true);
         }
 
         public void Close()
         {
+            if (drawer) { drawer.Close(); return; }
             if (root) root.SetActive(false);
             if (backdrop) backdrop.SetActive(false);
         }
