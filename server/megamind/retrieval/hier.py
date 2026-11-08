@@ -15,6 +15,7 @@ result unchanged, so the backend degrades to `hybrid` instead of failing a recal
 from __future__ import annotations
 
 import asyncio
+import bisect
 import json
 import logging
 import math
@@ -52,6 +53,9 @@ class HierConfig:
     note_input_chars: int = 9000  # cap on a block's raw lines sent to the note writer
     min_block_tokens: int = 1
     moment_s: float = 60.0  # picks this close to a better one rank after the distinct moments
+    vec_pool: int = 300  # nearest tokens aggregated per block for the vector block ranking
+    vec_blocks: int = 4  # top vector-ranked blocks always added to the LLM's picks
+    inline_build_max: int = 3  # a query writes at most this many missing block notes itself; more -> background
 
 
 class ChatJSON:
@@ -198,6 +202,7 @@ class HierMemory:
         if self.cache_path and self.cache_path.is_file():
             self.notes = json.loads(self.cache_path.read_text())
         self._lock = asyncio.Lock()
+        self._scanned: dict[str | None, float] = {}  # device -> latest `until` already scanned for blocks
 
     # ------------------------------------------------------------------ build
 
@@ -211,21 +216,38 @@ class HierMemory:
             tmp.write_text(json.dumps(self.notes))
             tmp.replace(self.cache_path)
 
-    async def build(self, until: float, *, device_id: str | None = None) -> int:
+    async def _missing(
+        self, until: float, device_id: str | None, *, full: bool = False
+    ) -> list[tuple[float, list[MemoryToken]]]:
+        """Closed blocks before `until` that have tokens but no note yet, oldest first. Only re-reads tokens
+        from shortly before the last scan unless `full` (late uploads / failed notes are found by a full scan)."""
+        last = self._scanned.get(device_id)
+        lo = None if full or last is None else last - 2 * self.cfg.block_s
+        toks = await self.store.list_tokens(
+            time_from=lo, time_to=until, device_id=device_id, kinds=KINDS, vectors=False
+        )
+        b = self.cfg.block_s
+        blocks: dict[float, list[MemoryToken]] = {}
+        for t in toks:
+            start = math.floor(t.ts / b) * b
+            if start + b <= until:
+                blocks.setdefault(start, []).append(t)
+        return [
+            (s, ts)
+            for s, ts in sorted(blocks.items())
+            if f"block:{s:.0f}" not in self.notes and len(ts) >= self.cfg.min_block_tokens
+        ]
+
+    async def pending(self, until: float, *, device_id: str | None = None) -> int:
+        """How many closed blocks before `until` still need a note."""
+        return len(await self._missing(until, device_id))
+
+    async def build(self, until: float, *, device_id: str | None = None, full: bool = False) -> int:
         """Write the missing notes for every block that closed before `until`; returns how many were written."""
         async with self._lock:
-            toks = await self.store.list_tokens(time_to=until, device_id=device_id, kinds=KINDS, vectors=False)
+            todo = await self._missing(until, device_id, full=full)
+            self._scanned[device_id] = max(until, self._scanned.get(device_id, until))
             b = self.cfg.block_s
-            blocks: dict[float, list[MemoryToken]] = {}
-            for t in toks:
-                start = math.floor(t.ts / b) * b
-                if start + b <= until:
-                    blocks.setdefault(start, []).append(t)
-            todo = [
-                (s, ts)
-                for s, ts in sorted(blocks.items())
-                if f"block:{s:.0f}" not in self.notes and len(ts) >= self.cfg.min_block_tokens
-            ]
             written = 0
 
             async def one(start: float, ts: list[MemoryToken]) -> None:
@@ -366,6 +388,26 @@ class HierRetriever(Retriever):
         self.cfg = config or memory.cfg
         self.auto_build = auto_build
         self.last_trace: dict[str, Any] = {}
+        self._bg: asyncio.Task | None = None
+
+    async def _ensure_notes(self, until: float, device_id: str | None) -> None:
+        """Write a few missing notes inline; a large backlog (cold start, a long upload) is built in the
+        background so the query answers from the notes that exist instead of waiting on dozens of LLM calls."""
+        if await self.memory.pending(until, device_id=device_id) <= self.cfg.inline_build_max:
+            await self.memory.build(until, device_id=device_id)
+        elif self._bg is None or self._bg.done():
+            self._bg = asyncio.create_task(self.memory.build(until, device_id=device_id))
+
+    async def run_forever(self, interval_s: float) -> None:
+        """Keep notes current in the background (server lifespan); a full rescan every 6th pass."""
+        n = 0
+        while True:
+            try:
+                await self.memory.build(time.time(), full=n % 6 == 0)
+            except Exception:  # noqa: BLE001
+                log.exception("hier note refresh failed")
+            n += 1
+            await asyncio.sleep(interval_s)
 
     async def retrieve(
         self,
@@ -413,13 +455,14 @@ class HierRetriever(Retriever):
     ) -> list[RetrievedToken]:
         until = min(now.timestamp(), time_to) if time_to is not None else now.timestamp()
         if self.auto_build:
-            await self.memory.build(until, device_id=device_id)
+            await self._ensure_notes(until, device_id)
         outline, blocks = self.memory.outline(until)
         if time_from is not None:
             blocks = [b for b in blocks if b["end"] > time_from]
         now_s = self.memory._fmt(until)
         hits = base.ranked[: self.cfg.hint_windows]
-        hint_ids = []
+        vec_ids = await self._vector_blocks(query, blocks, time_from, until, device_id)
+        hint_ids = [f"B{i}" for i in vec_ids]
         for r in hits:
             for i, b in enumerate(blocks):
                 if b["start"] <= r.token.ts < b["end"] and f"B{i}" not in hint_ids:
@@ -441,6 +484,9 @@ class HierRetriever(Retriever):
                 m = re.fullmatch(r"\[?B(\d+)\]?", str(bid).strip())
                 if m and int(m.group(1)) < len(blocks) and blocks[int(m.group(1))] not in chosen:
                     chosen.append(blocks[int(m.group(1))])
+            for i in vec_ids[: self.cfg.vec_blocks]:
+                if blocks[i] not in chosen:
+                    chosen.append(blocks[i])
             self.last_trace = {"stage1": out, "blocks": [b["start"] for b in chosen]}
 
         spans = [(b["start"], min(b["end"], until)) for b in chosen]
@@ -469,6 +515,34 @@ class HierRetriever(Retriever):
             if len(picked) >= k:
                 break
         return picked
+
+    async def _vector_blocks(
+        self,
+        query: str,
+        blocks: list[dict[str, Any]],
+        time_from: float | None,
+        until: float,
+        device_id: str | None,
+    ) -> list[int]:
+        """Block indices ranked by their best text-vector matches (mean of the top 3 among the `vec_pool` nearest
+        tokens): finds blocks whose note left out the detail asked about. Empty when the base has no embedder."""
+        embedder = getattr(self.base, "text_embedder", None)
+        adapter = getattr(self.base, "adapter", None)
+        if embedder is None or adapter is None or not blocks:
+            return []
+        vec = await self.base._embed_query("text_vec", embedder.embed_query, query)
+        hits = await adapter.vector_search(
+            vec, self.cfg.vec_pool, "text_vec", time_from=time_from, time_to=until, device_id=device_id
+        )
+        score = dict(hits)
+        starts = [b["start"] for b in blocks]
+        per: dict[int, list[float]] = {}
+        for t in await adapter.get_many([i for i, _ in hits]):
+            i = bisect.bisect_right(starts, t.ts) - 1
+            if i >= 0 and t.ts < blocks[i]["end"]:
+                per.setdefault(i, []).append(score[t.id])
+        top3 = {i: sum(sorted(v)[-3:]) / 3 for i, v in per.items()}
+        return sorted(top3, key=lambda i: -top3[i])[: self.cfg.hint_windows]
 
 
 def _spread(picked: list[RetrievedToken], moment_s: float) -> list[RetrievedToken]:
