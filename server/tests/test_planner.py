@@ -164,3 +164,17 @@ def test_meal_as_subject_searches_for_food():
     assert p.time_from == _local(2026, 11, 7, 11, 30)  # 10:30 now: today's lunch hasn't happened yet
     p = plan_query("what did I do after lunch", now=NOW)
     assert p.search_text == "" and p.mode == "temporal" and p.time_focus == "start"
+
+
+@pytest.mark.parametrize(
+    "q", ["what did I just see?", "what was I looking at?", "what was that?", "what just happened", "what was I doing?"]
+)
+def test_contentless_question_without_time_is_recent_mode(q):
+    p = plan_query(q, now=NOW)
+    assert p.search_text == "" and not p.has_time
+    assert p.mode == "recent" and p.route == "hybrid"
+
+
+def test_contentless_question_with_time_stays_temporal():
+    p = plan_query("what happened a minute ago?", now=NOW)
+    assert p.search_text == "" and p.has_time and p.mode == "temporal" and p.route == "hybrid"

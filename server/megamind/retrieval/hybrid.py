@@ -34,6 +34,9 @@ class HybridConfig:
     widen_on_empty: bool = True  # drop a *parsed* (not explicit) time window if nothing matched
     anchor_pad_s: float = 15 * 60  # +/- around a resolved "when I ..." anchor
     temporal_sample_span_s: float = 3 * 3600  # windows wider than this are sampled evenly instead of by focus
+    # "recent" questions: look back this far first, then each next span, then everything
+    recent_lookback_s: tuple[float, ...] = (1800, 6 * 3600, 48 * 3600)
+    recent_fallback_s: float = 3600  # an empty parsed window ending this close to now falls back to "recent"
     weights_by_type: dict[str, Weights] | None = None  # override planner weights (used by the eval harness)
 
 
@@ -83,8 +86,16 @@ class HybridRetriever(Retriever):
             if anchor_ts is not None:
                 plan.time_from, plan.time_to = self._anchor_window(plan.query, anchor_ts, now.timestamp())
 
-        if eff_mode == "temporal" or not (plan.search_text or plan.query.strip()):
+        no_text = not (plan.search_text or plan.query.strip())
+        if eff_mode in ("temporal", "recent") and not plan.search_text and not plan.has_time or no_text:
+            return RetrievalResult(plan=plan, tokens=await self._recent(k, device_id, now.timestamp()))
+        if eff_mode == "temporal":
             toks = await self._temporal(plan, k, device_id)
+            near_now = plan.time_to is None or now.timestamp() - plan.time_to <= self.cfg.recent_fallback_s
+            if not toks and not plan.explicit_time and anchor_ts is None and near_now:
+                # "what happened a minute ago" between two sparse captures: the latest frames are the answer
+                toks = await self._recent(k, device_id, now.timestamp())
+                return RetrievalResult(plan=plan, tokens=toks, widened=bool(toks))
             return RetrievalResult(plan=plan, tokens=toks, anchor_ts=anchor_ts)
 
         text = plan.search_text or plan.query
@@ -226,6 +237,20 @@ class HybridRetriever(Retriever):
                 break
             chosen.setdefault(r.token.id, r)
         return list(chosen.values())
+
+    async def _recent(self, k: int, device_id: str | None, now_ts: float) -> list[RetrievedToken]:
+        """No content words and no time ("what did I just see?"): the device's latest k enriched frames, found by
+        widening the look-back until something is there. Chronological, scored by recency."""
+        toks: list[MemoryToken] = []
+        for back in (*self.cfg.recent_lookback_s, None):
+            lo = None if back is None else now_ts - back
+            toks = [t for t in await self.adapter.range(lo, now_ts, limit=10_000, device_id=device_id) if t.caption]
+            if toks:
+                break
+        return [
+            RetrievedToken(token=t, score=1.0 / (1.0 + max(0.0, now_ts - t.ts) / 600.0), reasons=["recent"])
+            for t in toks[-k:]
+        ]
 
     async def _temporal(self, plan: QueryPlan, k: int, device_id: str | None) -> list[RetrievedToken]:
         """Pure time query ("what was I doing at 11" / "after lunch"): frames from the window, scored by

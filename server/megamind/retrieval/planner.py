@@ -15,7 +15,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 QueryType = Literal["locate_object", "read_text", "activity", "people", "generic"]
-PlanMode = Literal["semantic", "visual", "hybrid", "temporal"]
+PlanMode = Literal["semantic", "visual", "hybrid", "temporal", "recent"]
 
 DEFAULT_TZ = "America/Los_Angeles"
 
@@ -446,11 +446,17 @@ Rewriter = Callable[[str], Awaitable[str]]
 
 
 def _mode_for(qtype: QueryType, search_text: str, has_time: bool) -> PlanMode:
-    if not search_text and has_time:
-        return "temporal"
+    """No content words left -> a pure time question: the parsed window ("temporal") or, with no window at all
+    ("what did I just see?", "what was I looking at?"), the latest frames ("recent")."""
+    if not search_text:
+        return "temporal" if has_time else "recent"
     if qtype == "read_text":
         return "semantic"
     return "hybrid"
+
+
+def _route_for(mode: PlanMode) -> PlanRoute:
+    return "hybrid" if mode in ("temporal", "recent") else "ucc"
 
 
 def plan_query(
@@ -501,7 +507,7 @@ def plan_query(
         mode=mode,
         explicit_time=explicit,
         time_focus=focus,
-        route="hybrid" if mode == "temporal" else "ucc",
+        route=_route_for(mode),
     )
 
 
@@ -517,5 +523,5 @@ async def plan_query_async(query: str, *, rewriter: Rewriter | None = None, **kw
         if out:
             plan.search_text = out
             plan.mode = _mode_for(plan.query_type, out, plan.has_time)
-            plan.route = "hybrid" if plan.mode == "temporal" else "ucc"
+            plan.route = _route_for(plan.mode)
     return plan

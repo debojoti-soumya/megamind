@@ -10,10 +10,11 @@ time window / device as free metadata filters and whose columns are relevance fa
   answers) over httpx, so neither the private `ucc` SDK nor pyarrow is a dependency and tests use `MockTransport`.
 - `UCCIndexer`: periodic sync job (store -> corpus); pushes enriched tokens it has not pushed yet. New documents
   become queryable a few seconds after upload (until then a select just doesn't see them).
-- `UCCRetriever`: the `Retriever`. The planner decides routing (`QueryPlan.route`): pure-time / anchor-only questions
-  ("what was I doing at 11", "what did I do after lunch") are `route="hybrid"` and never call UCC, since with no
-  content words there is nothing for a facet to judge. Everything else goes to UCC; a cool-down after an error,
-  timeouts, and an empty window/corpus go to the `HybridRetriever` fallback, so an outage never breaks `recall_memory`.
+- `UCCRetriever`: the `Retriever`. The planner decides routing (`QueryPlan.route`): questions with no content words
+  (pure-time / anchor-only / recency: "what was I doing at 11", "what did I do after lunch", "what did I just
+  see?") are `route="hybrid"` and never call UCC, since there is nothing for a facet to judge. Everything else goes
+  to UCC; a cool-down after an error, timeouts, and an empty window/corpus go to the `HybridRetriever` fallback, so
+  an outage never breaks `recall_memory`.
 """
 
 from __future__ import annotations

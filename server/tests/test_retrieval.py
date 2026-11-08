@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -334,3 +334,48 @@ async def test_meal_question_widens_when_the_meal_window_is_empty():
         )
     r = await HybridRetriever(st, emb, None, tz="UTC").retrieve("what did I have for lunch", k=3, now=now)
     assert r.widened and r.ranked[0].token.id == "m1"
+
+
+async def _recency_store(now: datetime) -> InMemoryStore:
+    st = InMemoryStore()
+    rows = [("r0", -7200, "dev"), ("r1", -1500, "dev"), ("r2", -1200, "dev"), ("r3", -900, "dev"), ("x", -60, "other")]
+    for i, (id_, dt, dev) in enumerate(rows):
+        await st.add(
+            MemoryToken(
+                id=id_,
+                device_id=dev,
+                ts=now.timestamp() + dt,
+                caption=f"Frame {id_} of the day.",
+                thumb_path="",
+                frame_hash=f"{i:016x}",
+            )
+        )
+    return st
+
+
+@pytest.mark.parametrize("q", ["what did I just see?", "what was I looking at?", "what was that?"])
+async def test_recency_question_returns_latest_frames_for_device(q):
+    now = datetime(2026, 11, 8, 16, 0, tzinfo=UTC)
+    r = await HybridRetriever(await _recency_store(now), MockTextEmbedder(), None).retrieve(
+        q, k=2, device_id="dev", now=now
+    )
+    assert r.plan.mode == "recent"
+    assert [x.token.id for x in r.tokens] == ["r2", "r3"]
+    assert all(x.reasons == ["recent"] for x in r.tokens)
+
+
+async def test_recency_looks_back_further_when_last_half_hour_is_empty():
+    now = datetime(2026, 11, 8, 18, 0, tzinfo=UTC)  # newest "dev" frame is 2h25m old
+    r = await HybridRetriever(await _recency_store(now - timedelta(hours=2)), MockTextEmbedder(), None).retrieve(
+        "what did I just see?", k=1, device_id="dev", now=now
+    )
+    assert [x.token.id for x in r.tokens] == ["r3"]
+
+
+async def test_empty_recent_window_falls_back_to_latest_frames():
+    now = datetime(2026, 11, 8, 16, 0, tzinfo=UTC)  # nothing captured in the last ~15 min on "dev"
+    r = await HybridRetriever(await _recency_store(now), MockTextEmbedder(), None).retrieve(
+        "what happened a minute ago?", k=1, device_id="dev", now=now
+    )
+    assert r.plan.mode == "temporal" and r.widened
+    assert [x.token.id for x in r.tokens] == ["r3"]
