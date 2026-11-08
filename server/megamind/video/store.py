@@ -160,16 +160,8 @@ def _probe_with_ffmpeg(path: Path, ffmpeg: str, timeout_s: float) -> Probe:
     )
 
 
-MAX_DIR_NAME = 240  # filesystems cap a name at 255 bytes
-
-
 def _device_dir(device_id: str) -> str:
     return _DIR_PREFIX + quote(device_id, safe="")
-
-
-def device_id_fits(device_id: str) -> bool:
-    """False when `device_id` is too long to be a directory name (the upload is then refused with 400)."""
-    return len(_device_dir(device_id)) <= MAX_DIR_NAME
 
 
 @dataclass

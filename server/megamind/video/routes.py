@@ -12,7 +12,7 @@ from ulid import ULID
 
 from megamind.models import VideoAccepted, VideoMeta
 from megamind.replay.render import FFMPEG_HINT, find_ffmpeg
-from megamind.video.store import device_id_fits, privacy_blocks_video, probe
+from megamind.video.store import privacy_blocks_video, probe
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -31,8 +31,6 @@ async def post_video(request: Request, video: UploadFile = File(...), meta: str 
         vm = VideoMeta.model_validate(json.loads(meta))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"bad meta: {exc}") from exc
-    if not device_id_fits(vm.device_id):
-        raise HTTPException(400, "bad meta: device_id too long")
     if privacy_blocks_video(st.settings):  # never keep unblurred real video while face blurring is on
         return VideoAccepted(video_id="", accepted=False, reason="privacy", ts_start=vm.ts_start)
 

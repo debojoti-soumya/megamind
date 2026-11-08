@@ -48,6 +48,11 @@ logs an error, `status` becomes `"degraded"` and `store` reads `lancedb (degrade
   `kind="transcript"` token (same path and merge rule as `POST /audio`, no STT), **never** attached to the frame and
   **never** changes the frame's keep decision: it is stored even when the frame is rejected. `""`/`null` = none.
   Send each piece of text once (a repeat of the last piece within the merge window is ignored).
+
+  Meta limits (shared by `POST /frames`, `/audio` and `/video`): `ts` / `ts_start` must be finite Unix seconds no
+  more than 1 day (86400 s) past the server clock; `device_id` must be non-blank and short enough to be a directory
+  name once URL-quoted (~230 bytes: plain ASCII ids up to 238 chars). Otherwise `400 {"detail": "bad meta: ..."}`
+  and nothing is stored.
 Response `202 Accepted`:
 ```json
 { "frame_id": "01J...", "accepted": true, "reason": null }
@@ -77,7 +82,7 @@ Speech that starts ≤ `SPEECH_MERGE_S` (10 s) after the device's last transcrip
 utterance cut by a chunk boundary stays one token. Only the first window of a chunk can continue the previous chunk;
 so `token_ids` may start with an **existing** (merged-into) token id. The merge target is kept per device in server
 memory (no merge across a restart) and dropped by `DELETE /memories`.
-Silence → `token_ids: []`. Bad `meta` (incl. non-finite `ts_start`) / empty body → 400; > 25 MB or > 600 s → 413;
+Silence → `token_ids: []`. Bad `meta` (same limits as `POST /frames`) / empty body → 400; > 25 MB or > 600 s → 413;
 undecodable audio → 415; STT provider error → 502.
 
 ## `POST /video`  (headset -> server; optional)
@@ -101,7 +106,7 @@ disk (`VIDEO_STORE_DIR`, default `<THUMB_DIR>/../video`). Response `200 OK`:
   already stored (an upload retried after its response was lost); its `video_id` is returned, nothing new is kept.
 - `reason="privacy"` (`accepted: false`, `video_id: ""`): `PRIVACY_BLUR_FACES(_VLM)` is on. Real video is never
   blurred, so it is discarded; don't resend.
-- Bad `meta` (incl. non-finite `ts_start`, or a `device_id` too long to be a directory name, ~230 bytes) /
+- Bad `meta` (same limits as `POST /frames`: finite `ts_start` ≤ 1 day ahead, non-blank `device_id` ≤ ~230 bytes) /
   empty body → 400; larger or longer than the caps → 413; not a decodable video, not mp4/mov, not H.264 → 415; `DELETE /memories` covered the clip while it was uploading → 409
   (not kept); `VIDEO_ENABLED=false` → 404 (clients should then stop sending video); no ffmpeg/ffprobe → 503.
 Retention: clips are hot media (tiered media, see `POST /admin/age`): one is deleted once its footage is older than

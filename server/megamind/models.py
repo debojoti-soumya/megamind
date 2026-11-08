@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Literal
+import time
+from typing import Annotated, Literal
+from urllib.parse import quote
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 
 Confidence = Literal["high", "medium", "low", "not_found"]
 SearchMode = Literal["semantic", "visual", "hybrid"]
@@ -19,9 +21,37 @@ class Pose(BaseModel):
     yaw: float
 
 
+MAX_DEVICE_DIR_NAME = 240  # `d_<url-quoted device_id>` is a directory name (video store); filesystems cap 255 bytes
+MAX_FUTURE_S = 86400.0  # upload timestamps may run ahead of the server clock by up to a day (skew, sped-up replays)
+
+
+def device_id_fits(device_id: str) -> bool:
+    """False when `device_id` is too long to be a directory name (~230 bytes once URL-quoted)."""
+    return len("d_" + quote(device_id, safe="")) <= MAX_DEVICE_DIR_NAME
+
+
+def _check_device_id(v: str) -> str:
+    if not v.strip():
+        raise ValueError("device_id must not be empty")
+    if not device_id_fits(v):
+        raise ValueError("device_id too long")
+    return v
+
+
+def _check_upload_ts(v: float) -> float:
+    if v > time.time() + MAX_FUTURE_S:
+        raise ValueError(f"timestamp {v:.6g} is more than {MAX_FUTURE_S:g} s in the future (send unix seconds)")
+    return v
+
+
+# shared by the /frames, /audio and /video metas: non-empty bounded id; finite unix seconds, not far in the future
+DeviceId = Annotated[str, AfterValidator(_check_device_id)]
+UploadTs = Annotated[float, Field(allow_inf_nan=False), AfterValidator(_check_upload_ts)]
+
+
 class FrameMeta(BaseModel):
-    device_id: str
-    ts: float
+    device_id: DeviceId
+    ts: UploadTs
     pose: Pose | None = None
     # text heard around this frame (e.g. subtitles / external ASR); stored as a kind="transcript" token, never
     # attached to the frame and never changes the keep decision. "" / null = none.
@@ -35,8 +65,8 @@ class FrameAccepted(BaseModel):
 
 
 class AudioMeta(BaseModel):
-    device_id: str
-    ts_start: float = Field(allow_inf_nan=False)  # unix seconds of the clip's first sample
+    device_id: DeviceId
+    ts_start: UploadTs  # unix seconds of the clip's first sample
     pose: Pose | None = None
 
 
@@ -50,8 +80,8 @@ class AudioAccepted(BaseModel):
 class VideoMeta(BaseModel):
     """`POST /v1/video` meta: `ts_start` is the unix time (seconds) of the clip's first frame."""
 
-    device_id: str
-    ts_start: float = Field(allow_inf_nan=False)
+    device_id: DeviceId
+    ts_start: UploadTs
 
 
 class VideoAccepted(BaseModel):
