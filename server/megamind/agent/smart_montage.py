@@ -9,7 +9,8 @@ show the subject. The smart path:
    then spreads it over time so one long visit can't fill every slot (at most `MONTAGE_SMART_MAX_CANDIDATES`).
 3. `MontageVerifier` checks each candidate with a cheap vision call (Claude Haiku, `MONTAGE_VERIFY_MODEL`):
    caption + OCR text + thumbnail, `MONTAGE_VERIFY_BATCH` candidates per call, calls run concurrently.
-   Without an API key (or for a batch whose call failed) candidates are kept unverified in retrieval order.
+   Without an API key (or when every call failed) candidates are kept unverified in retrieval order; once some
+   batch was checked, only confirmed matches are used (failed batches + no match -> an honest 503, not "none").
 4. `pick_moments` groups matches into moments (`MONTAGE_MOMENT_GAP_S`), keeps the most confident token of each,
    orders them chronologically and caps them at `MONTAGE_SMART_MAX_CLIPS` (evenly spread in time if more).
    No match -> the caller answers an honest 404 ("no moments showing ...") instead of a reel of near-misses.
@@ -49,13 +50,20 @@ since until till around between before after earlier recently time times in on a
 just now while was were whats it its me our we us shots shot frames frame photos photo pictures picture scenes scene
 footage memories memory period stuff things everything anything any each some
 monday tuesday wednesday thursday friday saturday sunday am pm one two three four five six seven eight nine ten
+noon midnight o'clock oclock ago hrs mins january february march april june july august september october november
+december jan feb mar apr jun jul aug sep sept oct nov dec
 """.split()
 )
-# "every time", "all the", "shots of", "montage of": the wearer wants a collection of matching moments
+# clock times and durations ("2pm", "3:30", "10am", "90s", "2h") are time phrases, not subjects
+_TIME_TOKEN = re.compile(r"^\d+(?::\d+)?(?:am|pm|h|hr|hrs|m|min|mins|s|st|nd|rd|th)?$")
+_TIME_WORDS = r"(?:day|days|morning|afternoon|evening|night|week|weekend|month|year|today|tonight|yesterday)"
+# "every time", "all the", "shots of", "a supercut of": the wearer wants a collection of matching moments. Not a
+# plain "montage of" / "reel of" ("montage of my trip to Paris" is a highlight reel of an episode, which the classic
+# planner covers better than one clip per matching moment), nor "all day" / "every morning" (a time span).
 _CUE = re.compile(
-    r"\b(all|every|each|any|whenever)\b"
+    rf"\b(all|every|each|any)\b(?!\s+(?:the\s+|of\s+the\s+)?{_TIME_WORDS}\b)|\bwhenever\b"
     r"|\b(shots?|clips?|times|moments?|scenes?|frames?|photos?|pictures?|footage)\s+(of|with|where|when|showing)\b"
-    r"|\b(montage|supercut|compilation|reel)\s+(of|with|showing|featuring)\b",
+    r"|\b(supercut|compilation)\s+(of|with|showing|featuring)\b",
     re.I,
 )
 # Leading framing stripped (repeatedly) before the subject phrase: "make me a montage of all shots of ..."
@@ -65,20 +73,26 @@ _FRAMING = re.compile(
     r"cut|put together|a|an|me|quick|short|little|"
     r"(?:video\s+)?(?:montage|supercut|compilation|highlight reel|highlights?|reel|recap|video)s?"
     r"(?:\s+(?:of|with|showing|featuring))?|"
-    r"(?:all|every|each|any)(?:\s+of)?(?:\s+the)?(?:\s+(?:shots?|clips?|moments?|scenes?|frames?|photos?|"
+    r"(?:all|every|each|any)(?:\s+of)?(?:\s+the)?(?:\s+(?:shots?|clips?|times|moments?|scenes?|frames?|photos?|"
     r"pictures?|footage))?(?:\s+(?:of|with|showing|where|when))?|"
     r"(?:shots?|clips?|moments?|scenes?|frames?|photos?|pictures?|footage)\s+(?:of|with|showing|where|when)"
     r")\b[\s,:]*",
     re.I,
 )
 _TRAILING = re.compile(r"(?:[\s,;:.!?]+|\b(?:from|during|on|in|over|since|at|for|of|and)\s*)+$", re.I)
+# Left behind when a time phrase is cut from the middle ("my afternoon at the park" -> "my at the park"): an orphan
+# determiner before a preposition, and a leading preposition ("in the kitchen" -> "the kitchen").
+_PREP = r"(?:at|in|on|inside|during|from|around|near|by|over|since|for|of|with)"
+_ORPHAN = re.compile(rf"\b(?:my|our|your|this|that|the|last|next)\s+(?={_PREP}\b)", re.I)
+_LEADING_PREP = re.compile(r"^(?:at|in|on|inside|during|from|around|near|over|since)\s+", re.I)
 
 
 @dataclass(frozen=True)
 class Subject:
     phrase: str  # what every clip must show, e.g. "the guy in the black coat" (time phrase removed)
     search: str  # retriever query: the phrase with any time expression kept, so the retriever's planner sees it
-    cue: bool  # the request asked for a collection ("all", "every time", "shots of", "montage of" ...)
+    cue: bool  # the request asked for a collection ("all", "every time", "shots of", "supercut of" ...)
+    timed: bool = False  # the query itself named a time ("today", "last week"): the no-match reply says so
 
 
 def _zone(tz: str) -> ZoneInfo:
@@ -90,7 +104,9 @@ def _zone(tz: str) -> ZoneInfo:
 
 def _content_words(text: str) -> list[str]:
     return [
-        w for w in re.findall(r"[a-z0-9']+", text.lower()) if w not in _NON_SUBJECT and not w.isdigit() and len(w) > 1
+        w
+        for w in re.findall(r"[a-z0-9':]+", text.lower())
+        if w not in _NON_SUBJECT and not _TIME_TOKEN.match(w) and len(w) > 1
     ]
 
 
@@ -117,18 +133,20 @@ def detect_subject(query: str, *, tz: str = "UTC", now: datetime | None = None) 
         a, b = win.span
         phrase = f"{rest[:a]} {rest[b:]}"
     phrase = _TRAILING.sub("", " ".join(phrase.split())).strip()
+    phrase = _LEADING_PREP.sub("", _ORPHAN.sub("", phrase)).strip(" ,.;:!?")
     if not _content_words(phrase):  # only a time phrase was left ("lunch" alone stays: it has content words)
         return None
-    return Subject(phrase=phrase, search=rest, cue=bool(_CUE.search(q)))
+    return Subject(phrase=phrase, search=rest, cue=bool(_CUE.search(q)), timed=win is not None)
 
 
-def select_mode(mode: str, query: str, verifier_enabled: bool, setting: str, *, tz: str = "UTC") -> Subject | None:
+def select_mode(mode: str, query: str, setting: str, *, tz: str = "UTC") -> Subject | None:
     """The subject when this request takes the smart path, else None (classic path, unchanged).
 
     - request `mode`: "classic" never; "smart" whenever a subject is found; "" / "auto" = the `MONTAGE_SMART`
       setting. Setting "off": never (unless the request says "smart"); "auto" (default): a subject is found AND
-      either the request asks for a collection ("all shots of ...", "every time ...") or the Claude verifier
-      is configured. A time-range-only request has no query, hence no subject: always classic.
+      the request asks for a collection ("all shots of ...", "every time ...", "a supercut of ..."). Other
+      queries with a subject ("what happened at work", "montage of my trip to Paris") keep the classic highlight
+      reel, with or without an API key. A time-range-only request has no query, hence no subject: always classic.
     """
     mode = (mode or "auto").strip().lower()
     if mode == "classic" or not (query or "").strip():
@@ -140,7 +158,7 @@ def select_mode(mode: str, query: str, verifier_enabled: bool, setting: str, *, 
         return subj
     if (setting or "auto").strip().lower() == "off":
         return None
-    return subj if (subj.cue or verifier_enabled) else None
+    return subj if subj.cue else None
 
 
 # ---- gather ----
@@ -226,8 +244,8 @@ ImageLoader = Callable[[MemoryToken], Awaitable[bytes | None]]
 
 class MontageVerifier:
     """Haiku vision check of montage candidates. `verify` returns one entry per candidate: a `Verdict`, or None
-    when the candidate was not checked (no client, or its batch's call failed): the caller keeps those (offline
-    rule: retrieval order)."""
+    when the candidate was not checked (no client, or its batch's call failed); `keep_matches` keeps those, in
+    retrieval order, only when nothing at all was checked."""
 
     def __init__(self, settings, cfg, client: anthropic.AsyncAnthropic | None = None) -> None:
         self.cfg = cfg
@@ -305,12 +323,14 @@ class MontageVerifier:
         content.append({"type": "text", "text": "Return one verdict per candidate label."})
         resp = await self._client.messages.create(
             model=self.model,
-            max_tokens=2000,
+            max_tokens=4096,  # thinking (low effort) shares this budget with ~8 short verdicts
             system=VERIFY_SYSTEM,
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": VERIFY_SCHEMA}},
             messages=[{"role": "user", "content": content}],
         )
-        text = next(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        if getattr(resp, "stop_reason", None) in ("max_tokens", "refusal"):
+            raise ValueError(f"verifier stopped early ({resp.stop_reason})")
+        text = next((b.text for b in resp.content if getattr(b, "type", "") == "text"), "")
         try:
             return [Verdict.model_validate(v) for v in json.loads(text)["verdicts"]]
         except (ValueError, KeyError, TypeError, ValidationError) as e:
@@ -329,11 +349,16 @@ class Pick:
 
 
 def keep_matches(cands: list[MemoryToken], verdicts: list[Verdict | None], min_confidence: float) -> list[Pick]:
-    """Verified matches (confidence >= threshold) + unchecked candidates; best-first rank order is kept."""
+    """Verified matches (confidence >= threshold); best-first rank order is kept. Unchecked candidates (None) are
+    kept, unverified, only when NOTHING was checked (no client, or every call failed): once the verifier has
+    looked, a "smart" montage never mixes in clips it did not confirm."""
     out = []
     n = len(cands)
+    checked = any(v is not None for v in verdicts)
     for i, (t, v) in enumerate(zip(cands, verdicts, strict=True)):
         if v is None:
+            if checked:
+                continue
             out.append(Pick(t, "", 0.5 * (n - i) / max(n, 1), False))  # unverified: retrieval rank decides
         elif v.match and v.confidence >= min_confidence:
             out.append(Pick(t, v.title.strip(), 1.0 + v.confidence, True))  # verified beats unverified in a moment
@@ -377,6 +402,14 @@ def narration(subject: str, n_moments: int, n_clips: int, days: int, verified: b
     if days > 1:
         text += f" across {days} days"
     return text + ("." if n_clips == n_moments else f"; here are {n_clips} of them, spread across that time.")
+
+
+def unfinished_message(subject: str) -> str:
+    """Some verifier calls failed and the rest found nothing: don't claim there is nothing (Recall's wording)."""
+    return (
+        f"I couldn't finish checking your memories for {spoken(subject)} (the checking service had errors), "
+        "so I can't say yet. Please try again in a moment."
+    )
 
 
 def no_match_message(subject: str, n_candidates: int, ranged: bool) -> str:

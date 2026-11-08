@@ -53,6 +53,10 @@ def _tok(i: int, caption: str, ts: float | None = None, thumb: str = "", device=
         ("show me all the photos with my dog", "my dog", True),
         ("clips of the red car on Monday", "the red car", True),
         ("desk scene", "desk scene", False),
+        ("make a montage of my afternoon at the park", "the park", False),  # no orphan "my at the park"
+        ("make a video of this morning in the kitchen", "the kitchen", False),
+        ("montage of all shots of the guy in the black coat yesterday", "the guy in the black coat", True),
+        ("montage of my trip to Paris last week", "my trip to Paris", False),  # plain "montage of": no cue
     ],
 )
 def test_detect_subject(query, phrase, cue):
@@ -64,22 +68,26 @@ def test_detect_subject(query, phrase, cue):
 @pytest.mark.parametrize(
     "query",
     ["make me a montage of my afternoon", "my day", "highlights of this period", "the past few hours", "all of today",
-     "montage of yesterday", "", "   "],
+     "montage of yesterday", "montage of everything since 2pm", "a reel of 3:30 to 5pm", "every morning this week",
+     "montage of all day", "", "   "],
 )  # fmt: skip
 def test_time_only_requests_have_no_subject(query):
     assert detect_subject(query) is None
 
 
 def test_select_mode():
-    assert select_mode("", "", True, "auto") is None  # time-range-only request: always classic
-    assert select_mode("", "my afternoon", True, "auto") is None
-    assert select_mode("", "desk scene", False, "auto") is None  # no cue, no verifier: classic (pre-smart behaviour)
-    assert select_mode("", "desk scene", True, "auto").phrase == "desk scene"  # verifier configured
-    assert select_mode(None, COAT, False, "auto").phrase == "the guy in the black coat"  # collection cue
-    assert select_mode("classic", COAT, True, "auto") is None
-    assert select_mode("auto", COAT, True, "off") is None
-    assert select_mode("smart", "desk scene", False, "off").phrase == "desk scene"
-    assert select_mode("smart", "my afternoon", True, "auto") is None  # nothing to filter by
+    assert select_mode("", "", "auto") is None  # time-range-only request: always classic
+    assert select_mode("", "my afternoon", "auto") is None
+    assert select_mode("", "desk scene", "auto") is None  # subject but no collection cue: classic (pre-smart)
+    assert select_mode("", "what happened at work", "auto") is None
+    assert select_mode("", "reel of my run", "auto") is None  # an episode: the classic highlight reel
+    assert select_mode("", "montage of all day at the beach", "auto") is None  # "all day" is a span, not a cue
+    assert select_mode(None, COAT, "auto").phrase == "the guy in the black coat"  # collection cue
+    assert select_mode("", "every time I was at the cafe", "auto").phrase == "I was at the cafe"
+    assert select_mode("classic", COAT, "auto") is None
+    assert select_mode("auto", COAT, "off") is None
+    assert select_mode("smart", "desk scene", "off").phrase == "desk scene"
+    assert select_mode("smart", "my afternoon", "auto") is None  # nothing to filter by
 
 
 def test_spread_caps_one_long_visit():
@@ -96,8 +104,9 @@ def test_spread_caps_one_long_visit():
 class _FakeMessages:
     """Matches a candidate iff its caption mentions 'black coat'; records every call."""
 
-    def __init__(self, fail_batches=(), drop_labels=(), exc=None):
+    def __init__(self, fail_batches=(), drop_labels=(), exc=None, stop_reason="end_turn"):
         self.calls, self.fail_batches, self.drop_labels, self.exc = [], set(fail_batches), set(drop_labels), exc
+        self.stop_reason = stop_reason
 
     async def create(self, **kw):
         self.calls.append(kw)
@@ -109,7 +118,8 @@ class _FakeMessages:
             if m and m.group(1) not in self.drop_labels:
                 hit = "black coat" in m.group(2)
                 verdicts.append({"label": m.group(1), "match": hit, "confidence": 0.9 if hit else 0.8, "title": "Coat"})
-        return SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps({"verdicts": verdicts}))])
+        text = json.dumps({"verdicts": verdicts})
+        return SimpleNamespace(stop_reason=self.stop_reason, content=[SimpleNamespace(type="text", text=text)])
 
 
 def _verifier(messages, **cfg) -> MontageVerifier:
@@ -138,15 +148,24 @@ async def test_verifier_batches_with_images_and_filters():
     assert all(p.verified for p in picks)
 
 
-async def test_verifier_failed_batch_kept_unverified_and_skipped_label_dropped():
+async def test_verifier_failed_batch_dropped_and_skipped_label_dropped():
     cands = [_tok(i, "a man in a black coat") for i in range(10)]
     verdicts, stats = await _verifier(_FakeMessages(fail_batches={1}, drop_labels={"C2"})).verify("x", cands)
     assert stats["verify_errors"] == 1
     assert verdicts[1].match is False  # shown to the model and not confirmed
     assert verdicts[8] is None and verdicts[9] is None  # second batch's call failed: unchecked
     picks = smart.keep_matches(cands, verdicts, 0.5)
-    assert [p.token.id for p in picks if not p.verified] == ["t008", "t009"]
-    assert "t001" not in {p.token.id for p in picks}
+    assert picks and all(p.verified for p in picks)  # once something was checked, unchecked ones are not mixed in
+    assert not {"t001", "t008", "t009"} & {p.token.id for p in picks}
+    all_failed = smart.keep_matches(cands, [None] * len(cands), 0.5)  # nothing checked: offline rule
+    assert [p.token.id for p in all_failed] == [t.id for t in cands] and not any(p.verified for p in all_failed)
+
+
+async def test_verifier_truncated_or_refused_output_counts_as_unchecked():
+    cands = [_tok(i, "a man in a black coat") for i in range(3)]
+    for reason in ("max_tokens", "refusal"):
+        verdicts, stats = await _verifier(_FakeMessages(stop_reason=reason)).verify("x", cands)
+        assert verdicts == [None, None, None] and stats["verify_errors"] == 1
 
 
 async def test_verifier_low_confidence_and_offline():
@@ -184,6 +203,7 @@ def test_narration_and_no_match_text():
     )
     assert "not visually checked" in smart.narration("x", 5, 5, 1, False)
     assert smart.spoken("I was at my desk") == "you were at your desk"
+    assert "couldn't finish checking your memories for your dog" in smart.unfinished_message("my dog")
     msg = smart.no_match_message("the guy in the black coat", 37, False)
     assert msg.startswith("I couldn't find any moments matching the guy in the black coat") and "37" in msg
 
@@ -281,6 +301,24 @@ async def test_smart_montage_zero_matches_is_honest_404(app_client):
     assert rendered == [] and not list(app.state.montage_cache.dir.glob("*.mp4"))
 
 
+async def test_partial_verifier_failure_with_no_match_is_503_not_none(app_client):
+    c, app, rendered = app_client
+    await _seed(app)
+    no_verdicts = {f"C{i}" for i in range(1, 61)}  # every checked candidate comes back unconfirmed
+    app.state.montage_verifier = _verifier(msgs := _FakeMessages({1}, no_verdicts), verify_batch=2)
+    r = await c.post("/v1/montage", json={"query": COAT})
+    assert len(msgs.calls) >= 2
+    assert r.status_code == 503 and "couldn't finish checking" in r.json()["detail"] and rendered == []
+
+
+async def test_no_match_with_time_phrase_says_that_period(app_client):
+    c, app, _ = app_client
+    await _seed(app)
+    app.state.montage_verifier = _verifier(_FakeMessages())
+    r = await c.post("/v1/montage", json={"query": "every shot of the red umbrella last week"})
+    assert r.status_code == 404 and "in that period" in r.json()["detail"]
+
+
 async def test_smart_montage_respects_time_range(app_client):
     c, app, _ = app_client
     await _seed(app)
@@ -337,12 +375,15 @@ async def test_time_range_montage_unchanged_even_with_verifier(app_client):
     assert msgs.calls == []
 
 
-async def test_plain_query_without_key_stays_classic(app_client):
+async def test_plain_query_stays_classic_with_or_without_key(app_client):
     c, app, _ = app_client
     await _seed(app)
     app.state.montage_planner = planner = _StubPlanner()
     r = await c.post("/v1/montage", json={"query": "desk scene"})
     assert r.status_code == 200 and r.json()["mode"] == "classic" and len(planner.calls) == 1
+    app.state.montage_verifier = _verifier(msgs := _FakeMessages())  # a configured verifier changes nothing here
+    r = await c.post("/v1/montage", json={"query": "desk scene"})
+    assert r.status_code == 200 and r.json()["mode"] == "classic" and len(planner.calls) == 2 and msgs.calls == []
     r = await c.post("/v1/montage", json={"query": "desk scene", "mode": "smart"})
     assert r.status_code == 200 and r.json()["mode"] == "smart"
 

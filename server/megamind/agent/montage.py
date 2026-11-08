@@ -82,7 +82,7 @@ class MontageSettings(BaseSettings):
     cache_max_files: int = 16
     max_concurrent_renders: int = 1
     # content-filtered ("smart") montages, see `smart_montage.py`: "montage of all shots of the guy in the black coat"
-    smart: str = "auto"  # auto (subject found AND (collection cue OR Claude verifier)) | off (only mode="smart")
+    smart: str = "auto"  # auto (subject found AND collection cue: "all/every ...", "shots of") | off (mode="smart")
     smart_max_candidates: int = 60  # retriever candidates sent to the verifier
     smart_max_clips: int = 12
     verifier: str = "auto"  # auto (Claude iff ANTHROPIC_API_KEY) | offline (keep retrieval order, no check)
@@ -457,10 +457,7 @@ async def create_montage(request: Request, body: MontageRequest):
         raise HTTPException(503, FFMPEG_HINT)
 
     gen = cache.generation
-    verifier = getattr(st, "montage_verifier", None)
-    subj = smart.select_mode(
-        body.mode or "", query, bool(verifier and verifier.enabled), cfg.smart, tz=st.settings.wearer_tz
-    )
+    subj = smart.select_mode(body.mode or "", query, cfg.smart, tz=st.settings.wearer_tz)
     if subj is not None:
         return await _smart_montage(st, cache, cfg, ffmpeg, gen, body, subj, t0, t1)
     cands = await candidates(st, query, t0, t1, body.device_id or None, cfg.max_candidates)
@@ -528,13 +525,17 @@ async def _smart_montage(st, cache, cfg, ffmpeg, gen, body: MontageRequest, subj
     """Content-filtered montage (`smart_montage.py`): gather -> verify -> one clip per matching moment."""
     cands = await smart.gather(st, subj, t0, t1, body.device_id or None, cfg)
     verifier = getattr(st, "montage_verifier", None)
+    stats = {"verify_errors": 0}
     if verifier is not None:
-        verdicts, _stats = await verifier.verify(subj.phrase, cands, lambda t: _load_image(st, t))
+        verdicts, stats = await verifier.verify(subj.phrase, cands, lambda t: _load_image(st, t))
     else:
         verdicts = [None] * len(cands)
     picks = smart.keep_matches(cands, verdicts, cfg.verify_min_confidence)
     if not picks:
-        raise HTTPException(404, smart.no_match_message(subj.phrase, len(cands), t0 is not None or t1 is not None))
+        if stats.get("verify_errors"):  # some batches failed, the checked ones found nothing: not a real "no"
+            raise HTTPException(503, smart.unfinished_message(subj.phrase))
+        ranged = t0 is not None or t1 is not None or subj.timed
+        raise HTTPException(404, smart.no_match_message(subj.phrase, len(cands), ranged))
     cap = max(cfg.smart_max_clips, 1)
     chosen, n_moments = smart.pick_moments(picks, min(body.max_clips or cap, cap), cfg.moment_gap_s)
     zone = _zone(st.settings.wearer_tz)
