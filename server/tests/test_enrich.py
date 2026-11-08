@@ -265,3 +265,60 @@ async def test_worker_stores_vlm_enrichment(tmp_path):
             await worker.queue.join()
             hits = (await c.get("/v1/memories", params={"q": "kettle"})).json()["results"]
             assert hits and hits[0]["caption"] == GOOD["caption"] and hits[0]["ocr_text"] == "BOSCH"
+
+
+async def test_vlm_enricher_cools_down_after_an_outage(monkeypatch):
+    """During an outage each frame would spend 2x the timeout retrying; skip straight to the fallback instead."""
+    calls = []
+    clock = [1000.0]
+    monkeypatch.setattr(enrich.time, "monotonic", lambda: clock[0])
+
+    def handler(req):
+        calls.append(req)
+        if len(calls) <= 2:
+            raise httpx.ConnectTimeout("down", request=req)
+        return httpx.Response(200, json=_completion(json.dumps(GOOD)))
+
+    fb = _Fallback()
+    vlm = _vlm(handler, fallback=fb)
+    assert (await vlm.enrich(_jpeg())).caption == "a kitchen" and len(calls) == 2  # tried + retried
+    for _ in range(5):
+        assert (await vlm.enrich(_jpeg())).caption == "a kitchen"
+    assert len(calls) == 2 and fb.calls == 6 and vlm.degraded == "last error timeout"  # no calls while cooling
+    clock[0] += vlm.cooldown_s + 1
+    assert (await vlm.enrich(_jpeg())).caption == GOOD["caption"]  # probes again, recovers
+    assert len(calls) == 3 and vlm.degraded is None
+
+    bad = _vlm(lambda req: httpx.Response(200, json=_completion("no json")), fallback=_Fallback())
+    await bad.enrich(_jpeg())
+    assert bad._skip_until == 0.0  # the model answered: an unparseable answer does not cool the endpoint down
+
+
+async def test_worker_reuses_local_enricher_image_vector(tmp_path):
+    from megamind.ingest.worker import EnrichmentWorker
+    from megamind.models import MemoryToken
+    from megamind.store.memory_store import InMemoryStore
+
+    class _Counting(_StubSigLIP):
+        images = 0
+
+        async def embed_image(self, jpeg: bytes) -> list[float]:
+            type(self).images += 1
+            return await super().embed_image(jpeg)
+
+    emb = _Counting()
+    store = InMemoryStore()
+    worker = EnrichmentWorker(store, LocalEnricher(emb, ocr=False), enrich.MockTextEmbedder(), emb)
+    thumb = tmp_path / "a.jpg"
+    thumb.write_bytes(_jpeg((220, 10, 10)))
+    tok = MemoryToken(id="a", device_id="d", ts=1.0, thumb_path=str(thumb), frame_hash="0" * 16)
+    await worker._process(tok, thumb.read_bytes())
+    stored = await store.get("a")
+    assert stored.caption == "a kitchen" and stored.image_vec == [1.0, 0.0]
+    assert _Counting.images == 1  # one SigLIP pass per frame, not two
+
+    other = _Counting()  # a different embedder in the worker: never reuse the enricher's vector
+    worker2 = EnrichmentWorker(store, LocalEnricher(emb, ocr=False), enrich.MockTextEmbedder(), other)
+    tok2 = tok.model_copy(update={"id": "b"})
+    await worker2._process(tok2, thumb.read_bytes())
+    assert _Counting.images == 3

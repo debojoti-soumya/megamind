@@ -71,6 +71,19 @@ def image_calibration(settings: Settings, image_embedder: object | None) -> tupl
     return cal
 
 
+def _enrich_label(settings: Settings, enricher: object) -> str:
+    """Health label for the enricher: "vlm:<model>" / "local" (+ degraded reason), or mock and why."""
+    configured = settings.enrich_provider.lower()
+    if type(enricher).__name__ == "LocalEnricher":
+        active = "local"
+    else:
+        active = f"vlm:{settings.enrich_model_name}"
+    if configured == "auto" and type(enricher).__name__.startswith("Mock"):
+        return "mock (auto: no enrich/reader key, no image embedder)"
+    # vlm without a key reports "mock (enrich configured, no key)" via provider_key("enrich")
+    return active_provider(settings, "enrich" if configured in ("auto", "vlm") else configured, enricher, active)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
@@ -165,6 +178,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     st.text_embedder,
                     f"{settings.embed_provider}:{getattr(st.text_embedder, 'model', settings.embed_model)}",
                 ),
+                "enrich": _enrich_label(settings, st.worker.enricher),
                 "stt": active_provider(settings, settings.stt_provider, st.stt, settings.stt_provider),
                 "tts": active_provider(settings, settings.tts_provider, st.tts, settings.tts_provider),
             },

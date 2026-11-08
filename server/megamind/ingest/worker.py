@@ -121,7 +121,9 @@ class EnrichmentWorker:
         token.caption, token.ocr_text, token.entities = e.caption, e.ocr_text, e.entities
         token.text_vec = await self.text_embedder.embed(f"{e.caption}\n{e.ocr_text}\n{' '.join(e.entities)}")
         if self.image_embedder is not None:
-            token.image_vec = await self.image_embedder.embed_image(jpeg)
+            # reuse the vector an enricher already computed from this JPEG with this very embedder (LocalEnricher)
+            reuse = e.image_vec is not None and e.image_vec_from is self.image_embedder
+            token.image_vec = e.image_vec if reuse else await self.image_embedder.embed_image(jpeg)
         async with self._add_lock:
             if token.id in self._discarded:
                 return

@@ -169,6 +169,7 @@ async def test_health_reports_mocks_when_keys_are_missing(tmp_path):
         "claude": "fallback (claude-sonnet-4-6 configured, no key)",
         "reader": "mock (vlm configured, no key)",
         "embed": "mock (openai configured, no key)",
+        "enrich": "mock (auto: no enrich/reader key, no image embedder)",
         "stt": "mock (deepgram configured, no key)",
         "tts": "mock",
     }
@@ -239,3 +240,13 @@ async def test_frame_transcript_rejected_with_bad_image(client):
     )
     assert r.status_code == 400
     assert await app.state.store.count() == 0
+
+
+async def test_health_reports_enricher(tmp_path):
+    assert (await _health(tmp_path, reader_api_key="none"))["enrich"].startswith("mock (auto")
+    assert (await _health(tmp_path, enrich_provider="mock"))["enrich"] == "mock"
+    models = await _health(tmp_path, reader_api_key="sk-x", reader_model="gemma")
+    assert models["enrich"] == "vlm:gemma"
+    assert (await _health(tmp_path, enrich_provider="local", reader_api_key="none"))["enrich"].startswith(
+        "local (degraded: no image embedder"
+    )

@@ -51,6 +51,11 @@ def merge_segments(segments: list[Segment], window_s: float) -> list[Segment]:
     return out
 
 
+# per-token text bound: FrameMeta.transcript is client text (a form field can be ~1 MB), and a merged token grows
+# with every piece, so cap what one token holds; past it, speech starts a new token
+MAX_TOKEN_CHARS = 4000
+
+
 def transcript_caption(text: str) -> str:
     return f'{CAPTION_PREFIX}"{text.strip()}"'
 
@@ -95,8 +100,10 @@ class TranscriptSink:
             self.reset(device_id)
             yield
 
-    def _mergeable(self, last: _Open | None, ts_start: float, ts_end: float) -> bool:
+    def _mergeable(self, last: _Open | None, ts_start: float, ts_end: float, text: str) -> bool:
         if last is None or self.merge_s <= 0:
+            return False
+        if sum(len(p) + 1 for p in last.pieces) + len(text) > MAX_TOKEN_CHARS:
             return False
         start = last.token.ts
         return start <= ts_start <= last.end_ts + self.merge_s and max(ts_end, last.end_ts) - start <= self.max_token_s
@@ -112,13 +119,13 @@ class TranscriptSink:
         merge: bool = True,
     ) -> MemoryToken | None:
         """Store `text` heard in [ts_start, ts_end]; returns the new or merged-into token (None for blank text)."""
-        text = " ".join(text.split())
+        text = " ".join(text.split())[:MAX_TOKEN_CHARS]
         if not text:
             return None
         ts_end = max(ts_end, ts_start)
         async with self._lock:
             last = self._last.get(device_id)
-            if merge and self._mergeable(last, ts_start, ts_end):
+            if merge and self._mergeable(last, ts_start, ts_end, text):
                 assert last is not None
                 if last.pieces and last.pieces[-1] == text:  # the same cue re-sent with the next frame
                     last.end_ts = max(last.end_ts, ts_end)

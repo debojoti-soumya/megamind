@@ -8,11 +8,14 @@ and the C# DTOs in `headset/` must match it.
 ```json
 { "status": "ok", "store_count": 1234,
   "models": { "claude": "claude-sonnet-4-6", "reader": "google/gemma-4-31B-it",
-              "embed": "mock (openai configured, no key)", "stt": "mock", "tts": "mock" } }
+              "embed": "mock (openai configured, no key)", "enrich": "vlm:google/gemma-4-31B-it",
+              "stt": "mock", "tts": "mock" } }
 ```
 `models` names what is actually serving each role. When the configured provider has no key, or isn't wired up yet,
 the value is `mock (<provider> configured, no key | not installed | not implemented)`. Claude without a key reports
-`fallback (<model> configured, no key)`, meaning the no-LLM caption path.
+`fallback (<model> configured, no key)`, meaning the no-LLM caption path. `enrich` is the keyframe captioner
+(`ENRICH_PROVIDER`): `vlm:<model>`, `local` (keyless SigLIP label + Tesseract OCR) or `mock`; a VLM that is failing
+over to its fallback reports `vlm:<model> (degraded: last error 503)` until its next successful call.
 
 ## `POST /frames`  (headset / feeder -> server)
 `multipart/form-data`

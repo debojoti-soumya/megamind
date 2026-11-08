@@ -398,3 +398,18 @@ async def test_transcript_sink_unit():
     off = TranscriptSink(store, MockTextEmbedder(), merge_s=0)
     x = await off.add("d", T0, T0 + 1, "a")
     assert (await off.add("d", T0 + 1, T0 + 2, "b")).id != x.id
+
+
+async def test_transcript_sink_bounds_token_text():
+    from megamind.ingest.audio import MAX_TOKEN_CHARS, TranscriptSink
+    from megamind.ingest.enrich import MockTextEmbedder
+    from megamind.store.memory_store import InMemoryStore
+
+    sink = TranscriptSink(InMemoryStore(), MockTextEmbedder(), merge_s=10, max_token_s=60)
+    huge = await sink.add("d", T0, T0, "word " * 5000)  # client text from FrameMeta.transcript
+    assert len(huge.caption) <= MAX_TOKEN_CHARS + 40
+    a = await sink.add("d", T0 + 20, T0 + 20, "x" * (MAX_TOKEN_CHARS - 10))
+    b = await sink.add("d", T0 + 21, T0 + 21, "more words here")  # would overflow the token: a new one
+    assert b.id != a.id
+    c = await sink.add("d", T0 + 22, T0 + 22, "and these")
+    assert c.id == b.id

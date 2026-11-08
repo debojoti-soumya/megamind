@@ -22,6 +22,7 @@ import logging
 import math
 import re
 import shutil
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -46,6 +47,10 @@ class Enrichment:
     caption: str = ""
     ocr_text: str = ""
     entities: list[str] = field(default_factory=list)
+    # optional: the image vector an enricher already computed with the worker's image embedder (LocalEnricher's
+    # zero-shot label), so the worker does not embed the same JPEG twice
+    image_vec: list[float] | None = field(default=None, repr=False, compare=False)
+    image_vec_from: object | None = field(default=None, repr=False, compare=False)  # the embedder that made it
 
 
 class Enricher(ABC):
@@ -204,7 +209,10 @@ class LocalEnricher(Enricher):
             v = await self.image_embedder.embed_image(jpeg)
             best = max(range(len(vecs)), key=lambda i: sum(a * b for a, b in zip(v, vecs[i])))
             caption = self.labels[best]
-        elif ocr:
+            return Enrichment(
+                caption=caption, ocr_text=ocr, entities=[], image_vec=v, image_vec_from=self.image_embedder
+            )
+        if ocr:
             caption = f"Text visible: {ocr}"  # search only sees captioned tokens
         return Enrichment(caption=caption, ocr_text=ocr, entities=[])
 
@@ -212,7 +220,10 @@ class LocalEnricher(Enricher):
 class VLMEnricher(Enricher):
     """`POST {enrich_url}/chat/completions` with the JPEG as a data URI and ENRICH_PROMPT. Never raises: after
     one retry (429/5xx/timeout/transport) or on an unparseable answer it returns `fallback.enrich(jpeg)` (or an
-    empty enrichment), and `degraded` says why for /v1/health until the next success."""
+    empty enrichment), and `degraded` says why for /v1/health until the next success. After a failed call (not
+    an unparseable answer) the endpoint is skipped for `cooldown_s`: during an outage every frame would otherwise
+    spend ~2x the timeout in retries, the worker queue would fill and drop frames (the fallback exists to avoid
+    exactly that)."""
 
     def __init__(
         self,
@@ -221,11 +232,14 @@ class VLMEnricher(Enricher):
         fallback: Enricher | None = None,
         client: httpx.AsyncClient | None = None,
         retry_wait_s: float = 0.5,
+        cooldown_s: float = 30.0,
     ) -> None:
         self.model = settings.enrich_model_name
         self.max_tokens = settings.enrich_max_tokens
         self.fallback = fallback
         self.retry_wait_s = retry_wait_s
+        self.cooldown_s = cooldown_s
+        self._skip_until = 0.0
         self.degraded: str | None = None
         same_endpoint = not settings.enrich_base_url
         extra = settings.reader_extra_body if same_endpoint else ""
@@ -281,10 +295,14 @@ class VLMEnricher(Enricher):
                 raise
         raise last or RuntimeError("enricher retry loop exhausted")
 
-    async def _fallback(self, jpeg: bytes, why: str) -> Enrichment:
+    async def _fallback(self, jpeg: bytes, why: str, *, cool: bool = False, quiet: bool = False) -> Enrichment:
         self.degraded = why
-        using = type(self.fallback).__name__ if self.fallback else "empty enrichment"
-        log.warning("VLM enrichment failed (%s); using %s", why, using)
+        if cool and self.cooldown_s > 0:
+            self._skip_until = time.monotonic() + self.cooldown_s
+        if not quiet:
+            using = type(self.fallback).__name__ if self.fallback else "empty enrichment"
+            extra = f", skipping the VLM for {self.cooldown_s:g} s" if cool and self.cooldown_s > 0 else ""
+            log.warning("VLM enrichment failed (%s); using %s%s", why, using, extra)
         if self.fallback is None:
             return Enrichment()
         try:
@@ -294,13 +312,17 @@ class VLMEnricher(Enricher):
             return Enrichment()
 
     async def enrich(self, jpeg: bytes) -> Enrichment:
+        if time.monotonic() < self._skip_until:
+            return await self._fallback(jpeg, self.degraded or "cooling down", quiet=True)
         try:
             text = await self._call(jpeg)
         except httpx.HTTPStatusError as e:
-            return await self._fallback(jpeg, f"last error {e.response.status_code}")
+            return await self._fallback(jpeg, f"last error {e.response.status_code}", cool=True)
         except httpx.TimeoutException:
-            return await self._fallback(jpeg, "last error timeout")
-        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as e:
+            return await self._fallback(jpeg, "last error timeout", cool=True)
+        except httpx.HTTPError as e:
+            return await self._fallback(jpeg, f"last error {type(e).__name__}", cool=True)
+        except (KeyError, IndexError, TypeError, ValueError) as e:  # malformed completion body
             return await self._fallback(jpeg, f"last error {type(e).__name__}")
         try:
             e = parse_enrichment(text)

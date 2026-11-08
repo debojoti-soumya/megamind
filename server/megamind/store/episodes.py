@@ -3,8 +3,9 @@
 A frame joins the device's current episode unless
 - the time gap exceeds `gap_s`,
 - its image vector's cosine to the mean of the episode's last `recent_n` image vectors drops below
-  `split_sim` (a recent window, not the whole centroid: a slow drift through a building splits, where a
-  whole-episode mean never would),
+  `split_sim` (a recent window, not the whole centroid: the frame is judged against what the wearer was just
+  looking at, so a gradual turn stays one episode while a cut to a different view splits even late in a long
+  episode whose whole-history mean has averaged into something every view resembles),
 - the episode already spans more than `max_s` (0 = off), so a long stay is still closed and summarised, or
 - the wearer is more than `move_m` from the episode's pose centroid (0 = off).
 A short detour back to one of the last `rejoin_last` episodes rejoins it when the frame is close to that
