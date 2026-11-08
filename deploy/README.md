@@ -49,13 +49,13 @@ route too):
 
 | Setting | Value | Why |
 |---|---|---|
-| `HIER_MODEL` / `HIER_RANK_MODEL` / `HIER_NOTE_MODEL` | `gpt-5-mini` / `gpt-5-mini` / `gpt-4.1-mini` | long_week sweep: gpt-5-mini at `HIER_REASONING_EFFORT=minimal` for both stages gives R@1 0.74 vs 0.60 for the old 4.1-mini / 4.1 split, at the same latency and 3.7x less per question |
+| `HIER_MODEL` / `HIER_RANK_MODEL` / `HIER_NOTE_MODEL` | `gpt-5-mini` / `gpt-5-mini` / `gpt-4.1-mini` | long_week sweep: gpt-5-mini at `HIER_REASONING_EFFORT=minimal` for both stages gives R@1 0.74 vs 0.60 for the old 4.1-mini / 4.1 split at the same latency; on the dense `retrieval_day_v2` day it ties on MRR (0.94, R@1 0.85 vs 0.87, R@5 0.98 vs 0.96) and is 0.6 s slower per question (no prompt-cache win on a small outline). 4.4x cheaper on both |
 | `HIER_TIMEOUT_S` | `8` | wall bound on the LLM stages of one recall; past it the hybrid's ranking answers |
 | `HIER_CALL_TIMEOUT_S` / `HIER_RETRIES` | `4` / `2` | recall-time chat calls fail fast (note writing keeps 120 s / 6 tries) |
 | `HIER_CACHE_PATH` | `/data/hier_notes.json` | notes survive scale-to-zero and redeploys; a cold start does not rewrite them |
 | `HIER_REFRESH_S` | `300` | background note refresh while the container is up; a recall writes up to 3 missing notes inline and schedules a bigger backlog |
 | key | `OPENAI_API_KEY` in `megamind-providers` | `HIER_API_KEY` + `HIER_BASE_URL` override it for another OpenAI-compatible endpoint |
-| `HIER_GATE_MARGIN` / `HIER_GATE_MIN_HITS` | `0.25` / `5` | the hybrid answers alone when its top hit leads the runner-up by the margin *and* it found at least that many hits (a 3-hit result inflates the lead). On long_week this skips the LLM on 10 of 29 questions with no loss (R@1 0.81 vs 0.74 un-gated); `0` margin = always ask |
+| `HIER_GATE_MARGIN` / `HIER_GATE_MIN_HITS` | `0` / `5` | opt-in: with a margin > 0 the hybrid answers alone when its top hit leads the runner-up by that relative margin *and* it found at least that many hits (a 3-hit result inflates the lead). `0.25` skips the LLM on 10 of 29 long_week questions with no loss (R@1 0.81 vs 0.74), but on the dense `retrieval_day_v2` day it gates 17 of 91 and costs R@1 0.03–0.04 with either model pair, so it is off by default |
 | `HIER_OUTLINE_HOURS` | `0` | >0: stage 1 lists block notes only for that many candidate hours (hour notes elsewhere, pickable as `[H..]`). The full outline is ~15k tokens/day, so this is for long histories; on a week it saves nothing (prompt caching) |
 
 Fallbacks: hier and combo fall back to the hybrid in two cases:

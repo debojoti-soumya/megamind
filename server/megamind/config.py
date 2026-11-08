@@ -116,7 +116,8 @@ class Settings(BaseSettings):
     hier_timeout_s: float = 8.0  # per recall: notes + pick + rank must finish in this, else the hybrid answers; 0 = off
     hier_call_timeout_s: float = 4.0  # per recall-time chat call (httpx timeout)
     hier_retries: int = 2  # attempts per recall-time chat call (429 / 5xx / transport errors)
-    hier_gate_margin: float = 0.25  # >0: skip the LLM when the hybrid's top-1 leads top-2 by this relative margin...
+    hier_gate_margin: float = 0.0  # >0: skip the LLM when the hybrid's top-1 leads top-2 by this relative margin (0.25 is a
+    # good value on a sparse week; off by default because on a dense day it gates wrong answers too)...
     hier_gate_min_hits: int = 5  # ...and only when the hybrid found at least this many hits (few hits inflate the lead)
     hier_outline_hours: int = 0  # >0: stage 1 reads block notes for this many candidate hours only (others as [H..])
     hier_direct: bool = False  # stage 1 also sees the hybrid hits' moments and may rank them itself (one call)
