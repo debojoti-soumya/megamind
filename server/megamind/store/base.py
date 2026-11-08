@@ -45,7 +45,8 @@ class MemoryStore(ABC):
             if t.kind != "frame":
                 continue
             if not tracker.knows(t.device_id):
-                lookback = max(tracker.gap_s * 2 * tracker.rejoin_last, 1800.0)
+                # cover a whole max-length episode so its start (and the length cap) survives a restart
+                lookback = max(tracker.gap_s * 2 * tracker.rejoin_last, tracker.max_s + tracker.gap_s, 1800.0)
                 recent = await self.range(t.ts - lookback, None, limit=5000, device_id=t.device_id, kinds=("frame",))
                 tracker.seed(t.device_id, recent)
             tracker.assign(t)

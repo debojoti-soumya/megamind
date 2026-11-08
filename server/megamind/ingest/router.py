@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from PIL import Image
 from ulid import ULID
 
+from megamind.ingest.audio import transcript_sink
 from megamind.ingest.worker import purge_all
 from megamind.models import FrameAccepted, FrameMeta, MemoryToken, PurgeResponse, SearchMode, SearchResponse
 
@@ -43,6 +44,9 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
         raise HTTPException(400, "image is not a decodable JPEG") from exc
     for tap in getattr(app, "frame_taps", ()):  # every decodable frame, before the filter (e.g. replay buffer)
         tap(fm, jpeg)
+    if fm.transcript and fm.transcript.strip():
+        # speech heard around this frame -> a kind="transcript" token, whatever the filter decides below
+        await transcript_sink(app).add(fm.device_id, fm.ts, fm.ts, fm.transcript, fm.pose)
 
     frame_id = str(ULID())
     kf = app.keyframe_filter

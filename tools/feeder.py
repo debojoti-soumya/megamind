@@ -89,7 +89,8 @@ class AudioSender:
         self.chunk_s, self.rate = chunk_s, rate
         self.duration = len(pcm) / (2 * rate)
         self.next_t = 0.0
-        self.chunks = self.tokens = 0
+        self.chunks = 0
+        self.token_ids: set[str] = set()  # a chunk may continue (merge into) the last token
 
     def pump(self, video_t: float) -> None:
         while self.next_t + self.chunk_s <= min(video_t, self.duration):
@@ -118,7 +119,7 @@ class AudioSender:
             r.raise_for_status()
             body = r.json()
             self.chunks += 1
-            self.tokens += len(body.get("token_ids") or [])
+            self.token_ids.update(body.get("token_ids") or [])
             if body.get("transcript"):
                 print(f"\n[audio {t0:6.1f}s] {body['transcript']}")
         except Exception as exc:  # noqa: BLE001
@@ -213,7 +214,7 @@ def main() -> None:
             audio.flush()
     print()
     if audio is not None:
-        print(f"audio: {audio.chunks} chunks sent, {audio.tokens} transcript tokens")
+        print(f"audio: {audio.chunks} chunks sent, {len(audio.token_ids)} transcript tokens")
 
 
 if __name__ == "__main__":
