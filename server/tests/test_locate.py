@@ -107,12 +107,20 @@ def test_to_marker_normalizes_and_clamps():
         {"found": True},
         {"found": True, "image": 3, "box": [0, 0, 10, 10]},
         {"found": True, "box": [0, 0, 10, 10], "confidence": 0.2},
-        {"found": True, "box": [5, 5, 5, 9]},
+        {"found": True, "box": [5, 5, 5, 9], "confidence": 0.9},
+        {"found": True, "box": [0, 0, 10, 10]},
         {"found": True, "box": ["a", 0, 1, 1]},
     ],
 )
 def test_to_marker_rejects(out):
     assert _to_marker(out, [(_cit(), "dev1", 320, 240)], 0.5) is None
+
+
+def test_to_marker_needs_image_index_when_several_frames():
+    shown = [(_cit("now_a"), "dev1", 320, 240), (_cit("now_b"), "dev1", 320, 240)]
+    out = {"found": True, "box": [0, 0, 10, 10], "confidence": 0.9}
+    assert _to_marker(out, shown, 0.5) is None
+    assert _to_marker({**out, "image": 1}, shown, 0.5).token_id == "now_b"
 
 
 def test_candidates_prefer_live_then_newest():
@@ -183,7 +191,9 @@ async def test_openai_provider_is_the_default_and_returns_marker(client):
     app.state.agent = _fallback_agent(app)
     ts = await _post_burst(c, time.time() - 4.0)
     assert LocateSettings(_env_file=None).provider == "openai"
-    fake = ScriptedOpenAI([{"found": True, "image": 0, "label": "pen", "box": [160, 0, 320, 120]}, 500])
+    fake = ScriptedOpenAI(
+        [{"found": True, "image": 0, "label": "pen", "box": [160, 0, 320, 120], "confidence": 0.8}, 500]
+    )
     loc = build_locator(app.state, _settings(), LocateSettings(_env_file=None), client=fake.client())
     assert loc.provider == "openai" and loc.model == "gpt-4.1"
     app.state.locator = loc

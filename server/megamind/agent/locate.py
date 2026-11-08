@@ -209,9 +209,9 @@ def _to_marker(out, shown, min_confidence: float) -> Marker | None:
     if not isinstance(out, dict) or not out.get("found"):
         return None
     try:
-        idx = int(out.get("image", 0))
+        idx = int(out["image"] if len(shown) > 1 else out.get("image", 0))
         x0, y0, x1, y1 = (float(v) for v in out["box"])
-        conf = float(out.get("confidence", 1.0))
+        conf = float(out.get("confidence", 0.0))
     except (KeyError, TypeError, ValueError):
         return None
     if not 0 <= idx < len(shown) or conf < min_confidence:
