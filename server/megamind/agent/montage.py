@@ -448,13 +448,14 @@ async def build_clip(
     return ClipSpec(t, title, _clock(t.ts, zone), tuple(frames), step, "timelapse")
 
 
-async def candidates(st, query: str, t0: float | None, t1: float | None, device_id: str | None, n: int):
+async def candidates(
+    st, query: str, t0: float | None, t1: float | None, device_id: str | None, n: int, kinds=("frame", "transcript")
+):
     n = max(1, n)
     if query:
         res = await st.retriever.retrieve(query, k=n, time_from=t0, time_to=t1, device_id=device_id)
         toks = res.memory_tokens()
     else:
-        kinds = ("frame", "transcript")
         toks = await st.store.range(t0, t1, limit=RANGE_SCAN_LIMIT, device_id=device_id, kinds=kinds)
         if len(toks) >= RANGE_SCAN_LIMIT:  # `range` is oldest-first: sample the whole span, not just its start
             lo, hi = toks[0].ts, t1 if t1 is not None else time.time()
