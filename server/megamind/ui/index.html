@@ -228,7 +228,7 @@
       const devs = (await r.json()).devices || [];
       $('s_devices').replaceChildren(...devs.map(d => Object.assign(document.createElement('option'), { value: d.device_id, label: `${d.count} memories · ${ago(d.last_ts)}` })));
       if (pick && devs.length && !cfg.capture && !devs.some(d => d.device_id === cfg.device)) {
-        cfg.device = devs[0].device_id; saveCfg(); $('s_device').value = cfg.device;
+        cfg.ownDevice = cfg.device; cfg.device = cfg.pickedDevice = devs[0].device_id; saveCfg(); $('s_device').value = cfg.device;
       }
     } catch { /* older server without /v1/devices */ }
   }
@@ -239,6 +239,8 @@
     cfg.session = $('s_session').value.trim() || defaults.session;
     cfg.capture = $('s_capture').checked; cfg.fps = +$('s_fps').value || 1; cfg.width = +$('s_width').value || 960;
     cfg.autoplay = $('s_autoplay').checked; cfg.showtools = $('s_showtools').checked;
+    // capturing as an auto-picked device would file webcam frames under it (e.g. the headset): restore our own id
+    if (cfg.capture && cfg.device === cfg.pickedDevice && cfg.ownDevice) { cfg.device = cfg.ownDevice; delete cfg.pickedDevice; }
     saveCfg(); $('settings').classList.remove('show'); applyCapture(); pollHealth();
   };
   $('s_newsession').onclick = () => { $('s_session').value = crypto.randomUUID().replace(/-/g, ''); };
