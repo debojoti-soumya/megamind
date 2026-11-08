@@ -1,6 +1,8 @@
 """Embedding providers for memory tokens.
 
-Text: `OpenAITextEmbedder` (text-embedding-3-small, truncated to 1024-d per docs/api.md) | `MockTextEmbedder`.
+Text: `OpenAITextEmbedder` (text-embedding-3-small, truncated to 1024-d per docs/api.md) | `LocalTextEmbedder`
+(keyless, CPU: sentence-transformers bge-small-en-v1.5, 384-d, with bge's query instruction on `embed_query`)
+| `MockTextEmbedder`.
 Image: `OpenCLIPImageEmbedder` (open_clip SigLIP ViT-B/16 768-d default, or ViT-B/32 512-d; CPU; also the text
 tower for visual queries)
 | `MockImageEmbedder` | None.
@@ -9,7 +11,8 @@ tower for visual queries)
 after retries, timeouts): it falls back to a same-dim `MockTextEmbedder` vector for that call and sets
 `degraded` (e.g. "last error 401") for /v1/health, so frames are still stored and BM25/UCC search still work.
 
-Env: EMBED_PROVIDER=mock|openai  EMBED_MODEL=text-embedding-3-small  EMBED_DIM=1024  OPENAI_API_KEY
+Env: EMBED_PROVIDER=mock|openai|local  EMBED_MODEL=text-embedding-3-small  EMBED_DIM=1024  OPENAI_API_KEY
+     LOCAL_EMBED_MODEL=BAAI/bge-small-en-v1.5 (EMBED_PROVIDER=local; its own width, e.g. 384, so use a fresh LanceDB)
      IMAGE_EMBED_PROVIDER=none|mock|openclip  IMAGE_EMBED_MODEL=ViT-B-16-SigLIP  IMAGE_EMBED_PRETRAINED=webli
      (faster/smaller: IMAGE_EMBED_MODEL=ViT-B-32 IMAGE_EMBED_PRETRAINED=laion2b_s34b_b79k, 512-d)
 Measured on 8 CPU threads (960x720 JPEG): SigLIP 6.7 img/s, ViT-B-32 9.1 img/s (model load 4-6 s).
@@ -35,6 +38,7 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "ImageEmbedder",
+    "LocalTextEmbedder",
     "MockImageEmbedder",
     "MockTextEmbedder",
     "OpenAITextEmbedder",
@@ -43,10 +47,13 @@ __all__ = [
     "build_image_embedder",
     "build_text_embedder",
     "normalize",
+    "siglip_calibration",
 ]
 
 DEFAULT_TEXT_DIM = 1024
 OPENAI_MAX_CHARS = 8000
+DEFAULT_LOCAL_TEXT_MODEL = "BAAI/bge-small-en-v1.5"
+BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 DEFAULT_IMAGE_MODEL = "ViT-B-16-SigLIP"
 DEFAULT_IMAGE_PRETRAINED = "webli"
 
@@ -123,6 +130,51 @@ class OpenAITextEmbedder(TextEmbedder):
             break
         data = sorted(r.json()["data"], key=lambda d: d["index"])
         return [normalize(d["embedding"][: self.dim]) for d in data]
+
+
+class LocalTextEmbedder(TextEmbedder):
+    """Keyless CPU text embedder via sentence-transformers (default bge-small-en-v1.5, 384-d).
+
+    bge is asymmetric: stored text is embedded as-is, queries get `query_prefix` (`embed_query`). The prefix is
+    applied only to bge-family models unless given explicitly. Inference runs in a worker thread under a lock,
+    like `OpenCLIPImageEmbedder`. Ported from PR #54 (`LocalTextEmbedder`)."""
+
+    def __init__(
+        self,
+        model_name: str = DEFAULT_LOCAL_TEXT_MODEL,
+        *,
+        query_prefix: str | None = None,
+        threads: int | None = None,
+        model: Any = None,
+    ) -> None:
+        if model is None:
+            import torch
+            from sentence_transformers import SentenceTransformer
+
+            torch.set_num_threads(threads or max(1, os.cpu_count() or 1))
+            model = SentenceTransformer(model_name, device="cpu")
+        self._model = model
+        self.model = model_name
+        dim_of = getattr(model, "get_embedding_dimension", None) or model.get_sentence_embedding_dimension
+        self.dim = int(dim_of())
+        if query_prefix is None:
+            query_prefix = BGE_QUERY_PREFIX if "bge" in model_name.lower() else ""
+        self.query_prefix = query_prefix
+        self._lock = threading.Lock()
+
+    def _encode(self, texts: list[str]) -> list[list[float]]:
+        with self._lock:
+            vecs = self._model.encode([t or " " for t in texts], normalize_embeddings=True)
+        return [normalize([float(x) for x in v]) for v in vecs]
+
+    async def embed(self, text: str) -> list[float]:
+        return (await asyncio.to_thread(self._encode, [text]))[0]
+
+    async def embed_many(self, texts: list[str]) -> list[list[float]]:
+        return await asyncio.to_thread(self._encode, texts)
+
+    async def embed_query(self, text: str) -> list[float]:
+        return (await asyncio.to_thread(self._encode, [self.query_prefix + text]))[0]
 
 
 def _error_label(e: Exception) -> str:
@@ -211,6 +263,32 @@ class OpenCLIPImageEmbedder(ImageEmbedder):
         """Visual-mode query: callers should pass `"a photo of {phrase}"`."""
         return await asyncio.to_thread(self._text, text)
 
+    @property
+    def calibration(self) -> tuple[float, float] | None:
+        """SigLIP's (exp(logit_scale), logit_bias); None for CLIP-style models (no sigmoid bias)."""
+        return siglip_calibration(self.model)
+
+
+def _scalar(x: Any) -> float:
+    if hasattr(x, "detach"):
+        x = x.detach()
+    if hasattr(x, "item"):
+        x = x.item()
+    return float(x)
+
+
+def siglip_calibration(model: Any) -> tuple[float, float] | None:
+    """(scale, bias) with p(match) = sigmoid(scale * cos + bias), read from an open_clip model.
+
+    SigLIP is trained with exactly this sigmoid, so p is a usable match probability; CLIP models have a
+    `logit_scale` but no `logit_bias` and are left uncalibrated. Ported from PR #54.
+    """
+    bias = getattr(model, "logit_bias", None)
+    scale = getattr(model, "logit_scale", None)
+    if bias is None or scale is None:
+        return None
+    return math.exp(_scalar(scale)), _scalar(bias)
+
 
 # ---------------------------------------------------------------------- factories
 
@@ -225,6 +303,14 @@ def build_text_embedder(settings: Settings) -> TextEmbedder:
                 int(_setting(settings, "embed_dim", str(DEFAULT_TEXT_DIM))),
             )
         log.warning("EMBED_PROVIDER=openai but OPENAI_API_KEY is empty; using MockTextEmbedder")
+    elif provider == "local":
+        try:
+            return LocalTextEmbedder(_setting(settings, "local_embed_model", DEFAULT_LOCAL_TEXT_MODEL))
+        except ImportError:
+            log.warning(
+                "EMBED_PROVIDER=local but sentence-transformers/torch not installed "
+                "(pip install -e '.[local-embeddings]'); using MockTextEmbedder"
+            )
     elif provider != "mock":
         log.warning("unknown EMBED_PROVIDER=%s; using MockTextEmbedder", provider)
     return MockTextEmbedder()

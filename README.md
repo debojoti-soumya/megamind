@@ -39,9 +39,9 @@ Three streams of work:
 
 | # | Stream | Where | Status |
 |---|---|---|---|
-| 1 | **Capture → tokenize → store.** Passthrough Camera API → 1 fps JPEG → dHash dedupe → VLM (Gemma 4 31B) caption/OCR/entities → text + SigLIP embeddings → LanceDB | `headset/.../FrameUploader.cs`, `server/megamind/ingest`, `server/megamind/store` | filter + worker + in-memory store done; VLM enricher, embeddings, LanceDB are `TODO(stream-1)` |
+| 1 | **Capture → tokenize → store.** Passthrough Camera API → 1 fps JPEG → dHash dedupe → VLM (Gemma 4 31B) caption/OCR/entities → text + SigLIP embeddings → LanceDB | `headset/.../FrameUploader.cs`, `server/megamind/ingest`, `server/megamind/store` | filter, worker, VLM + keyless local enricher, embeddings, in-memory + LanceDB stores done |
 | 2 | **Retrieval tool + reader.** `recall_memory(query, time_from, time_to, k, mode)` → hybrid search (vector + BM25 + time filter, RRF) → Gemma 4 31B reads captions + thumbnails → evidence with citations → Claude | `server/megamind/agent/{tools,reader,claude_agent}.py` | done: Claude tool-use loop, Gemma 4 reader (6 s deadline, then caption-only), `server/tools/eval_agent.py` |
-| 3 | **AR chat.** World-locked panel, push-to-talk → STT, spoken reply via TTS, cited thumbnails | `headset/.../{ChatClient,ChatPanel}.cs`, `server/megamind/agent/{stt,tts}.py` | C# stubs written (untested on device); STT/TTS providers are `TODO(stream-3)` |
+| 3 | **AR chat.** World-locked panel, push-to-talk → STT, spoken reply via TTS, cited thumbnails | `headset/.../{ChatClient,ChatPanel,PanelAnchor,SettingsPanel}.cs`, `server/megamind/agent/{stt,tts}.py`, `server/megamind/ui` (browser prototype at `/ui`) | browser prototype works end-to-end; OpenAI/Deepgram STT + OpenAI/ElevenLabs TTS implemented; Quest 3 APK playtested (capture + PTT chat + cited thumbnails) with mock providers — see `headset/README.md` |
 
 Key decisions (details and rationale in the design doc §3): one Unity app does both capture
 and chat (Horizon OS suspends background apps); a memory token is a *record*, not a learned
@@ -55,6 +55,7 @@ docs/       design doc (LaTeX + PDF), api.md, prior-art.md, resources.md
 server/     FastAPI backend — ingest, memory store, agent (Python 3.11+)
 tools/      feeder.py (webcam/video → /v1/frames), ask.py (CLI chat)
 headset/    Unity project for Quest 3 — setup README + C# scripts
+headset-android/  optional native Quest 3 capture app (Kotlin; frames + ambient audio, background + offline queue)
 .github/    CI: ruff + pytest on server/
 ```
 
@@ -96,8 +97,11 @@ Gotchas:
 - **`--realtime` for video files.** Without it, the feeder sends frames as fast as it can decode them and stamps them
   all with the current time, so the keyframe filter (`FILTER_MIN_GAP_S=2`) drops ~90% as `too_soon` (shown in the feeder's `last=` field). The webcam
   (`--source 0`) is paced in real time and doesn't need it.
-- **Mock captions.** With no `READER_API_KEY` the enricher writes `mock caption for frame …`, so `q=keys` finds
-  nothing. Without `ANTHROPIC_API_KEY`, `ask.py` searches with your raw question. "what did I just see?" is all
+- **Mock captions.** The enricher (`ENRICH_PROVIDER=auto`) captions frames with the VLM when `READER_API_KEY` (or
+  `ENRICH_API_KEY` + `ENRICH_BASE_URL`) is set. Without a key it uses the keyless local enricher if an image embedder
+  is configured (`IMAGE_EMBED_PROVIDER=openclip`: SigLIP zero-shot scene label, plus Tesseract OCR with
+  `pip install -e ".[local-enrich]"` and `brew install tesseract`), and otherwise writes `mock caption for frame …`,
+  so `q=keys` finds nothing. Without `ANTHROPIC_API_KEY`, `ask.py` searches with your raw question. "what did I just see?" is all
   stop words to the planner, so against mock captions it can come back empty ("I don't have a memory of that").
   Search or ask `frame` for a reliable mock demo, or configure real keys (below) to get searchable captions.
 - **Persistence.** The default `STORE_BACKEND=memory` loses everything on restart. Set `STORE_BACKEND=lancedb` in
@@ -122,6 +126,10 @@ reader degrades to the captions + OCR of every hit. A turn with Claude is ~5–7
 OpenAI-compatible endpoint works by changing those two variables. Plan B if Sail is unavailable:
 self-host a VLM (e.g. Qwen2.5-VL-7B) on vLLM on Modal and point `READER_BASE_URL` at it.
 
+**Memory Theater.** Open `http://localhost:8000/xr` for a 3D/WebXR view of your memories (ask, replay cited
+moments, browse recent cards). On Quest 3 it runs in the browser in passthrough; see the
+[Quest 3 guide](docs/quest3-guide.md#8-memory-theater-xr-in-the-quest-browser).
+
 ### Headset
 
 See [`headset/README.md`](headset/README.md), and the [Quest 3 guide](docs/quest3-guide.md) for first-time
@@ -130,6 +138,11 @@ with developer mode, Unity 2022.3 LTS or Unity 6, Meta XR Core SDK v74+, and Met
 [Passthrough Camera API samples](https://github.com/oculus-samples/Unity-PassthroughCameraApiSamples).
 Build and run Meta's *unmodified* sample first; only then add our scripts.
 
+Optional, capture only: [`headset-android/`](headset-android/README.md) is a small native Kotlin app (no Unity) that
+streams passthrough frames to `/v1/frames` and ambient audio to `/v1/audio`, keeps capturing behind the Quest
+Browser (foreground service), and queues uploads on disk while offline. Its capture code is verified on a Quest 3
+(Horizon OS v209). The Unity app above remains the full experience (capture plus the AR chat panel).
+
 ## Development
 
 ```bash
@@ -137,6 +150,12 @@ cd server && source .venv/bin/activate
 ruff check . && ruff format --check .      # lint
 pytest -q                                  # tests (offline, mocks)
 ```
+
+Browser prototype of the AR panel (no headset needed): <http://localhost:8000/ui> — webcam as
+passthrough, hold **Space** to talk, cited thumbnails, TTS playback, status HUD, and an optional
+1 fps capture toggle (settings ⚙) so the whole loop runs on one laptop. Real STT/TTS need
+`OPENAI_API_KEY` (or Deepgram / ElevenLabs keys) in `server/.env`; without keys the mock
+providers are used.
 
 Rules:
 - Headset and server communicate **only** through `docs/api.md`. A contract change is one PR

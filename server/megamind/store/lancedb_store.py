@@ -6,7 +6,9 @@ Columns mirror `MemoryToken` (docs/api.md) plus two derived columns:
   - `kind`: "frame" for captured keyframes, "episode" for consolidation summaries
 Vector columns are nullable fixed-size lists; their dimension is taken from the first token
 that carries a vector (the mock embedder is 256-d, OpenAI/SigLIP 1024/768-d), or from the
-`text_dim` / `image_dim` constructor arguments.
+`text_dim` / `image_dim` constructor arguments. New tables store vectors as float16
+(`vector_dtype`, LANCEDB_VECTOR_DTYPE): half the bytes (1024+768 dims: 7.2 -> 3.6 KB/token) with the
+same nearest neighbours (ported from PR #54). An existing table keeps the dtype it was created with.
 
 All LanceDB calls are synchronous and run in a worker thread (`asyncio.to_thread`); writes
 are serialised with a lock. Rows written after an index was built are still searched
@@ -30,13 +32,14 @@ from lancedb.index import FTS
 from megamind.models import MemoryHit, MemoryToken, Pose, SearchMode
 from megamind.store.base import MemoryStore, Scored, VectorField
 from megamind.store.episodes import EpisodeTracker
-from megamind.store.rrf import MIN_SCORE, fuse_hits
+from megamind.store.rrf import MIN_SCORE, calibrated, fuse_hits
 
 log = logging.getLogger(__name__)
 
 TABLE_NAME = "memory_tokens"
 DEFAULT_TEXT_DIM = 1024
 DEFAULT_IMAGE_DIM = 768
+VECTOR_DTYPES = {"float16": pa.float16(), "float32": pa.float32()}
 
 _WORD = re.compile(r"[\w]+", re.UNICODE)
 _SCALAR_COLUMNS = [
@@ -74,8 +77,12 @@ class LanceDBStore(MemoryStore):
         vector_index_min_rows: int = 4096,
         fts_index_min_rows: int = 1,
         episodes: EpisodeTracker | None = None,
+        vector_dtype: str = "float16",
     ) -> None:
+        if vector_dtype not in VECTOR_DTYPES:
+            raise ValueError(f"vector_dtype must be one of {sorted(VECTOR_DTYPES)}, got {vector_dtype!r}")
         self.episodes = episodes
+        self.vector_dtype = vector_dtype
         self.path = Path(path)
         self.path.mkdir(parents=True, exist_ok=True)
         self._text_dim = text_dim
@@ -92,10 +99,13 @@ class LanceDBStore(MemoryStore):
             schema = self._table.schema
             self._text_dim = schema.field("text_vec").type.list_size
             self._image_dim = schema.field("image_vec").type.list_size
+            value_type = schema.field("text_vec").type.value_type
+            self.vector_dtype = next((n for n, t in VECTOR_DTYPES.items() if t == value_type), str(value_type))
 
     # ------------------------------------------------------------------ schema
 
     def _schema(self) -> pa.Schema:
+        vec_type = VECTOR_DTYPES[self.vector_dtype]
         pose = pa.struct(
             [
                 pa.field("x", pa.float64()),
@@ -118,8 +128,8 @@ class LanceDBStore(MemoryStore):
                 pa.field("thumb_path", pa.string(), nullable=False),
                 pa.field("frame_hash", pa.string(), nullable=False),
                 pa.field("episode_id", pa.string(), nullable=True),
-                pa.field("text_vec", pa.list_(pa.float32(), self._text_dim or DEFAULT_TEXT_DIM), nullable=True),
-                pa.field("image_vec", pa.list_(pa.float32(), self._image_dim or DEFAULT_IMAGE_DIM), nullable=True),
+                pa.field("text_vec", pa.list_(vec_type, self._text_dim or DEFAULT_TEXT_DIM), nullable=True),
+                pa.field("image_vec", pa.list_(vec_type, self._image_dim or DEFAULT_IMAGE_DIM), nullable=True),
             ]
         )
 
@@ -405,6 +415,7 @@ class LanceDBStore(MemoryStore):
             return []
         filters = {"time_from": time_from, "time_to": time_to, "device_id": device_id}
         n = max(k * 4, 48)
+        image_mult = None
         rankings: list[list[tuple[MemoryToken, float]]] = []
         if mode in ("semantic", "hybrid"):
             if query_text_vec is not None and len(query_text_vec) == self._text_dim:
@@ -412,8 +423,13 @@ class LanceDBStore(MemoryStore):
             rankings.append(await self.keyword_search(query_text, n, **filters))
         if mode in ("visual", "hybrid") and query_image_vec is not None and len(query_image_vec) == self._image_dim:
             rankings.append(await self.vector_search(query_image_vec, n, field="image_vec", **filters))
+            if mode == "hybrid":  # a lone image ranking (visual mode) keeps plain RRF scores
+                image_mult = calibrated(self.image_calibration)
 
-        return fuse_hits(rankings, k)
+        if image_mult is None:
+            return fuse_hits(rankings, k)
+        # the image ranking is always last; its hits are scaled by the SigLIP match probability
+        return fuse_hits(rankings, k, multipliers=[None] * (len(rankings) - 1) + [image_mult])
 
     # ------------------------------------------------------------------ deletes
 

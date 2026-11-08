@@ -1,0 +1,46 @@
+{
+ "features": [
+  {
+   "name": "image"
+  },
+  {
+   "name": "caption"
+  }
+ ],
+ "rows": [
+  {
+   "row_idx": 0,
+   "row": {
+    "image": {
+     "src": "https://datasets-server.huggingface.co/assets/x/0.jpg",
+     "height": 375,
+     "width": 500
+    },
+    "caption": [
+     "A dog runs on the beach.",
+     "A brown dog running by the sea.",
+     "A dog plays in the sand."
+    ],
+    "filename": "1000092795.jpg"
+   }
+  },
+  {
+   "row_idx": 1,
+   "row": {
+    "image": {
+     "src": "https://datasets-server.huggingface.co/assets/x/1.jpg",
+     "height": 333,
+     "width": 500
+    },
+    "caption": [
+     "Two children ride bicycles.",
+     "Kids cycling down a street.",
+     "Two young boys on bikes."
+    ],
+    "filename": "10002456.jpg"
+   }
+  }
+ ],
+ "num_rows_total": 1000,
+ "num_rows_per_page": 100
+}

@@ -22,6 +22,9 @@ class FrameMeta(BaseModel):
     device_id: str
     ts: float
     pose: Pose | None = None
+    # text heard around this frame (e.g. subtitles / external ASR); stored as a kind="transcript" token, never
+    # attached to the frame and never changes the keep decision. "" / null = none.
+    transcript: str | None = None
 
 
 class FrameAccepted(BaseModel):
@@ -100,7 +103,7 @@ class Citation(BaseModel):
     id: str
     ts: float
     caption: str
-    thumb_url: str
+    thumb_url: str  # /v1/thumbs/{id}.jpg; /v1/live/{id}.jpg for live NOW frames (id "now_..."); "" = no image
     replay_url: str | None = None  # /v1/replay.mp4 clip around ts; null when no frames are buffered
 
 
@@ -129,6 +132,34 @@ class ChatResponse(BaseModel):
     audio_url: str | None = None
     cited: list[Citation] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
+
+
+class MontageRequest(BaseModel):
+    """`POST /v1/montage`: a query, a time range, or both (time bounds: unix seconds or ISO-8601; "" = unset)."""
+
+    device_id: str | None = None
+    query: str | None = None
+    time_from: float | str | None = None
+    time_to: float | str | None = None
+    max_clips: int | None = Field(None, ge=0, le=24)  # None/0 = MONTAGE_MAX_CLIPS
+
+
+class MontageClip(BaseModel):
+    token_id: str
+    ts: float
+    title: str
+    duration_s: float
+    source: Literal["replay", "timelapse"]  # buffered frames (#58) or a ~1 fps run of stored keyframes
+    thumb_url: str = ""
+
+
+class MontageResponse(BaseModel):
+    id: str
+    url: str  # /v1/montages/{id}.mp4
+    title: str
+    narration: str = ""
+    planner: Literal["claude", "offline"] = "offline"
+    clips: list[MontageClip] = Field(default_factory=list)
 
 
 class HealthResponse(BaseModel):

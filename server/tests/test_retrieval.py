@@ -4,7 +4,7 @@ import pytest
 
 from megamind.ingest.enrich import ImageEmbedder, MockTextEmbedder
 from megamind.models import MemoryToken
-from megamind.retrieval import HybridConfig, HybridRetriever
+from megamind.retrieval import HybridConfig, HybridRetriever, Weights
 from megamind.retrieval.adapter import StoreAdapter, bm25_scores, cosine, token_text, tokenize
 from megamind.store.memory_store import InMemoryStore
 
@@ -396,3 +396,169 @@ async def test_contentless_explicit_window_near_now_falls_back_to_latest_frames(
         "what did I see?", k=1, time_from=now.timestamp() - 300, device_id="dev", now=now
     )
     assert r.widened and [x.token.id for x in r.tokens] == ["r3"]
+
+
+# ---------------------------------------------------------------- calibrated image fusion (port of PR #54)
+
+SIGLIP_CAL = (117.3, -12.9)  # exp(logit_scale), logit_bias of ViT-B-16-SigLIP/webli
+
+
+class _AxisImageEmbedder(ImageEmbedder):
+    """Every query looks for 'visual axis 0'; image vectors pick their cosine to it directly."""
+
+    dim = 3
+
+    def __init__(self, calibration=None) -> None:
+        self._cal = calibration
+
+    async def embed_image(self, jpeg: bytes) -> list[float]:
+        return [1.0, 0.0, 0.0]
+
+    async def embed_text(self, text: str) -> list[float]:
+        return [1.0, 0.0, 0.0]
+
+    @property
+    def calibration(self):
+        return self._cal
+
+
+def _img(cos: float) -> list[float]:
+    """Unit vector with cosine `cos` to [1, 0, 0]."""
+    return [cos, (1 - cos * cos) ** 0.5, 0.0]
+
+
+_IMAGE_HEAVY = Weights(text=1.0, bm25=1.0, image=3.0, recency=0.0)
+_ALL_TYPES = ("locate_object", "read_text", "activity", "people", "generic")
+
+
+async def _sign_store(calibration=None) -> InMemoryStore:
+    st = InMemoryStore()
+    st.image_calibration = calibration
+    emb = MockTextEmbedder()
+    rows = [
+        ("sign", "a sign on the wall", "PROJECT FALCON", _img(0.0)),  # exact text, no visual match
+        ("photo", "a cafe table with cups", "", _img(0.06)),  # nearest image, but a poor match
+        ("photo2", "a window onto the street", "", _img(0.04)),
+    ]
+    for i, (tid, cap, ocr, iv) in enumerate(rows):
+        await st.add(
+            MemoryToken(
+                id=tid,
+                device_id="dev",
+                ts=T0 + i * 600,
+                caption=cap,
+                ocr_text=ocr,
+                thumb_path=f"/tmp/{tid}.jpg",
+                frame_hash=f"{i:016x}",
+                text_vec=await emb.embed(f"{cap} {ocr}"),
+                image_vec=iv,
+            )
+        )
+    return st
+
+
+def _image_retr(st) -> HybridRetriever:
+    cfg = HybridConfig(weights_by_type={t: _IMAGE_HEAVY for t in _ALL_TYPES})
+    return HybridRetriever(st, MockTextEmbedder(), _AxisImageEmbedder(), tz="UTC", config=cfg)
+
+
+async def test_weak_image_match_no_longer_outranks_exact_text_hit():
+    q = "where did I see the falcon"
+    plain = await _image_retr(await _sign_store(None)).retrieve(q, k=3, mode="hybrid", now=NOW)
+    assert plain.ranked[0].token.id == "photo"  # uncalibrated: a 0.06-cosine photo gets full rank credit
+    cal = await _image_retr(await _sign_store(SIGLIP_CAL)).retrieve(q, k=3, mode="hybrid", now=NOW)
+    assert cal.ranked[0].token.id == "sign"
+
+
+async def test_calibration_leaves_visual_mode_order_unchanged():
+    q = "where did I see the falcon"
+    plain = await _image_retr(await _sign_store(None)).retrieve(q, k=3, mode="visual", now=NOW)
+    cal = await _image_retr(await _sign_store(SIGLIP_CAL)).retrieve(q, k=3, mode="visual", now=NOW)
+    assert [(r.token.id, r.score) for r in plain.ranked] == [(r.token.id, r.score) for r in cal.ranked]
+    assert plain.ranked[0].token.id == "photo"
+
+
+async def _stream_with_images(calibration) -> InMemoryStore:
+    st, toks = await _store()
+    for i, t in enumerate(toks):
+        t.image_vec = _img(0.1 + 0.05 * i)
+    st.image_calibration = calibration
+    return st
+
+
+@pytest.mark.parametrize("q", ["where are my keys", "the people at the table", "coffee machine"])
+async def test_no_calibration_keeps_todays_hybrid_scores(q):
+    """Regression guard: calibration=None is the old formula, and a multiplier of exactly 1 changes nothing."""
+    r = lambda st: HybridRetriever(st, MockTextEmbedder(), _AxisImageEmbedder(), tz="UTC")  # noqa: E731
+    base = await r(await _stream_with_images(None)).retrieve(q, k=6, mode="hybrid", now=NOW)
+    ones = await r(await _stream_with_images((0.0, 100.0))).retrieve(q, k=6, mode="hybrid", now=NOW)
+    assert base.ranked and [(x.token.id, x.score) for x in base.ranked] == [(x.token.id, x.score) for x in ones.ranked]
+    assert any("image" in x.reasons for x in base.ranked)
+
+
+# ------------------------------------------------------------------ cross-kind speech <-> frame linking
+
+
+async def _speech_store() -> InMemoryStore:
+    st = InMemoryStore()
+    emb = MockTextEmbedder()
+    base = NOW.timestamp() - 1800
+    rows = [
+        ("f1", base, "frame", "Robot arm bolted to a lab bench, cables everywhere."),
+        ("f2", base + 40, "frame", "Close-up of a soldering iron on a workbench."),
+        ("s1", base + 6, "transcript", 'Speech heard nearby: "hi I am Priya from the robotics team"'),
+        ("f3", base + 600, "frame", "A whiteboard covered in a sprint plan."),
+        ("s2", base + 590, "transcript", 'Speech heard nearby: "standup moves to nine thirty"'),
+    ]
+    for id_, ts, kind, cap in rows:
+        await st.add(
+            MemoryToken(
+                id=id_,
+                device_id="dev",
+                ts=ts,
+                caption=cap,
+                kind=kind,
+                thumb_path="" if kind == "transcript" else f"/tmp/{id_}.jpg",
+                frame_hash="" if kind == "transcript" else f"{abs(hash(id_)) % (1 << 64):016x}",
+                text_vec=await emb.embed(cap),
+            )
+        )
+    return st
+
+
+async def test_transcript_hit_brings_nearest_frame_as_context():
+    r = HybridRetriever(await _speech_store(), MockTextEmbedder(), tz="UTC")
+    res = await r.retrieve("who is Priya", k=6, now=NOW)
+    assert res.ranked[0].token.id == "s1"
+    linked = [x for x in res.tokens if x.reasons == ["linked"]]
+    assert [x.token.id for x in linked] == ["f1"] and linked[0].is_context  # 6 s away; f2 (34 s) is out of range
+
+
+async def test_frame_hit_brings_overlapping_transcript():
+    r = HybridRetriever(await _speech_store(), MockTextEmbedder(), tz="UTC")
+    res = await r.retrieve("whiteboard sprint plan", k=6, now=NOW)
+    assert res.ranked[0].token.id == "f3"
+    assert "s2" in {x.token.id for x in res.tokens if x.reasons == ["linked"]}
+
+
+async def test_speech_link_disabled():
+    r = HybridRetriever(await _speech_store(), MockTextEmbedder(), tz="UTC", config=HybridConfig(speech_link_s=0))
+    res = await r.retrieve("who is Priya", k=6, now=NOW)
+    assert res.ranked[0].token.id == "s1"
+    assert not [x for x in res.tokens if x.reasons == ["linked"]]
+
+
+async def test_speech_link_stays_inside_explicit_window():
+    st = await _speech_store()
+    base = NOW.timestamp() - 1800
+    r = HybridRetriever(st, MockTextEmbedder(), tz="UTC")
+    res = await r.retrieve("who is Priya", k=6, now=NOW, time_from=base + 3, time_to=base + 100)
+    assert "f1" not in {x.token.id for x in res.tokens}  # 3 s before the window opens
+
+
+def test_build_retriever_reads_speech_link_setting():
+    from megamind.config import Settings
+    from megamind.retrieval import build_retriever
+
+    r, _ = build_retriever(Settings(speech_link_s=0, _env_file=None), InMemoryStore(), MockTextEmbedder())
+    assert r.cfg.speech_link_s == 0

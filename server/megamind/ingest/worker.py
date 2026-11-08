@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -120,7 +121,9 @@ class EnrichmentWorker:
         token.caption, token.ocr_text, token.entities = e.caption, e.ocr_text, e.entities
         token.text_vec = await self.text_embedder.embed(f"{e.caption}\n{e.ocr_text}\n{' '.join(e.entities)}")
         if self.image_embedder is not None:
-            token.image_vec = await self.image_embedder.embed_image(jpeg)
+            # reuse the vector an enricher already computed from this JPEG with this very embedder (LocalEnricher)
+            reuse = e.image_vec is not None and e.image_vec_from is self.image_embedder
+            token.image_vec = e.image_vec if reuse else await self.image_embedder.embed_image(jpeg)
         async with self._add_lock:
             if token.id in self._discarded:
                 return
@@ -129,8 +132,11 @@ class EnrichmentWorker:
 
 async def purge_all(state: Any, device_id: str | None = None, *, since_ts: float | None = None) -> int:
     """Purge for `DELETE /v1/memories`: store rows + thumbnails, queued/in-flight frames, and the
-    ingest dedupe state (pending hashes, keyframe-filter history) that still references them."""
-    n = await state.worker.purge(device_id, since_ts=since_ts)
+    ingest dedupe state (pending hashes, keyframe-filter history) that still references them. Transcript writes
+    are held off for the duration and their merge target is dropped, so no merge re-inserts a purged token."""
+    sink = getattr(state, "transcripts", None)
+    async with sink.purging(device_id) if sink is not None else contextlib.nullcontext():
+        n = await state.worker.purge(device_id, since_ts=since_ts)
     pending: dict[str, list[tuple[float, str]]] = getattr(state, "pending_hashes", {})
     for dev in [d for d in pending if device_id is None or d == device_id]:
         pending[dev] = [(t, h) for t, h in pending[dev] if since_ts is not None and t < since_ts]

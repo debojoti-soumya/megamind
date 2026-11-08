@@ -17,6 +17,7 @@ from megamind.retrieval.adapter import StoreAdapter
 from megamind.retrieval.base import RetrievalResult, RetrievedToken, RetrieveMode, Retriever
 from megamind.retrieval.planner import QueryPlan, Weights, plan_query
 from megamind.store.base import MemoryStore
+from megamind.store.rrf import image_conf
 
 
 @dataclass
@@ -38,6 +39,9 @@ class HybridConfig:
     recent_lookback_s: tuple[float, ...] = (1800, 6 * 3600, 48 * 3600)
     recent_fallback_s: float = 3600  # an empty parsed window ending this close to now falls back to "recent"
     weights_by_type: dict[str, Weights] | None = None  # override planner weights (used by the eval harness)
+    # cross-kind context: a top transcript hit brings the nearest frame within +-speech_link_s (the pixels of what
+    # was said), a top frame hit the nearest transcript token (the words around what was seen); 0 = off
+    speech_link_s: float = 15.0
 
 
 class HybridRetriever(Retriever):
@@ -129,41 +133,51 @@ class HybridRetriever(Retriever):
         device_id: str | None,
         ref_ts: float,
     ) -> list[tuple[str, float, list[str]]]:
-        """Weighted RRF over the ranked lists selected by `mode`, plus a recency prior."""
+        """Weighted RRF over the ranked lists selected by `mode`, plus a recency prior.
+
+        With `store.image_calibration` set (SigLIP, SEARCH_CALIBRATE_IMAGE=true) each image hit contributes
+        `weight * sigmoid(scale * cos + bias) / (c + rank + 1)`, so a weak nearest image can't outrank exact
+        text/OCR hits (ported from PR #54). Hybrid mode only: visual mode ranks the image list alone, unchanged."""
         flt = dict(time_from=time_from, time_to=time_to, device_id=device_id)
-        lists: list[tuple[str, float, list[str]]] = []  # (name, weight, ranked ids)
+        # (name, weight, ranked ids, optional per-hit multipliers aligned with the ids)
+        lists: list[tuple[str, float, list[str], list[float] | None]] = []
         n = self.cfg.pool
 
         if mode in ("semantic", "hybrid"):
             kw = await self.adapter.keyword_search(text, n, **flt)
-            lists.append(("bm25", w.bm25, [i for i, _ in kw]))
+            lists.append(("bm25", w.bm25, [i for i, _ in kw], None))
             if self.text_embedder is not None:
-                qv = await self.text_embedder.embed(text)
+                qv = await self.text_embedder.embed_query(text)
                 tv = await self.adapter.vector_search(qv, n, "text_vec", **flt)
-                lists.append(("text", w.text, [i for i, _ in tv]))
+                lists.append(("text", w.text, [i for i, _ in tv], None))
             if w.ocr_bm25:
                 ocr = await self.adapter.ocr_search(text, n, **flt)
-                lists.append(("ocr_bm25", w.ocr_bm25, [i for i, _ in ocr]))
+                lists.append(("ocr_bm25", w.ocr_bm25, [i for i, _ in ocr], None))
         if mode in ("visual", "hybrid") and self.image_embedder is not None:
             iv_q = await self.image_embedder.embed_text(text)
             iv = await self.adapter.vector_search(iv_q, n, "image_vec", **flt)
             weight = 1.0 if mode == "visual" else w.image
-            lists.append(("image", weight, [i for i, _ in iv]))
+            # calibrate only when the image list is fused against text lists: in visual mode it is the only
+            # list, and shrinking it would just hand the ranking to the additive recency/OCR priors
+            cal = getattr(self.adapter.store, "image_calibration", None) if mode == "hybrid" else None
+            mults = [image_conf(cos, *cal) for _, cos in iv] if cal is not None else None
+            lists.append(("image", weight, [i for i, _ in iv], mults))
         if mode == "visual" and self.image_embedder is None:
             # no image tower available: degrade gracefully to the text lists
             kw = await self.adapter.keyword_search(text, n, **flt)
-            lists.append(("bm25", w.bm25, [i for i, _ in kw]))
+            lists.append(("bm25", w.bm25, [i for i, _ in kw], None))
             if self.text_embedder is not None:
-                qv = await self.text_embedder.embed(text)
+                qv = await self.text_embedder.embed_query(text)
                 tv = await self.adapter.vector_search(qv, n, "text_vec", **flt)
-                lists.append(("text", w.text, [i for i, _ in tv]))
+                lists.append(("text", w.text, [i for i, _ in tv], None))
 
         scores: dict[str, float] = {}
         reasons: dict[str, list[str]] = {}
         c = self.cfg.rrf_c
-        for name, weight, ids in lists:
+        for name, weight, ids, mults in lists:
             for rank, i in enumerate(ids):
-                scores[i] = scores.get(i, 0.0) + weight / (c + rank + 1)
+                m = 1.0 if mults is None else mults[rank]
+                scores[i] = scores.get(i, 0.0) + weight * m / (c + rank + 1)
                 reasons.setdefault(i, []).append(name)
         if not scores:
             return []
@@ -223,6 +237,13 @@ class HybridRetriever(Retriever):
         for r in primary[: self.cfg.expand_top]:
             if len(chosen) >= k:
                 break
+            link = await self._linked(r.token, lo, hi)
+            if (
+                link is not None
+                and link.id not in chosen
+                and not any(self._same_frame(link, c.token) for c in chosen.values())
+            ):
+                chosen[link.id] = RetrievedToken(token=link, score=r.score * 0.5, reasons=["linked"], is_context=True)
             for nb in await self.adapter.neighbors(r.token.id, self.cfg.expand_before, self.cfg.expand_after):
                 if len(chosen) >= k:
                     break
@@ -238,6 +259,24 @@ class HybridRetriever(Retriever):
                 break
             chosen.setdefault(r.token.id, r)
         return list(chosen.values())
+
+    async def _linked(self, t: MemoryToken, lo: float | None, hi: float | None) -> MemoryToken | None:
+        """The other modality of the same moment: nearest enriched frame for a transcript token, nearest
+        transcript token for a frame, within +-speech_link_s on the same device (and inside [lo, hi])."""
+        span = self.cfg.speech_link_s
+        other = {"transcript": "frame", "frame": "transcript"}.get(t.kind)
+        if span <= 0 or other is None:
+            return None
+        a, b = t.ts - span, t.ts + span
+        if lo is not None:
+            a = max(a, lo)
+        if hi is not None:
+            b = min(b, hi)
+        if a > b:
+            return None
+        rows = await self.adapter.range(a, b, limit=200, device_id=t.device_id, kinds=(other,))
+        rows = [x for x in rows if x.caption and x.id != t.id]
+        return min(rows, key=lambda x: abs(x.ts - t.ts), default=None)
 
     async def _recent(self, k: int, device_id: str | None, now_ts: float) -> list[RetrievedToken]:
         """No content words and no time ("what did I just see?"): the device's latest k enriched frames, found by
