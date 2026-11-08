@@ -250,8 +250,11 @@ class Model3DResponse(BaseModel):
     box: list[float] | None = None  # object box in that photo (pixels x0, y0, x1, y1)
     detection_score: float = 0.0  # 0 = the detector didn't find it (the middle of the photo was used)
     candidates: int = 0
-    vertices: int = 0
+    vertices: int = 0  # mesh vertices, or points of a point cloud
     size_bytes: int = 0
+    status: str = "ready"  # building (multi-view runs in the background; the url answers 202) | ready | failed
+    detail: str = ""  # why it failed
+    views: int = 0  # photos the multi-view model is made from (0: one photo)
 
 
 class RecallResult(BaseModel):

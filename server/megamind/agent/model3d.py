@@ -36,14 +36,15 @@ from pathlib import Path
 import httpx
 import numpy as np
 from fastapi import APIRouter, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image, ImageOps
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from megamind.agent import multiview as mv
 from megamind.agent import smart_montage as smart
 from megamind.agent.collage import CollageError, find_photos
 from megamind.agent.montage import _load_image, _ts_param, _zone
-from megamind.models import Model3DRequest, Model3DResponse
+from megamind.models import MemoryToken, Model3DRequest, Model3DResponse
 
 log = logging.getLogger("megamind.model3d")
 router = APIRouter()
@@ -73,7 +74,8 @@ MODEL3D_PROMPT = """
 You also have make_3d_model, which turns an object from the wearer's photos into a 3D model shown on their
 panel. Use it when they ask for a 3D model, a 3D view, a hologram or a splat of something. Then say in one
 sentence what was modelled and when the photo is from; if it is only a relief (full_3d false), say it only
-shows the side they saw. If it fails, say why."""
+shows the side they saw; if it is still building (status "building"), say it will appear in the 3D view in a
+few minutes. If it fails, say why."""
 
 _WANTS = re.compile(r"\b(?:(?:3d|3-d|three[- ]d)\b(?!\s*-?print)|holograms?\b|(?:gaussian\s+)?splats?\b)", re.I)
 _FRAMING = re.compile(
@@ -125,6 +127,16 @@ class Model3DSettings(BaseSettings):
     fov_deg: float = 64.0  # horizontal field of view assumed for back-projection
     cache_dir: Path | None = None  # default <thumb_dir>/../models3d
     cache_max_files: int = 16
+    # multi-view: every stored photo from around the matching moments -> VGGT point cloud with a back (full 3D);
+    # used when VGGT is installed and enough photos show the object, else the one-photo relief
+    multiview: bool = True
+    vggt_weights: str = "facebook/VGGT-1B"  # HF repo or a local model.pt; CC-BY-NC-4.0
+    mv_window_s: float = 120.0  # photos within this many seconds of a matching moment
+    mv_candidates: int = 48  # photos checked by the detector
+    mv_min_frames: int = 5
+    mv_max_frames: int = 16  # into VGGT; ~4 min and ~10 GB RAM for 16 on CPU, seconds on a GPU
+    mv_conf_pct: float = 50.0  # drop the least confident half of the points
+    mv_max_points: int = 300_000
 
 
 # ---- geometry (pure numpy) ----
@@ -487,6 +499,12 @@ async def make_model3d(
     prompt = " ".join(smart._content_words(phrase)) or phrase
     gen = cache.generation
 
+    runner: mv.VGGTRunner = st.model3d_mv
+    if not remote and cfg.multiview and not missing and runner.missing() is None:
+        views = await gather_views(st, found.picks, cfg)
+        if len(views) >= cfg.mv_min_frames:
+            return await start_multiview(st, found, phrase, prompt, views)
+
     picks = found.picks[: max(1, cfg.frames_tried)]
     images, kept = [], []
     for p in picks:
@@ -553,6 +571,118 @@ async def make_model3d(
     return cache.meta[key]
 
 
+# ---- multi-view (VGGT) ----
+
+
+def _spread(items: list, n: int) -> list:
+    if len(items) <= n:
+        return list(items)
+    return [items[round(i * (len(items) - 1) / (n - 1))] for i in range(n)] if n > 1 else items[:1]
+
+
+async def gather_views(st, picks, cfg: Model3DSettings) -> list[MemoryToken]:
+    """Photos from around the best matching moments (the walk around the exhibit), oldest first, spread evenly
+    over time up to `mv_candidates`."""
+    seen: dict[str, MemoryToken] = {}
+    for p in sorted(picks, key=lambda p: -p.score)[:4]:
+        t = p.token
+        near = await st.store.range(
+            t.ts - cfg.mv_window_s, t.ts + cfg.mv_window_s, 1000, device_id=t.device_id, kinds=("frame",)
+        )
+        for tok in [t, *near]:
+            if tok.has_image:
+                seen.setdefault(tok.id, tok)
+    return _spread(sorted(seen.values(), key=lambda t: t.ts), cfg.mv_candidates)
+
+
+def reconstruct_views(
+    models: LocalModels, runner: mv.VGGTRunner, cfg: Model3DSettings, images: list[bytes], prompt: str
+) -> tuple[bytes, dict]:
+    """Photos -> the detector keeps those showing `prompt` -> VGGT -> cleaned point cloud PLY."""
+    found = [(i, *models.detect(_open(d), prompt)) for i, d in enumerate(images)]
+    shown = [(i, box) for i, box, score in found if score >= cfg.detector_threshold]
+    if len(shown) < cfg.mv_min_frames:
+        raise ValueError(
+            f"only {len(shown)} of {len(images)} photos clearly show it; walk around it to capture more angles"
+        )
+    use = _spread(shown, cfg.mv_max_frames)
+    arr, masks = mv.prepare([images[i] for i, _ in use], [box for _, box in use])
+    pts, conf = runner.run(arr)
+    rgb = (arr.transpose(0, 2, 3, 1) * 255).round().astype(np.uint8)
+    q, c, info = mv.clean_points(pts, conf, rgb, masks, conf_pct=cfg.mv_conf_pct, max_points=cfg.mv_max_points)
+    info.update(views=len(use), detected=len(shown), candidates=len(images))
+    return mv.to_points_ply(q, c), info
+
+
+async def start_multiview(st, found, phrase: str, prompt: str, views: list[MemoryToken]) -> Model3DResponse:
+    """Starts (or joins) the background reconstruction; the model URL answers 202 until it's ready."""
+    cache: Model3DCache = st.model3d_cache
+    cfg: Model3DSettings = st.model3d_settings
+    tag = ("mv1", cfg.vggt_weights, prompt, cfg.mv_max_frames, cfg.mv_conf_pct, [t.id for t in views])
+    key = hashlib.sha256(repr(tag).encode()).hexdigest()[:20]
+    have = cache.meta.get(key)
+    if have is not None and (have.status == "building" or (have.status == "ready" and cache.find(key))):
+        return have
+    best = max(found.picks, key=lambda p: p.score)
+    zone = _zone(st.settings.wearer_tz)
+    when = datetime.fromtimestamp(views[0].ts, zone).strftime("%A at %-I:%M %p")
+    said = smart.spoken(phrase)
+    meta = Model3DResponse(
+        id=key,
+        url=f"/v1/models3d/{key}.ply",
+        viewer_url=f"/ui/3d?m={key}&f=ply&k=points",
+        format="ply",
+        kind="points",
+        full_3d=True,
+        backend="vggt",
+        status="building",
+        title=found.title,
+        narration=(
+            f"I'm building {said} in 3D from {len(views)} photos you took {when}. It takes a few minutes; "
+            "the 3D view loads it when it's ready."
+        ),
+        subject=phrase,
+        verified=best.verified,
+        token_id=best.token.id,
+        ts=best.token.ts,
+        thumb_url=best.token.thumb_url,
+        candidates=len(found.candidates),
+        views=len(views),
+    )
+    cache.meta[key] = meta
+    gen = cache.generation
+
+    async def job() -> None:
+        try:
+            images = [d for t in views if (d := await _load_image(st, t))]
+            data, info = await asyncio.to_thread(
+                reconstruct_views, st.model3d_models, st.model3d_mv, cfg, images, prompt
+            )
+            if cache.generation != gen:
+                raise ValueError("memories were deleted while the model was being made; try again")
+            cache.put(key, "ply", data)
+            cache.meta[key] = meta.model_copy(
+                update={
+                    "status": "ready",
+                    "narration": f"Here's {said} in 3D, from {info['views']} photos you took {when}.",
+                    "views": info["views"],
+                    "vertices": info["points"],
+                    "size_bytes": len(data),
+                }
+            )
+            log.info("model3d %s: %r -> points (%s)", key, phrase, info)
+        except Exception as e:  # noqa: BLE001 - reported to the viewer instead of a lost task
+            log.warning("model3d %s: multi-view failed: %s", key, e)
+            cache.meta[key] = meta.model_copy(
+                update={"status": "failed", "detail": f"I couldn't model {said} in 3D: {e}"}
+            )
+        finally:
+            st.model3d_jobs.pop(key, None)
+
+    st.model3d_jobs[key] = asyncio.create_task(job())
+    return meta
+
+
 # ---- HTTP ----
 
 
@@ -570,6 +700,13 @@ async def get_model3d(request: Request, model_id: str, fmt: str):
     cache: Model3DCache | None = getattr(request.app.state, "model3d_cache", None)
     if cache is None or fmt not in _MEDIA or not _ID_RE.fullmatch(model_id):
         raise HTTPException(404)
+    m = cache.meta.get(model_id)
+    if m is not None and m.status == "building":
+        return JSONResponse(
+            {"status": "building", "detail": m.narration}, status_code=202, headers={"Cache-Control": "no-store"}
+        )
+    if m is not None and m.status == "failed":
+        raise HTTPException(422, m.detail)
     p = cache.dir / f"{model_id}.{fmt}"
     if not p.is_file():
         raise HTTPException(404, "unknown or expired 3D model; POST /v1/model3d again")
@@ -583,6 +720,8 @@ def install(app: FastAPI, settings, model3d_settings: Model3DSettings | None = N
     st.model3d_settings = cfg
     st.model3d_cache = None
     st.model3d_models = LocalModels(cfg)
+    st.model3d_mv = mv.VGGTRunner(cfg.vggt_weights)
+    st.model3d_jobs = {}
     if cfg.enabled:
         st.model3d_cache = Model3DCache(
             cfg.cache_dir or Path(settings.thumb_dir).parent / "models3d", cfg.cache_max_files

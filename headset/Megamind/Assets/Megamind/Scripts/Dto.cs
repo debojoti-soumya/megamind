@@ -58,6 +58,8 @@ namespace Megamind
         public string format;      // glb | ply
         public string kind;        // mesh | splat | points
         public bool full_3d;       // false: a relief of the side the camera saw
+        public string status;      // building (multi-view, a few minutes; the viewer waits) | ready | failed
+        public int views;          // photos a multi-view model is made from
         public string title;
         public string narration;
         public string subject;

@@ -151,6 +151,7 @@ def app3d(tmp_path, monkeypatch):
 
     monkeypatch.setattr(model3d, "find_photos", fake_find)
     monkeypatch.setattr(model3d, "LocalModels", FakeModels)
+    monkeypatch.setattr(model3d.mv.VGGTRunner, "missing", staticmethod(lambda: "no vggt"))
     from fastapi import FastAPI
 
     app = FastAPI()
@@ -217,3 +218,160 @@ def test_model3d_remote_backend(app3d, monkeypatch):
     body = TestClient(app3d).post("/v1/model3d", json={"query": "3d model of my mug"}).json()
     assert body["kind"] == "splat" and body["full_3d"] is True and body["backend"] == "remote"
     assert seen["auth"] == "Bearer tok" and b'name="mask"' in seen["body"] and b'name="prompt"' in seen["body"]
+
+
+# ---- multi-view (VGGT) ----
+
+
+def _scene(n=6, h=28, w=40, seed=0):
+    """Per-pixel world points of a table (top half of each photo) with a box on it (bottom half)."""
+    rng = np.random.default_rng(seed)
+    pts = np.zeros((n, h, w, 3), np.float32)
+    v, u = np.mgrid[0:h, 0:w]
+    for i in range(n):
+        table = v < h // 2
+        pts[i, ..., 0] = np.where(table, u / w * 2 - 1, (u / w - 0.5) * 0.4)
+        pts[i, ..., 2] = np.where(table, v / h * 2 - 1, (i / n - 0.5) * 0.3)
+        pts[i, ..., 1] = np.where(table, 0.0, -(0.1 + (v / h - 0.5) * 0.6))  # VGGT: y down
+    pts += rng.normal(0, 1e-4, pts.shape).astype(np.float32)
+    rgb = np.zeros((n, h, w, 3), np.uint8)
+    rgb[..., 1] = np.where(v >= h // 2, 200, 50)[None]
+    return pts, np.ones((n, h, w), np.float32), rgb
+
+
+def test_clean_points_drops_the_table_and_stands_the_object_up():
+    from megamind.agent.multiview import clean_points
+
+    pts, conf, rgb = _scene()
+    q, c, info = clean_points(pts, conf, rgb)
+    assert info["plane_removed"] and (c[:, 1] == 200).mean() > 0.95  # the box's points, not the table's
+    assert q[:, 1].min() > 0.05 and 0.3 < q[:, 1].max() < 0.45  # y up, standing on the table plane
+    assert abs(np.median(q[:, 0])) < 1e-3 and abs(np.median(q[:, 2])) < 1e-3
+
+
+def test_clean_points_box_masks_and_too_few_points():
+    from megamind.agent.multiview import clean_points
+
+    pts, conf, rgb = _scene()
+    with pytest.raises(ValueError):
+        clean_points(pts, conf, rgb, np.zeros(conf.shape, bool))
+
+
+def test_prepare_maps_boxes_like_vggt_crop():
+    import io
+
+    from PIL import Image
+
+    from megamind.agent.multiview import SIDE, frame_size, prepare
+
+    buf = io.BytesIO()
+    Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="JPEG")
+    arr, masks = prepare([buf.getvalue()] * 2, [[200.0, 150.0, 600.0, 450.0], None])
+    nh, top, ch = frame_size(800, 600)
+    assert arr.shape == (2, 3, ch, SIDE) and ch % 14 == 0 and arr[0, 0].mean() > 0.9
+    assert masks[1].all() and 0.2 < masks[0].mean() < 0.45 and masks[0][ch // 2, SIDE // 2]
+
+
+def test_points_ply_roundtrip():
+    from megamind.agent.multiview import ply_vertex_count, to_points_ply
+
+    data = to_points_ply(np.ones((7, 3), np.float32), np.full((7, 3), 9, np.uint8))
+    head, body = data.split(b"end_header\n", 1)
+    assert b"binary_little_endian" in head and b"property uchar red" in head and len(body) == 7 * 15
+    assert ply_vertex_count(data) == 7
+
+
+class FakeRunner:
+    runs: list = []
+
+    @staticmethod
+    def missing():
+        return None
+
+    def run(self, images):
+        FakeRunner.runs.append(images.shape)
+        n, _, h, w = images.shape
+        pts, conf, _ = _scene(n, h, w)
+        return pts, conf
+
+
+def test_model3d_multiview_builds_in_the_background(app3d, tmp_path):
+    import io
+    import time
+
+    from PIL import Image
+
+    from megamind.models import MemoryToken
+
+    near = []
+    for i in range(7):
+        p = tmp_path / f"mv{i}.jpg"
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 48), (30 * i, 60, 30)).save(buf, format="JPEG")
+        p.write_bytes(buf.getvalue())
+        near.append(
+            MemoryToken(
+                id=f"mv{i}",
+                device_id="d",
+                ts=1731000000.0 + 5 * i,
+                caption="",
+                thumb_path=str(p),
+                frame_hash=f"{i:016x}",
+            )
+        )
+
+    class Store:
+        async def range(self, t0, t1, limit=100, *, device_id=None, kinds=None):
+            return [t for t in near if t0 <= t.ts <= t1]
+
+    app3d.state.store = Store()
+    app3d.state.model3d_mv = FakeRunner()
+    FakeRunner.runs = []
+    with TestClient(app3d) as c:
+        body = c.post("/v1/model3d", json={"query": "make a 3D model of my mug"}).json()
+        assert body["status"] == "building" and body["kind"] == "points" and body["full_3d"] is True
+        assert body["viewer_url"].endswith("&f=ply&k=points") and body["views"] == 9  # 7 nearby + the 2 found
+        assert "few minutes" in body["narration"]
+        for _ in range(100):
+            r = c.get(body["url"])
+            if r.status_code != 202:
+                break
+            time.sleep(0.05)
+        assert r.status_code == 200, r.text
+        assert r.content.startswith(b"ply\nformat binary_little_endian") and len(FakeRunner.runs) == 1
+        done = c.post("/v1/model3d", json={"query": "make a 3D model of my mug"}).json()
+        assert done["id"] == body["id"] and done["status"] == "ready" and done["vertices"] > 0
+        assert len(FakeRunner.runs) == 1  # cached
+
+
+def test_model3d_multiview_failure_is_reported(app3d, tmp_path):
+    import time
+
+    from megamind.models import MemoryToken
+
+    near = [
+        MemoryToken(
+            id=f"x{i}",
+            device_id="d",
+            ts=1731000000.0 + i,
+            caption="",
+            thumb_path=str(tmp_path / "0.jpg"),
+            frame_hash=f"{i:016x}",
+        )
+        for i in range(6)
+    ]  # 80x60 photos: the fake detector never sees the mug in them
+
+    class Store:
+        async def range(self, t0, t1, limit=100, *, device_id=None, kinds=None):
+            return near
+
+    app3d.state.store = Store()
+    app3d.state.model3d_mv = FakeRunner()
+    with TestClient(app3d) as c:
+        body = c.post("/v1/model3d", json={"query": "3d model of my mug"}).json()
+        for _ in range(100):
+            r = c.get(body["url"])
+            if r.status_code != 202:
+                break
+            time.sleep(0.05)
+        assert r.status_code == 422 and "photos clearly show it" in r.json()["detail"]

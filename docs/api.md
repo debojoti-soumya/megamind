@@ -455,26 +455,42 @@ Also the chat tool `make_3d_model` ("make a 3D model of my mug"; `ChatResponse.m
 - `MODEL3D_BACKEND=remote`: `POST MODEL3D_REMOTE_URL` multipart `image` (jpeg), `mask` (png, white = object; sent
   when the local models are installed) and `prompt`, `Authorization: Bearer MODEL3D_REMOTE_TOKEN`; it answers with a
   binary glTF or a .ply (splat when it has `f_dc_0`, else points), e.g. SAM 3D Objects on a GPU. `full_3d` true.
+- Multi-view (default when VGGT is installed: `pip install git+https://github.com/facebookresearch/vggt`; local
+  backend only, `MODEL3D_MULTIVIEW=false` to turn off): every stored photo within `MODEL3D_MV_WINDOW_S` (120 s) of
+  the best 4 matching moments (the walk around the exhibit), spread over time up to `MODEL3D_MV_CANDIDATES` (48).
+  With at least `MODEL3D_MV_MIN_FRAMES` (5) of them, the answer is immediate with `status` `building` and the work
+  runs in the background: Grounding DINO keeps the photos that show the object (and its box), up to
+  `MODEL3D_MV_MAX_FRAMES` (16) go through VGGT (`MODEL3D_VGGT_WEIGHTS`, `facebook/VGGT-1B` or a local `model.pt`;
+  pretrained, no per-object fitting; ~4 min and ~10 GB RAM for 16 photos on CPU), and the per-pixel points are
+  cleaned: the least confident `MODEL3D_MV_CONF_PCT` (50) % dropped, only pixels inside each photo's box kept, the
+  support plane (table, plinth, floor) removed by RANSAC, strays trimmed, the object stood upright on y=0. Result:
+  a coloured point cloud (`format` ply, `kind` points, `backend` vggt, `full_3d` true, `views` photos used,
+  `vertices` points, at most `MODEL3D_MV_MAX_POINTS`). Fewer than 5 photos: the one-photo relief above. VGGT's
+  weights are CC-BY-NC-4.0 (non-commercial).
 Response:
 ```json
 { "id": "9b1f...", "url": "/v1/models3d/9b1f....glb", "viewer_url": "/ui/3d?m=9b1f...&f=glb", "format": "glb",
   "kind": "mesh", "full_3d": false, "backend": "local", "title": "My blue mug",
   "narration": "Here's your blue mug in 3D, from Friday at 9:12 AM. It only shows the side you saw.",
   "subject": "my blue mug", "verified": true, "token_id": "...", "ts": 1731005000.2, "thumb_url": "/v1/thumbs/....jpg",
-  "box": [263.0, 145.0, 440.0, 264.0], "detection_score": 0.84, "candidates": 40, "vertices": 3633, "size_bytes": 141956 }
+  "box": [263.0, 145.0, 440.0, 264.0], "detection_score": 0.84, "candidates": 40, "vertices": 3633, "size_bytes": 141956,
+  "status": "ready", "detail": "", "views": 0 }
 ```
+`status`: `ready`; `building` (multi-view: the model URL answers `202 {"status": "building"}` until done, then the
+narration and `views` / `vertices` are final on a repeat `POST`); `failed` (the URL answers 422 with `detail`, e.g.
+too few photos show the object; a repeat `POST` retries).
 404 nothing matches / disabled (`MODEL3D_ENABLED=false`); 400 no object named; 422 the mask is too small to
 model; 502 the remote service failed; 503 deps or `MODEL3D_REMOTE_URL` missing; 409 `DELETE /memories` meanwhile.
 
 ## `GET /models3d/{id}.glb` / `GET /models3d/{id}.ply`
-The model (`GET` or `HEAD`; `model/gltf-binary` or `application/octet-stream`). Newest `MODEL3D_CACHE_MAX_FILES`
+The model (`GET` or `HEAD`; `model/gltf-binary` or `application/octet-stream`). `202` while a multi-view model is building, `422` with `detail` if it failed. Newest `MODEL3D_CACHE_MAX_FILES`
 (16); `DELETE /memories` clears them all.
 
 `GET /ui/3d?m={id}&f={glb|ply}` (no `/v1`): three.js viewer (orbit on desktop; "View in AR" in Quest Browser puts
 the model ~0.7 m in front of you over passthrough, trigger/pinch re-places it, thumbstick turns it). WebXR needs a
 secure origin: open it over HTTPS or on `http://localhost` (`adb reverse tcp:8000 tcp:8000`). Optional params: `t`
 title, `when`, `full=1` (allow orbiting all the way round), `k` kind, `server` (API origin), `src` (model URL).
-Loads three.js / gaussian-splats-3d from jsDelivr.
+It waits (polling every 3 s) while a model is building. Loads three.js / gaussian-splats-3d from jsDelivr.
 
 ## `GET /audio/{id}.wav`
 TTS output for a chat response: `final.audio_url` (the whole answer) or a `/chat/stream` `audio` clip (`{id}-{seq}.wav`, one sentence).

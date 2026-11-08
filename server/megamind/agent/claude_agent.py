@@ -772,6 +772,8 @@ class ClaudeAgent:
         cites = [Citation(id=m.token_id, ts=m.ts, caption=m.title, thumb_url=m.thumb_url)]
         relief = "" if m.full_3d else " (a relief: only the side the camera saw)"
         evidence = f"3D model shown to the wearer{relief}: {m.narration}"
+        if m.status == "building":
+            evidence = f"3D model being built in the background from {m.views} photos; its view is open: {m.narration}"
         return RecallResult(
             evidence=evidence,
             confidence="high" if m.verified else "medium",
