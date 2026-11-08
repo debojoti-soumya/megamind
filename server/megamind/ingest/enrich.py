@@ -360,5 +360,7 @@ def build_text_embedder(settings: Settings) -> TextEmbedder:
 
 
 def build_image_embedder(settings: Settings) -> ImageEmbedder | None:
-    # TODO(stream-1): SigLIP via open_clip when embed_provider == "local"
-    return None
+    """Same factory as the server's (megamind.store.embeddings): SigLIP when IMAGE_EMBED_PROVIDER=openclip."""
+    from megamind.store.embeddings import build_image_embedder as _build
+
+    return _build(settings)

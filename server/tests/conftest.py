@@ -5,6 +5,12 @@ from megamind.config import Settings
 from megamind.main import create_app
 
 
+@pytest.fixture(autouse=True)
+def _no_startup_warmup(monkeypatch):
+    """No background provider calls from apps built in tests (tests/test_warmup.py opts in with warmup=True)."""
+    monkeypatch.setenv("WARMUP", "false")
+
+
 @pytest.fixture(params=["memory", "lancedb"])
 async def client(request, tmp_path):
     settings = Settings(
