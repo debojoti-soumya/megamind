@@ -192,6 +192,7 @@ early. Each event is `event: <name>` + one `data:` line of JSON:
 
 | event | data | when |
 |---|---|---|
+| `transcript` | `{ "text": "where did I leave my keys?" }` | voice (multipart) questions only: first event, right after speech-to-text, before retrieval (same text as `final.transcript`) |
 | `retrieval` | `{ "confidence": "high", "candidates": [Citation, ...] }` | after each memory search, before the answer (cited first, then the other retrieved moments; `thumb_url` / `replay_url` as in `cited`) |
 | `delta` | `{ "text": "On the kitchen" }` | answer text as Claude generates it; append (the `<cites>` trailer is never sent) |
 | `reset` | `{}` | discard the text streamed so far (that model round turned into another search, or Claude failed and the caption fallback answers) |
@@ -209,6 +210,8 @@ event: final
 data: {"transcript": "where did I leave my keys?", "answer": "On the kitchen counter ...", "audio_url": null, "cited": [...], "tool_calls": [...]}
 ```
 `device_id_used` / `warning` arrive only in `final` (same rules as `POST /chat`).
+`retrieval` waits at most `STREAM_REPLAY_BUDGET_S` (0.15 s) for `replay_url` lookups so answer text is never held
+back; a link not found in time is `null` in that event and present in `final.cited`.
 Clients can swap it in for `POST /chat` and fall back to `POST /chat` on 404/405 (older servers). The model
 requests are identical to `POST /chat` apart from streaming, so answers are the same. With `RECALL_FIRST` a
 standalone question's `retrieval` arrives before Claude is called at all.
