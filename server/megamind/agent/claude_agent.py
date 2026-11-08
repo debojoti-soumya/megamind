@@ -28,7 +28,9 @@ call, or the API failed and the caption fallback answers instead). The final :cl
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import io
 import json
 import logging
 import re
@@ -40,6 +42,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anthropic
+from PIL import Image
 from ulid import ULID
 
 from megamind.agent.tools import OCR_MATCH_PREFIX, RECALL_MEMORY_TOOL, RecallMemory, keywords
@@ -162,15 +165,34 @@ def _tool_result_payload(r: RecallResult, now: float, zone: ZoneInfo) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _with_images(payload: str, r: RecallResult) -> str | list[dict]:
-    """Tool result content: the JSON payload, then each snapshot (best match first) as a labelled image block."""
+def _image_size(data: str) -> tuple[int, int]:
+    try:
+        with Image.open(io.BytesIO(base64.b64decode(data))) as im:
+            return im.size
+    except (OSError, ValueError):
+        return (0, 0)
+
+
+def _with_images(payload: str, r: RecallResult, sent: dict[str, tuple[int, int]] | None = None) -> str | list[dict]:
+    """Tool result content: the JSON payload, then each snapshot (best match first) as a labelled image block.
+
+    `sent` (token id -> image size) spans the turn: a frame an earlier tool result of the same turn already showed is
+    referenced instead of re-sent, and newly sent frames are added to it."""
     if not r.images:
         return payload
+    sent = {} if sent is None else sent
     blocks: list[dict] = [{"type": "text", "text": payload}]
+    again: list[str] = []
     for tid, uri in r.images:
+        if tid in sent:
+            again.append(tid)
+            continue
         media_type, _, data = uri.removeprefix("data:").partition(";base64,")
+        sent[tid] = _image_size(data)
         blocks.append({"type": "text", "text": f"snapshot {tid}:"})
         blocks.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}})
+    if again:
+        blocks.append({"type": "text", "text": f"snapshots shown earlier in this turn: {', '.join(again)}"})
     return blocks
 
 
@@ -404,7 +426,7 @@ class ClaudeAgent:
         stats.total_ms = (time.perf_counter() - t0) * 1000
         log.info(
             "req=%s session=%s path=%s llm_calls=%d tool_calls=%d in_tok=%d out_tok=%d "
-            "llm_ms=%.0f tool_ms=%.0f total_ms=%.0f",
+            "images=%d image_kpx=%d llm_ms=%.0f tool_ms=%.0f total_ms=%.0f",
             stats.request_id,
             session_id,
             stats.path,
@@ -412,6 +434,8 @@ class ClaudeAgent:
             stats.tool_calls,
             stats.input_tokens,
             stats.output_tokens,
+            stats.extra.get("images", 0),
+            stats.extra.get("image_px", 0) // 1000,
             stats.llm_ms,
             stats.tool_ms,
             stats.total_ms,
@@ -437,6 +461,7 @@ class ClaudeAgent:
         retrieved: dict[str, Citation] = {c.id: c for t in self.cite_histories.get(session_id, []) for c in t}
         reader_cited: list[Citation] = []
         turn_cites: list[Citation] = []
+        sent_images: dict[str, tuple[int, int]] = {}  # token id -> (w, h): each frame goes to Claude once per turn
         answer_text = ""
 
         prefetch: asyncio.Task[RecallResult] | None = None
@@ -472,7 +497,11 @@ class ClaudeAgent:
                 len(r.all_retrieved),
             )
             payload = _tool_result_payload(r, now, _zone(self.settings.wearer_tz))
-            return {"type": "tool_result", "tool_use_id": use_id, "content": _with_images(payload, r)}
+            content = _with_images(payload, r, sent_images)
+            if sent_images:
+                stats.extra["images"] = len(sent_images)
+                stats.extra["image_px"] = sum(w * h for w, h in sent_images.values())
+            return {"type": "tool_result", "tool_use_id": use_id, "content": content}
 
         try:
             if prefetch is not None and self.settings.recall_first and recall_first(text, plan):
@@ -511,6 +540,7 @@ class ClaudeAgent:
                 }
                 msg = await self._create(req, emit)
                 stats.llm_ms += (time.perf_counter() - t_llm) * 1000
+                stats.extra.setdefault("llm_call_ms", []).append(round((time.perf_counter() - t_llm) * 1000))
                 stats.model_calls += 1
                 stats.input_tokens += msg.usage.input_tokens
                 stats.output_tokens += msg.usage.output_tokens

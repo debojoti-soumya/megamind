@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -41,8 +42,10 @@ from megamind.store.memory_store import InMemoryStore  # noqa: E402
 
 DEFAULT_DATASET = Path(__file__).resolve().parent / "data" / "agent_day.json"
 NOT_FOUND = "__not_found__"
-# USD per 1M tokens (Claude Sonnet 4.5 list price); reader price is per-provider, default 0 until Sail publishes one
+# USD per 1M tokens (Claude Sonnet list price); reader price is per-provider, default 0 until Sail publishes one
 CLAUDE_PRICE_IN, CLAUDE_PRICE_OUT = 3.0, 15.0
+CACHE_WRITE, CACHE_READ = 1.25, 0.1  # x the input price (5-minute prompt cache)
+PRESELECT_PRICE_IN, PRESELECT_PRICE_OUT = 1.0, 5.0  # Haiku 4.5 (READER_PRESELECT_MODEL)
 
 
 @dataclass
@@ -240,7 +243,43 @@ def citation_scores(cited: list[str], gold: list[str]) -> tuple[float | None, fl
 
 
 def claude_cost(stats: TurnStats, price_in: float, price_out: float) -> float:
-    return (stats.input_tokens * price_in + stats.output_tokens * price_out) / 1e6
+    cache = (
+        stats.extra.get("cache_creation_input_tokens", 0) * CACHE_WRITE
+        + stats.extra.get("cache_read_input_tokens", 0) * CACHE_READ
+    )
+    return ((stats.input_tokens + cache) * price_in + stats.output_tokens * price_out) / 1e6
+
+
+def _pct(xs: list[float], q: float) -> float | None:
+    xs = sorted(xs)
+    return xs[min(len(xs) - 1, int(round(q * (len(xs) - 1))))] if xs else None
+
+
+class _PixelsOnly:
+    """`--pixels-only`: Claude sees ids, times and the snapshots but no caption/OCR text (retrieval still indexes
+    the text), so accuracy depends on reading the images. Patches the tool-result payload for the run."""
+
+    def __enter__(self):
+        from megamind.agent import claude_agent
+
+        self.mod, self.orig = claude_agent, claude_agent._tool_result_payload
+
+        def payload(r, now, zone):
+            blank = [c.model_copy(update={"caption": ""}) for c in r.all_retrieved]
+            r = r.model_copy(
+                update={
+                    "evidence": "(captions withheld: read the snapshots)",
+                    "cited": [c.model_copy(update={"caption": ""}) for c in r.cited],
+                    "all_retrieved": blank,
+                }
+            )
+            return self.orig(r, now, zone)
+
+        claude_agent._tool_result_payload = payload
+        return self
+
+    def __exit__(self, *exc):
+        self.mod._tool_result_payload = self.orig
 
 
 @dataclass
@@ -267,8 +306,11 @@ class Turn:
     cost_usd: float
     request_id: str
     error: str | None = None
+    images: int = 0  # distinct snapshots sent to Claude this turn
+    image_px: int = 0  # their total pixels; Anthropic bills ~px/750 input tokens
+    llm_call_ms: list[float] = field(default_factory=list)  # wall time of each Claude call
+    preselect_tokens: int = 0  # READER_PRESELECT_MODEL input + output tokens
     extra: dict = field(default_factory=dict)  # TurnStats.extra: prefetch hit/miss, reader_skipped
-    extra: dict = field(default_factory=dict)
 
 
 def summarize(turns: list[Turn]) -> dict:
@@ -279,6 +321,7 @@ def summarize(turns: list[Turn]) -> dict:
     rec = [t.cite_recall for t in turns if t.cite_recall is not None]
     lat = sorted(t.total_ms for t in turns)
     p95 = lat[min(n - 1, int(round(0.95 * (n - 1))))]
+    calls = [ms for t in turns for ms in t.llm_call_ms]
     return {
         "n": n,
         "accuracy": sum(t.correct for t in turns) / n,
@@ -295,6 +338,12 @@ def summarize(turns: list[Turn]) -> dict:
         "output_tokens": sum(t.output_tokens for t in turns),
         "reader_tokens": sum(t.reader_tokens for t in turns),
         "cost_usd": sum(t.cost_usd for t in turns),
+        "input_tokens_per_turn": statistics.fmean(t.input_tokens for t in turns),
+        "cost_per_turn_usd": statistics.fmean(t.cost_usd for t in turns),
+        "images_per_turn": statistics.fmean(t.images for t in turns),
+        "image_tokens_per_turn": statistics.fmean(t.image_px / 750 for t in turns),
+        "claude_call_p50_ms": _pct(calls, 0.5),
+        "claude_call_p95_ms": _pct(calls, 0.95),
         "degraded_turns": sum(t.reader_degraded for t in turns),
         "paths": {p: sum(t.path == p for t in turns) for p in sorted({t.path for t in turns})},
     }
@@ -308,6 +357,22 @@ def eval_settings(live: bool) -> Settings:
     if not live:  # never spend money by accident
         s = s.model_copy(update={"anthropic_api_key": "", "reader_provider": "mock"})
     return s
+
+
+def with_overrides(settings: Settings, pairs: list[str]) -> Settings:
+    """`["READER_MAX_IMAGES=6", ...]` -> settings with those fields replaced (validated like env vars)."""
+    upd = {}
+    for kv in pairs:
+        k, _, v = kv.partition("=")
+        upd[k.strip().lower()] = v.strip()
+    return Settings.model_validate({**settings.model_dump(), **upd}) if upd else settings
+
+
+def select_questions(day: Day, spec: str) -> Day:
+    if not spec:
+        return day
+    keep = [int(x) for x in spec.split(",") if x.strip()]
+    return Day(day.tokens, [day.cases[i - 1] for i in keep], day.now, day.tz, day.device_id)
 
 
 async def eval_retriever(settings: Settings, store, text_emb, image_emb, day: Day):
@@ -347,9 +412,14 @@ async def run(
     price_out: float = CLAUDE_PRICE_OUT,
     reader_price: float = 0.0,
     agent: ClaudeAgent | None = None,
+    store: InMemoryStore | None = None,
+    pixels_only: bool = False,
 ) -> list[Turn]:
+    """`store`: reuse an already seeded store (sweeps); `pixels_only`: see :class:`_PixelsOnly`."""
     text_emb = build_text_embedder(settings)
-    store = await seed_store(day.tokens, text_emb)
+    if pixels_only:
+        settings = settings.model_copy(update={"reader_skip_on_ocr": False})
+    store = store or await seed_store(day.tokens, text_emb)
     reader = RecordingReader(build_reader(settings))
     image_emb = build_image_embedder(settings)
     retriever = await eval_retriever(settings, store, text_emb, image_emb, day)
@@ -361,8 +431,11 @@ async def run(
     turns: list[Turn] = []
     routes: list[str] = []
     for i, case in enumerate(day.cases[: limit or None]):
-        resp, stats = await agent.chat_with_stats(f"eval-{i}", case.q, day.device_id, now=day.now)
+        with _PixelsOnly() if pixels_only else contextlib.nullcontext():
+            resp, stats = await agent.chat_with_stats(f"eval-{i}", case.q, day.device_id, now=day.now)
         outs = reader.drain()
+        pre_in = sum(o.usage.get("preselect_input_tokens", 0) for o in outs)
+        pre_out = sum(o.usage.get("preselect_output_tokens", 0) for o in outs)
         if retriever is not None:
             routes.append(f"{i + 1}:{getattr(retriever, 'last_route', '') or type(retriever).__name__}")
         cited = [c.id for c in resp.cited]
@@ -389,9 +462,15 @@ async def run(
                 output_tokens=stats.output_tokens,
                 reader_tokens=reader_tokens,
                 reader_degraded=any(o.degraded for o in outs),
-                cost_usd=claude_cost(stats, price_in, price_out) + reader_tokens * reader_price / 1e6,
+                cost_usd=claude_cost(stats, price_in, price_out)
+                + reader_tokens * reader_price / 1e6
+                + (pre_in * PRESELECT_PRICE_IN + pre_out * PRESELECT_PRICE_OUT) / 1e6,
                 request_id=stats.request_id,
                 error=stats.error,
+                images=stats.extra.get("images", 0),
+                image_px=stats.extra.get("image_px", 0),
+                llm_call_ms=list(stats.extra.get("llm_call_ms", [])),
+                preselect_tokens=pre_in + pre_out,
                 extra=dict(stats.extra),
             )
         )
@@ -413,15 +492,17 @@ def markdown(turns: list[Turn], summ: dict, title: str) -> str:
     rows = [
         f"### {title}",
         "",
-        "| # | question | path | ok | cited | gold | cite P | ms | llm ms | reader ms | in/out tok | $ |",
-        "|--:|---|---|:-:|---|---|--:|--:|--:|--:|--:|--:|",
+        "| # | question | path | ok | cited | gold | cite P | ms | llm ms (per call) | reader ms | in/out tok "
+        "| images (px) | $ |",
+        "|--:|---|---|:-:|---|---|--:|--:|--:|--:|--:|--:|--:|",
     ]
     for t in turns:
         rows.append(
             f"| {t.i} | {t.q} | {t.path}{' (degraded)' if t.reader_degraded else ''} | {'✓' if t.correct else '✗'} "
             f"| {','.join(t.cited) or '-'} | {','.join(t.gold) or '(none)'} | {_fmt(t.cite_precision)} "
-            f"| {t.total_ms:.0f} | {t.llm_ms:.0f} | {t.reader_ms:.0f} | {t.input_tokens}/{t.output_tokens} "
-            f"| {t.cost_usd:.4f} |"
+            f"| {t.total_ms:.0f} | {t.llm_ms:.0f} ({'+'.join(f'{x:.0f}' for x in t.llm_call_ms) or '-'}) "
+            f"| {t.reader_ms:.0f} | {t.input_tokens}/{t.output_tokens} "
+            f"| {t.images} ({t.image_px / 1e6:.1f} MP) | {t.cost_usd:.4f} |"
         )
     rows += [
         "",
@@ -430,7 +511,10 @@ def markdown(turns: list[Turn], summ: dict, title: str) -> str:
         f"latency p50 {summ['latency_p50_ms']:.0f} ms / p95 {summ['latency_p95_ms']:.0f} ms; "
         f"{summ['model_calls']} LLM calls, {summ['tool_calls']} tool calls, "
         f"{summ['input_tokens']}/{summ['output_tokens']} Claude tokens in/out, {summ['reader_tokens']} reader tokens, "
-        f"${summ['cost_usd']:.4f} total; degraded reader turns: {summ['degraded_turns']}.",
+        f"${summ['cost_usd']:.4f} total; degraded reader turns: {summ['degraded_turns']}. Per turn: "
+        f"{summ['input_tokens_per_turn']:.0f} input tokens, {summ['images_per_turn']:.1f} images "
+        f"(~{summ['image_tokens_per_turn']:.0f} image tokens), ${summ['cost_per_turn_usd']:.4f}; Claude call p50 "
+        f"{_fmt(summ['claude_call_p50_ms'], 0)} / p95 {_fmt(summ['claude_call_p95_ms'], 0)} ms.",
     ]
     return "\n".join(rows)
 
@@ -448,9 +532,12 @@ async def main() -> int:
     ap.add_argument("--reader-price", type=float, default=0.0, help="USD per 1M reader tokens (blended)")
     ap.add_argument("--json", type=Path, default=None, help="write per-turn records + summary here")
     ap.add_argument("--answers", action="store_true", help="print each answer under the table")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="Settings override, repeatable")
+    ap.add_argument("--pixels-only", action="store_true", help="hide captions/OCR from Claude: answer from pixels")
+    ap.add_argument("--questions", default="", help="comma-separated 1-based question numbers to keep")
     args = ap.parse_args()
 
-    settings = eval_settings(args.live)
+    settings = with_overrides(eval_settings(args.live), args.set)
     if args.backend:
         settings = settings.model_copy(update={"retriever_backend": args.backend})
     if args.live and not (settings.anthropic_api_key or settings.reader_api_key not in ("", "none")):
@@ -458,6 +545,7 @@ async def main() -> int:
         return 2
     with tempfile.TemporaryDirectory(prefix="megamind-eval-") as tmp:
         day = load_day(args.dataset, None if args.no_thumbs else Path(tmp))
+        day = select_questions(day, args.questions)
         if not args.no_thumbs:
             render_thumbs(day, Path(tmp), width=args.thumb_width)
         turns = await run(
@@ -467,6 +555,7 @@ async def main() -> int:
             price_in=args.price_in,
             price_out=args.price_out,
             reader_price=args.reader_price,
+            pixels_only=args.pixels_only,
         )
     summ = summarize(turns)
     mode = (

@@ -579,3 +579,80 @@ async def test_claude_vision_reader_returns_images_best_first(tmp_path):
     assert out.confidence == "medium" and out.cited_ids == ["v0", "v1", "v2"] and "EXIT" in out.evidence
     empty = await reader.read("x", [])
     assert empty.confidence == "not_found" and not empty.images
+
+
+def _hit(i: int, h: str = "", ep: str | None = None, thumb: str = "") -> MemoryToken:
+    return MemoryToken(
+        id=f"h{i}", device_id="d", ts=1000.0 + i, caption=f"c{i}", thumb_path=thumb, frame_hash=h, episode_id=ep
+    )
+
+
+def test_pick_images_rank_and_diverse():
+    from megamind.agent.reader import pick_images
+
+    hits = [
+        _hit(0, "ffff000000000000", "e1"),
+        _hit(1, "ffff000000000001", "e2"),  # 1 bit from h0: near-duplicate frame
+        _hit(2, "0000ffff00000000", "e1"),
+        _hit(3, "00000000ffff0000", "e1"),  # third frame of e1
+        _hit(4, "", None),  # no hash / episode: never skipped
+        _hit(5, "000000000000ffff", "e3"),
+    ]
+    assert [t.id for t in pick_images(hits, 3)] == ["h0", "h1", "h2"]
+    assert [t.id for t in pick_images(hits, 4, "diverse")] == ["h0", "h2", "h4", "h5"]
+    assert [t.id for t in pick_images(hits, 9, "diverse", per_episode=0, max_distance=0)] == [t.id for t in hits]
+
+
+def test_reader_image_select_validated():
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, reader_image_select="random")
+    assert Settings(_env_file=None, reader_image_select=" Diverse ").reader_image_select == "diverse"
+
+
+async def test_claude_vision_reader_preselect_keeps_the_picked_frames(tmp_path):
+    import anthropic
+    import httpx2
+
+    from megamind.agent.reader import ClaudeVisionReader
+
+    def jpg(i: int) -> str:
+        p = tmp_path / f"h{i}.jpg"
+        Image.new("RGB", (1280, 960), (10 * i, 90, 160)).save(p, format="JPEG")
+        return str(p)
+
+    hits = [_hit(i, thumb=jpg(i)) for i in range(6)]
+    replies = [
+        '{"ids": ["h4", "zz", "h1", "h4"]}',  # unknown and repeated ids dropped
+        "not json",  # unparseable -> the top preselect_max
+        '{"ids": []}',  # nothing useful -> just the best hit
+    ]
+    seen: list[dict] = []
+
+    def handler(req: httpx2.Request) -> httpx2.Response:
+        seen.append(json.loads(req.content))
+        msg = {
+            "id": "m", "type": "message", "role": "assistant", "model": "claude-haiku-4-5", "stop_reason": "end_turn",
+            "stop_sequence": None, "content": [{"type": "text", "text": replies[len(seen) - 1]}],
+            "usage": {"input_tokens": 700, "output_tokens": 9},
+        }  # fmt: skip
+        return httpx2.Response(200, json=msg)
+
+    client = anthropic.AsyncAnthropic(
+        api_key="t", http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    )
+    settings = Settings(
+        _env_file=None, reader_provider="claude", reader_preselect_model="claude-haiku-4-5", reader_preselect_max=2
+    )
+    reader = ClaudeVisionReader(settings, client=client)
+    out = await reader.read("where?", hits, now=2000.0)
+    assert [i for i, _ in out.images] == ["h4", "h1"]
+    assert out.usage["preselect_input_tokens"] == 700 and out.usage["preselect_output_tokens"] == 9
+    prev = next(b for b in seen[0]["messages"][0]["content"] if b["type"] == "image")
+    with Image.open(io.BytesIO(base64.b64decode(prev["source"]["data"]))) as im:
+        assert max(im.size) == settings.reader_preselect_px
+    assert seen[0]["model"] == "claude-haiku-4-5" and "where?" in json.dumps(seen[0])
+    assert [i for i, _ in (await reader.read("x", hits, now=2000.0)).images] == ["h0", "h1"]
+    assert [i for i, _ in (await reader.read("x", hits, now=2000.0)).images] == ["h0"]
+    assert len(seen) == 3
+    assert [i for i, _ in (await reader.read("x", hits[:2], now=2000.0)).images] == ["h0", "h1"]  # <= max: no pass
+    assert len(seen) == 3

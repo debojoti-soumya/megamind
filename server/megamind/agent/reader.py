@@ -41,10 +41,12 @@ from pathlib import Path
 from typing import Any, get_args
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import anthropic
 import httpx
 from PIL import Image
 
 from megamind.config import Settings
+from megamind.ingest.filter import hamming
 from megamind.models import Confidence, MemoryToken
 
 log = logging.getLogger("megamind.reader")
@@ -381,29 +383,123 @@ async def load_images(
     return out
 
 
+def _hash_distance(a: str, b: str) -> int | None:
+    try:
+        return hamming(a, b) if a and b else None
+    except ValueError:
+        return None
+
+
+def pick_images(
+    tokens: list[MemoryToken], n: int, mode: str = "rank", *, max_distance: int = 6, per_episode: int = 2
+) -> list[MemoryToken]:
+    """The hits whose frames Claude sees, best first. `rank`: the top `n`. `diverse`: rank order, skipping a frame
+    within `max_distance` dHash bits of one already picked or beyond `per_episode` frames of one episode (0 = no
+    cap), so a burst of near-identical frames costs one image; may return fewer than `n`."""
+    if mode != "diverse":
+        return tokens[:n]
+    out: list[MemoryToken] = []
+    per_ep: dict[str, int] = {}
+    for t in tokens:
+        if len(out) >= n:
+            break
+        if per_episode and t.episode_id and per_ep.get(t.episode_id, 0) >= per_episode:
+            continue
+        if any((d := _hash_distance(t.frame_hash, o.frame_hash)) is not None and d <= max_distance for o in out):
+            continue
+        out.append(t)
+        if t.episode_id:
+            per_ep[t.episode_id] = per_ep.get(t.episode_id, 0) + 1
+    return out
+
+
+PRESELECT_PROMPT = """You triage first-person snapshots from an AR headset for an assistant that will look at a few
+of them in full resolution to answer the wearer's question. Each snapshot has an id, a time, a caption and a small
+preview. Reply with strict JSON only: {{"ids": ["<id>", ...]}} listing at most {n} ids whose full image is most
+likely to contain the answer, most useful first, and [] if none of them can help."""
+
+
 class ClaudeVisionReader(Reader):
     """No reader model: the top hits' captions/OCR as evidence plus their images, which the orchestrator (Claude)
-    looks at itself in the tool result. Saves the reader round trip (~3 s on Sail) per recall."""
+    looks at itself in the tool result. Saves the reader round trip (~3 s on Sail) per recall.
 
-    def __init__(self, settings: Settings, image_loader: ImageLoader | None = None) -> None:
+    Which frames: :func:`pick_images` (`reader_image_select`), then optionally a cheap `reader_preselect_model`
+    pass over low-res previews that keeps <= `reader_preselect_max` of them (any failure keeps the top ones)."""
+
+    def __init__(self, settings: Settings, image_loader: ImageLoader | None = None, client: Any | None = None) -> None:
         self.image_loader = image_loader
         self.max_images = max(1, settings.reader_max_images)
         self.thumb_max_px = settings.reader_thumb_max_px
+        self.select = settings.reader_image_select.lower()
+        self.max_distance = settings.reader_image_dedupe_distance
+        self.per_episode = settings.reader_images_per_episode
         self.budget_s = settings.reader_deadline_s * _IMAGE_LOAD_SHARE
-        self.captions = CaptionOnlyReader(top=None, zone=_wearer_zone(settings.wearer_tz))
+        self.zone = _wearer_zone(settings.wearer_tz)
+        self.captions = CaptionOnlyReader(top=None, zone=self.zone)
+        self.preselect_model = settings.reader_preselect_model
+        self.preselect_max = max(1, settings.reader_preselect_max)
+        self.preselect_px = settings.reader_preselect_px
+        self.preselect_timeout_s = settings.reader_deadline_s
+        self.client = client
+        if self.preselect_model and client is None and settings.anthropic_api_key:
+            self.client = anthropic.AsyncAnthropic(
+                api_key=settings.anthropic_api_key, max_retries=0, timeout=self.preselect_timeout_s
+            )
+
+    async def _uris(self, tokens: list[MemoryToken], max_px: int) -> dict[str, str | None]:
+        if self.image_loader is not None:
+            return await load_images(self.image_loader, tokens, max_px, self.budget_s)
+        return {t.id: await asyncio.to_thread(encode_thumb, t.thumb_path, max_px) for t in tokens}
+
+    async def _preselect(
+        self, query: str, tokens: list[MemoryToken], now: float | None, usage: dict[str, int]
+    ) -> list[MemoryToken]:
+        t0 = time.perf_counter()
+        uris = await self._uris(tokens, self.preselect_px)
+        first_ts = min(t.ts for t in tokens)
+        content: list[dict] = []
+        for t in tokens:
+            content.append({"type": "text", "text": token_header(t, first_ts, now or time.time(), self.zone)})
+            if uri := uris.get(t.id):
+                media_type, _, data = uri.removeprefix("data:").partition(";base64,")
+                content.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}})
+        content.append({"type": "text", "text": f"Question: {query}"})
+        try:
+            msg = await self.client.messages.create(
+                model=self.preselect_model,
+                max_tokens=120,
+                system=PRESELECT_PROMPT.format(n=self.preselect_max),
+                messages=[{"role": "user", "content": content}],
+                timeout=self.preselect_timeout_s,
+            )
+            usage["preselect_input_tokens"] = msg.usage.input_tokens
+            usage["preselect_output_tokens"] = msg.usage.output_tokens
+            text = "".join(b.text for b in msg.content if b.type == "text")
+            m = _JSON_RE.search(text)
+            ids = [str(i) for i in (json.loads(m.group(0)).get("ids") or [])] if m else None
+        except Exception as e:  # noqa: BLE001 - triage only trims images; never fail the recall on it
+            log.warning("reader preselect failed (%r); keeping the top %d", e, self.preselect_max)
+            ids = None
+        usage["preselect_ms"] = round((time.perf_counter() - t0) * 1000)
+        by_id = {t.id: t for t in tokens}
+        picked = [by_id[i] for i in dict.fromkeys(ids or []) if i in by_id][: self.preselect_max]
+        return picked or tokens[: 1 if ids == [] else self.preselect_max]
 
     async def read(self, query: str, tokens: list[MemoryToken], *, now: float | None = None) -> ReaderOutput:
         if not tokens:
             return ReaderOutput(evidence="No matching memory.", confidence="not_found")
         t0 = time.perf_counter()
-        shown = tokens[: self.max_images]
-        if self.image_loader is not None:
-            uris = await load_images(self.image_loader, shown, self.thumb_max_px, self.budget_s)
-        else:
-            uris = {t.id: await asyncio.to_thread(encode_thumb, t.thumb_path, self.thumb_max_px) for t in shown}
+        shown = pick_images(
+            tokens, self.max_images, self.select, max_distance=self.max_distance, per_episode=self.per_episode
+        )
+        usage: dict[str, int] = {}
+        if self.preselect_model and self.client is not None and len(shown) > self.preselect_max:
+            shown = await self._preselect(query, shown, now, usage)
+        uris = await self._uris(shown, self.thumb_max_px)
         out = await self.captions.read(query, tokens, now=now)
         out.confidence = "medium"
         out.images = [(t.id, u) for t in shown if (u := uris.get(t.id))]
+        out.usage = usage
         out.latency_ms = (time.perf_counter() - t0) * 1000
         return out
 

@@ -542,3 +542,35 @@ async def test_vision_reader_sends_images_to_claude_and_strips_them_from_history
     await agent.chat("s", "and what was next to them?", "dev1")
     history = json.dumps(script.requests[1]["messages"])
     assert '"type": "image"' not in history and "(image omitted)" in history
+
+
+async def test_two_recalls_in_one_turn_send_each_frame_once(tmp_path):
+    from PIL import Image
+
+    from megamind.agent.reader import ClaudeVisionReader
+
+    store = await _store_with_tokens()
+    for tid in ("t_keys", "t_board", "t_mug"):
+        Image.new("RGB", (960, 720), (200, 30, 30)).save(f"/tmp/{tid}.jpg", format="JPEG")
+    recall = RecallMemory(store, MockTextEmbedder(), None, ClaudeVisionReader(_settings(reader_provider="claude")))
+    script = ScriptedAnthropic(
+        [
+            _message([tool_use({"query": "keys"}, "toolu_1")], stop_reason="tool_use"),
+            _message([tool_use({"query": "keys on the counter"}, "toolu_2")], stop_reason="tool_use"),
+            _message([text("Counter. <cites>t_keys</cites>")]),
+        ]
+    )
+    agent = ClaudeAgent(_settings(anthropic_api_key="k", recall_prefetch=False), recall, client=script.client())
+    _, stats = await agent.chat_with_stats("s", "where are my keys?", "dev1")
+    msgs = script.requests[2]["messages"]
+    first, second = msgs[2]["content"][0]["content"], msgs[4]["content"][0]["content"]
+    sent = [
+        b["text"].removeprefix("snapshot ").rstrip(":")
+        for b in first
+        if b["text" if "text" in b else "type"].startswith("snapshot ")
+    ]
+    assert sent and sum(b["type"] == "image" for b in first) == len(sent)
+    assert not any(b["type"] == "image" for b in second)  # same frames again: referenced, not re-sent
+    assert "shown earlier in this turn" in json.dumps(second)
+    assert stats.extra["images"] == len(sent) and stats.extra["image_px"] == len(sent) * 960 * 720
+    assert len(stats.extra["llm_call_ms"]) == 3

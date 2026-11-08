@@ -29,6 +29,17 @@ class Settings(BaseSettings):
     reader_max_retries: int = 1
     reader_max_images: int = 12  # per call (Sail cap 20; report 04 says <=12 for latency); more -> chunk + merge
     reader_thumb_max_px: int = 960  # longest side sent to the reader; 960 = the headset upload, unscaled
+    # Claude reader (READER_PROVIDER=claude): which hits' frames go into the tool result. rank = the top
+    # reader_max_images; diverse = rank order minus near-duplicates (dHash within READER_IMAGE_DEDUPE_DISTANCE bits of a
+    # picked frame) and past READER_IMAGES_PER_EPISODE frames of one episode, so redundant hits cost no image tokens
+    reader_image_select: str = "rank"
+    reader_image_dedupe_distance: int = 6  # = filter_dhash_max_distance
+    reader_images_per_episode: int = 2  # 0 = no cap
+    # two-stage: this model sees the candidates at READER_PRESELECT_PX + captions and picks <= READER_PRESELECT_MAX
+    # for Claude at full size ("" = off; e.g. claude-haiku-4-5)
+    reader_preselect_model: str = ""
+    reader_preselect_max: int = 4
+    reader_preselect_px: int = 384
     reader_max_tokens: int = 300
     reader_json_mode: str = "schema"  # schema (json_schema) | object (json_object) | off; downgraded on HTTP 400
     reader_completion_window: str = ""  # Sail: asap | balanced; sent as X-Sail-Completion-Window when set
@@ -140,6 +151,14 @@ class Settings(BaseSettings):
     speech_merge_s: float = 10.0  # speech starting <= this long after the device's last transcript token joins it
     speech_max_token_s: float = 60.0  # ... unless the merged token would span longer than this
     speech_link_s: float = 15.0  # retrieval: pair a transcript hit with the nearest frame within +-N s (0 = off)
+
+    @field_validator("reader_image_select")
+    @classmethod
+    def _known_image_select(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in ("rank", "diverse"):
+            raise ValueError("READER_IMAGE_SELECT must be rank or diverse")
+        return v
 
     @field_validator("chunk_dir", mode="before")
     @classmethod
