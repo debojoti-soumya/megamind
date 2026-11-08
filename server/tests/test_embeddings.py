@@ -111,3 +111,49 @@ async def test_openclip_embedder_cpu_throughput():
     assert fps >= 1.0, f"{fps:.2f} frames/s"
     q = await emb.embed_text("a photo of a brown wall")
     assert len(q) == 768
+
+
+def _failing(status: int, calls: dict):
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] = calls.get("n", 0) + 1
+        if calls.get("ok"):
+            return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0] + [0.0] * 7}]})
+        return httpx.Response(status, json={"error": {"message": "nope"}})
+
+    return httpx.MockTransport(handler)
+
+
+async def test_openai_embedder_degrades_to_same_dim_mock_on_401(caplog):
+    calls: dict = {}
+    emb = OpenAITextEmbedder("sk-bad", dim=8, transport=_failing(401, calls))
+    v = await emb.embed("keys on the counter")
+    assert len(v) == 8 and abs(_norm(v) - 1.0) < 1e-9
+    assert emb.degraded == "last error 401" and calls["n"] == 1  # 401 is not retried
+    mock = MockTextEmbedder()
+    mock.dim = 8
+    assert v == await mock.embed("keys on the counter")  # deterministic, so BM25-like matching still works
+    assert len(await emb.embed_many(["a", "b"])) == 2
+    assert sum("OpenAI embeddings failed" in r.message for r in caplog.records) == 1  # logged once
+
+    calls["ok"] = True
+    assert await emb.embed("x") == [1.0] + [0.0] * 7
+    assert emb.degraded is None
+
+
+async def test_openai_embedder_degrades_after_retries_on_503(monkeypatch):
+    async def no_sleep(_s):
+        return None
+
+    monkeypatch.setattr("megamind.store.embeddings.asyncio.sleep", no_sleep)
+    calls: dict = {}
+    emb = OpenAITextEmbedder("sk", dim=8, transport=_failing(503, calls))
+    assert len(await emb.embed("x")) == 8
+    assert calls["n"] == 3 and emb.degraded == "last error 503"
+
+
+async def test_openai_embedder_degrades_on_transport_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("dns failure", request=request)
+
+    emb = OpenAITextEmbedder("sk", dim=8, transport=httpx.MockTransport(handler))
+    assert len(await emb.embed("x")) == 8 and emb.degraded == "last error ConnectError"

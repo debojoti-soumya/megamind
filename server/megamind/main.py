@@ -40,7 +40,8 @@ def active_provider(settings: Settings, configured: str, impl: object, active: s
     e.g. "mock (openai configured, no key)" so an empty key can't masquerade as a live provider."""
     configured = configured.lower()
     if not type(impl).__name__.startswith(("Mock", "CaptionOnly")):
-        return active
+        degraded = getattr(impl, "degraded", None)
+        return f"{active} (degraded: {degraded})" if degraded else active
     if configured in ("", "mock"):
         return "mock"
     if settings.provider_key(configured) == "":

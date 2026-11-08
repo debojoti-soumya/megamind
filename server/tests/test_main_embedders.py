@@ -1,5 +1,7 @@
 """main.py must build embedders via megamind.store.embeddings (issue #71), not the enrich.py stubs."""
 
+import pytest
+
 from megamind.config import Settings
 from megamind.ingest.enrich import MockTextEmbedder
 from megamind.main import create_app
@@ -43,3 +45,52 @@ async def test_openai_provider_without_key_falls_back_to_mock(tmp_path):
 async def test_image_embed_provider_is_honoured(tmp_path):
     _, image = await _built(_settings(tmp_path, image_embed_provider="mock"))
     assert isinstance(image, MockImageEmbedder)
+
+
+@pytest.mark.parametrize("backend", ["memory", "lancedb"])
+async def test_bad_openai_key_degrades_instead_of_500(tmp_path, backend):
+    import io
+    import json
+
+    import httpx
+    from httpx import ASGITransport, AsyncClient
+    from PIL import Image
+
+    settings = _settings(
+        tmp_path,
+        store_backend=backend,
+        lancedb_path=tmp_path / "lancedb",
+        embed_provider="openai",
+        openai_api_key="sk-bad",
+        filter_min_gap_s=0.0,
+    )
+    app = create_app(settings)
+    async with app.router.lifespan_context(app):
+        emb = app.state.text_embedder
+        assert isinstance(emb, OpenAITextEmbedder)
+        await emb._client.aclose()
+        emb._client = httpx.AsyncClient(
+            base_url="https://api.openai.com/v1",
+            transport=httpx.MockTransport(lambda r: httpx.Response(401, json={"error": {"message": "bad key"}})),
+        )
+        img = Image.effect_noise((96, 72), 64).convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            r = await c.post(
+                "/v1/frames",
+                files={"image": ("f.jpg", buf.getvalue(), "image/jpeg")},
+                data={"meta": json.dumps({"device_id": "dev1", "ts": 1000.0})},
+            )
+            assert r.json()["accepted"]
+            await app.state.worker.queue.join()
+            assert await app.state.store.count() == 1  # frame stored despite the embed failure
+
+            r = await c.get("/v1/memories", params={"q": "mock caption"})
+            assert r.status_code == 200 and r.json()["results"]
+
+            r = await c.post("/v1/chat", json={"session_id": "s", "text": "mock caption"})
+            assert r.status_code == 200
+
+            embed = (await c.get("/v1/health")).json()["models"]["embed"]
+            assert embed == "openai:text-embedding-3-small (degraded: last error 401)"
