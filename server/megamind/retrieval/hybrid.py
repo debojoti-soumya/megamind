@@ -233,17 +233,24 @@ class HybridRetriever(Retriever):
         )
         primary = ranked[: max(1, k - budget)]
         chosen: dict[str, RetrievedToken] = {r.token.id: r for r in primary}
-        for r in primary[: self.cfg.expand_top]:
+        anchors = primary[: self.cfg.expand_top] if len(chosen) < k else []
+        # one store scan per anchor (window + linked modality): fetch them concurrently, then merge in rank order
+        windows, links = await asyncio.gather(
+            asyncio.gather(
+                *(self.adapter.neighbors(r.token.id, self.cfg.expand_before, self.cfg.expand_after) for r in anchors)
+            ),
+            asyncio.gather(*(self._linked(r.token, lo, hi) for r in anchors)),
+        )
+        for r, nbs, link in zip(anchors, windows, links, strict=True):
             if len(chosen) >= k:
                 break
-            link = await self._linked(r.token, lo, hi)
             if (
                 link is not None
                 and link.id not in chosen
                 and not any(self._same_frame(link, c.token) for c in chosen.values())
             ):
                 chosen[link.id] = RetrievedToken(token=link, score=r.score * 0.5, reasons=["linked"], is_context=True)
-            for nb in await self.adapter.neighbors(r.token.id, self.cfg.expand_before, self.cfg.expand_after):
+            for nb in nbs:
                 if len(chosen) >= k:
                     break
                 if nb.id in chosen or not nb.caption:
