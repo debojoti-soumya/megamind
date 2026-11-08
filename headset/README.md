@@ -335,12 +335,14 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | `ChatBubble.cs` | 3 | one transcript row: `ChatBubble` (label + background, `Append` for streaming) and `ChatBubbleFit` (shrink-wraps the bubble to its text up to a max width) |
 | `PanelAnchor.cs` | 3 | tag-along panel: eye height, `panelDistance` m ahead, glides back when the head leaves a 25° / 0.5 m dead zone; Pin/Unpin (world-lock), hold B/Y 0.5 s to drag; A-/A+ UI scale (PlayerPrefs `megamind.uiScale`) |
 | `SettingsPanel.cs` | 3 | runtime server URL / device id, new session, purge memory |
+| `Lightbox.cs` | 3 | full-size memory viewer inside the panel: caption, time, n / N, ‹ › prev/next, pan/zoom (thumbsticks, ray/pinch drag, +/−), close via X / scrim / B·Y / "close" |
+| `CitationCard.cs` | 3 | thumbnail card (image + age + caption snippet, tap = Lightbox) and the `TypingIndicator` dots |
 | `SessionStore.cs` | 3 | ChatGPT-style chats persisted as JSON in `Application.persistentDataPath/megamind-sessions.json` (id = server `session_id`, title, created/updated, messages with cited memories) |
 | `SessionListView.cs` | 3 | the drawer's chat list: Today / Yesterday / Earlier, active highlighted, tap = switch, long-press or `…` = Rename (Quest keyboard) / Delete |
 | `PanelMenu.cs` | 3 | the right-side drawer's actions (New chat, Settings, Debug, Pin/Unpin, Text size, Controls, Purge) + voice-command execution |
 | `PanelDrawer.cs` | 3 | slides the drawer down the right edge of the panel (150 ms ease-out, `CanvasGroup` fade, chevron rotates) |
 | `VoiceCommands.cs` | 3 | normalized-string matcher for short spoken commands (no wake word, no dependencies) |
-| `PanelControls.cs` | 3 | footer Record/Pause toggle + state text, Type (TouchScreenKeyboard → `ChatClient.SendText`), Hide/Show (collapse to header) |
+| `PanelControls.cs` | 3 | input bar: Record/Pause pill + state text, phase line (Listening/Transcribing/Thinking/Answering/Speaking), mic meter, question field + Send (`ChatClient.SendText`), Hide/Show (collapse to header) |
 | `HoldToTalkButton.cs` | 3 | footer Hold-to-talk: pointer down/up → `ChatClient.BeginRecording` / `EndRecordingAndSendNow` |
 | `PanelHover.cs` | 3 | pointer enter/exit on the panel root; `ChatClient` ignores trigger/pinch push-to-talk while the ray is over the panel |
 | `Editor/MegamindSceneBuilder.cs` | 1 | the `Megamind` menu: create scene, apply player settings, build, build & run, push config, check project |
@@ -360,7 +362,8 @@ MegamindPanel (Canvas + CanvasScaler)  + PanelAnchor + ChatPanel + ChatClient + 
   Background, Header (RecDot, ServerDot, StatusLine, Hide/Show button, MenuTab = bars + chevron in the corner)
   Scroll -> Viewport -> Content (VerticalLayoutGroup)        = ChatPanel.content
   EmptyHint (push-to-talk + voice phrases)
-  Footer: StateLabel, Indicators (ListeningIndicator, ThinkingIndicator), Buttons (RecordButton + Knob, HoldToTalkButton, TypeButton)
+  JumpToLatest pill, Footer: RecordButton + Knob, StateLabel, Indicators (PhaseDot, PhaseLabel), Buttons (HoldToTalkButton + Meter, Question field, SendButton)
+  Lightbox (inactive): Counter, Time, Close, Viewport -> Image, Prev / Next, Caption, ZoomOut / ZoomIn
   Settings (inactive): ServerUrl, DeviceId, Save / New session / Purge, Reset / Close, Feedback
   Debug (inactive): Title, Close, Scroll -> Viewport -> Text (CaptureHud.FullReport)
   Controls (inactive): Title, Close, Text (controller / hand / panel / voice cheat-sheet)
@@ -388,7 +391,7 @@ Push-to-talk: hold the controller trigger (or index pinch); hold B/Y 0.5 s to dr
   drives the same `ChatClient.BeginRecording` / `EndRecordingAndSend` path as the bare trigger and turns red while
   recording. uGUI delivers pointer-up to the pressed button even if the ray drifts off it, and the trigger release in
   `ChatClient.Update` is a second safety net.
-- **Type**: opens the system on-screen keyboard (`TouchScreenKeyboard.Open`) and sends the text as a typed question
+- **Ask Megamind… + Send**: selecting the field opens the system on-screen keyboard; Send asks the text as a typed question
   (`POST /v1/chat` with `text`), so you can ask without speaking. Typed short commands ("open menu", "pause recording")
   run like spoken ones. The Quest keyboard renders as a system overlay in front of the app — how it looks next to a
   World-Space canvas, and whether `TouchScreenKeyboard.Status` reports `Done` on the Quest IME, has **not** been
@@ -426,6 +429,18 @@ toggle. The chat panel header shows:
   *Controls*, *Purge memory* (red on hover). Only one overlay is open at a time; the drawer closes on the tab, on any
   entry, by clicking anywhere else on the panel, or by voice ("close menu").
 
+**Chat terminal.** Answers stream into the assistant bubble (`POST /v1/chat/stream`); a `● ● ●` typing bubble shows
+until the first words. The stream's `retrieval` event shows its candidate moments right away as a horizontal strip of
+cards (thumbnail, age, caption snippet); `reset` clears the text, `final` swaps the strip for the answer's cited cards.
+Tap any card (ray + trigger, or pinch) to open the **Lightbox**: the stored frame large (≥ 80 % of the panel; the server
+keeps the full 1280x960 upload as the thumbnail, `replay_url` is video), caption, time, ‹ › across the set, zoom with the
+right stick / +/−, pan with the left stick or by dragging; X, a click outside the image, B/Y or "close menu" closes it.
+Under every answer: latency/confidence, **Copy** and **Retry** (asks the last question again). Scrolling up stops the
+auto-scroll and shows a **↓ Latest** pill. The input bar is pinned at the bottom: **Hold to talk** (with a mic level
+meter), the **Ask Megamind…** field (Quest keyboard) and **Send**; above it the capture pill (Record/Pause) and a status
+line — *Listening / Transcribing / Thinking / Answering / Speaking*. A voice transcript appears as your bubble as soon as
+the server's `transcript` event arrives.
+
 **Sessions (ChatGPT-style).** `SessionStore` keeps every chat in `Application.persistentDataPath/megamind-sessions.json`
 (`{ activeId, sessions: [{ id, title, created, updated, messages: [{ role, text, ts, cited: [Citation] }] }] }`, written
 atomically on the next frame after a change and on pause/quit). The chat's `id` *is* the server `session_id`
@@ -438,6 +453,16 @@ tap switches (and closes the drawer), long-press (0.6 s) or the `…` button rev
 and **Delete** (deleting the active chat switches to the newest remaining one). *+ New chat* (drawer) and *New session*
 (Settings) both go through `SessionStore.NewSession()`; a blank active chat is reused rather than stacking blanks, and
 blank chats are dropped on save. Up to 60 chats x 200 messages are kept.
+
+**Voice path (fast).** Release push-to-talk → `POST /v1/stt` (audio + `command_hints` = every phrase in
+`VoiceCommands.cs`; ≈ 0.5 s) → the transcript appears as your bubble → `VoiceCommands.Match` runs locally (exact, then
+fuzzy: all words of a multi-word phrase present with only courtesy words around it — "please open the menu for me", while
+"did I start recording" stays a question — or edit distance ≤ 1–2 — "paws
+recording"; single-word phrases exact only), falling back to the server's `command.phrase`. A command runs at once with a
+confirmation chip (`"paws recording" → "pause recording" → recording paused`) and never reaches Claude/TTS; anything else
+is asked as **text** on `/v1/chat/stream`, whose `audio` events start speaking after the first sentence (clips queued in
+`seq` order). `ChatClient.transcribeFirst` (default on) switches this off; servers without `/v1/stt` (404/405) get the
+old path below automatically.
 
 **Voice commands.** With a server that sends the stream's early `transcript` event, `ChatClient` matches commands on it and closes the stream, so the server stops the turn before Claude/TTS finish. Otherwise: STT runs inside `POST /v1/chat` (there is no STT-only endpoint), so `ChatClient` hands the returned
 `transcript` to `PanelMenu.TryVoiceCommand` before showing the answer: a short utterance (≤ 6 words after dropping

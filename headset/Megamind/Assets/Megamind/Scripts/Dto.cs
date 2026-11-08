@@ -103,6 +103,10 @@ namespace Megamind
         public int sample_rate;
     }
 
+    // POST /v1/stt: transcript only (voice commands never reach Claude/TTS). command: null/empty when no hint matched.
+    [Serializable] public class SttCommand { public string phrase; public float score; }
+    [Serializable] public class SttResponse { public string transcript; public float duration_s; public string model; public SttCommand command; }
+
     [Serializable] public class HealthModels { public string claude, reader, embed; }
 
     // warmup: "off" | "running" | "done" | "done (failed: <steps>)" (server startup warmup; informational, missing on older servers)

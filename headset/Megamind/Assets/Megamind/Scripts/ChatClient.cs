@@ -38,6 +38,9 @@ namespace Megamind
         [Tooltip("POST /v1/chat/stream: show the answer as it is written and speak it sentence by sentence. Falls back to " +
                  "POST /v1/chat on servers without the stream endpoint.")]
         public bool streamAnswers = true;
+        [Tooltip("Voice: POST /v1/stt first (≈0.5 s), match commands locally, then ask the transcript as text. Falls back to " +
+                 "sending the audio to the chat stream on servers without /v1/stt (404/405).")]
+        public bool transcribeFirst = true;
 
         public event Action<ChatResponse> OnResponse;
         /// <summary>Seconds from sending the question to the complete answer.</summary>
@@ -47,6 +50,22 @@ namespace Megamind
         public float LastFirstAudioSeconds { get; private set; }
         public bool IsRecording => _recordingActive;
         public bool IsThinking { get; private set; }
+        /// <summary>Mic input level 0..1 while recording (smoothed RMS), for the hold-to-talk meter.</summary>
+        public float MicLevel { get; private set; }
+
+        public enum Phase { Idle, Listening, Transcribing, Thinking, Answering, Speaking }
+        private Phase _turnPhase = Phase.Idle;
+        /// <summary>What the footer status line shows: Listening / Transcribing / Thinking / Answering / Speaking.</summary>
+        public Phase CurrentPhase
+        {
+            get
+            {
+                if (_recordingActive) return Phase.Listening;
+                if (IsThinking) return _turnPhase;
+                if (speaker != null && speaker.isPlaying) return Phase.Speaking;
+                return Phase.Idle;
+            }
+        }
 
         [Tooltip("Optional: persistent chats; the active chat's id is the server session_id. Without it, a random id per launch.")]
         public SessionStore sessions;
@@ -69,6 +88,30 @@ namespace Megamind
 
             if ((OVRInput.GetDown(pushToTalk, controllers) || pinchDown) && !RayOverUi()) BeginRecording();
             if ((OVRInput.GetUp(pushToTalk, controllers) || pinchUp) && _recordingActive) StartCoroutine(EndRecordingAndSend());
+            UpdateMicLevel();
+        }
+
+        private readonly float[] _levelBuf = new float[512];
+        private void UpdateMicLevel()
+        {
+            if (!_recordingActive || _recording == null) { MicLevel = Mathf.MoveTowards(MicLevel, 0f, Time.unscaledDeltaTime * 4f); return; }
+            int pos = Microphone.GetPosition(null);
+            int n = _levelBuf.Length;
+            if (pos < n) return;
+            _recording.GetData(_levelBuf, pos - n);
+            float sum = 0f;
+            for (int i = 0; i < n; i++) sum += _levelBuf[i] * _levelBuf[i];
+            float rms = Mathf.Sqrt(sum / n);
+            float level = Mathf.Clamp01(rms * 6f); // speech peaks ~0.15 rms -> ~0.9
+            MicLevel = level > MicLevel ? level : Mathf.Lerp(MicLevel, level, Time.unscaledDeltaTime * 8f);
+        }
+
+        /// <summary>Asks the last question again (typed text or voice transcript), as text.</summary>
+        public void Retry()
+        {
+            string q = panel != null ? panel.LastQuestion : null;
+            if (string.IsNullOrWhiteSpace(q) || IsThinking) return;
+            SendText(q);
         }
 
         private bool RayOverUi()
@@ -127,6 +170,24 @@ namespace Megamind
             var samples = new float[pos * _recording.channels];
             _recording.GetData(samples, 0);
             byte[] wav = WavEncoder.Encode(samples, _recording.channels, config.micSampleRate);
+            if (transcribeFirst && !SttUnsupported)
+            {
+                var stt = new SttResult();
+                yield return Transcribe(wav, stt);
+                if (stt.Ok)
+                {
+                    string text = (stt.Response.transcript ?? "").Trim();
+                    if (text.Length == 0) { panel?.AddSystemMessage("(didn\u2019t catch that)"); yield break; }
+                    // the server's fuzzy match (difflib >= 0.8) also fires on short questions ("did I start recording" = 0.83),
+                    // so only a near-exact server hit backs up the local matcher
+                    var sc = stt.Response.command;
+                    string serverPhrase = sc != null && sc.score >= 0.9f ? sc.phrase : null;
+                    if (menu != null && menu.TryVoiceCommand(text, serverPhrase)) yield break;
+                    yield return SendTextCo(text); // shows the transcript as the user bubble, then streams the answer
+                    yield break;
+                }
+                if (!stt.FallBack) yield break; // STT failed (error shown); don't pay for a chat turn on the same audio
+            }
 
             var form = new List<IMultipartFormSection>
             {
@@ -156,6 +217,44 @@ namespace Megamind
             yield return Ask(Encoding.UTF8.GetBytes(body), "application/json", voice: false);
         }
 
+        // ---- POST /v1/stt (issue #138 contract): multipart audio + command_hints -> { transcript, command } ----
+
+        private class SttResult { public bool Ok, FallBack; public SttResponse Response; }
+        private string _noSttServer;
+        private bool SttUnsupported => _noSttServer != null && _noSttServer == config.serverBaseUrl;
+
+        private IEnumerator Transcribe(byte[] wav, SttResult result)
+        {
+            IsThinking = true;
+            _turnPhase = Phase.Transcribing;
+            panel?.SetThinking(true);
+            var form = new List<IMultipartFormSection>
+            {
+                new MultipartFormFileSection("audio", wav, "q.wav", "audio/wav"),
+                new MultipartFormDataSection("command_hints", string.Join("|", VoiceCommands.AllPhrases())),
+            };
+            using (var req = UnityWebRequest.Post(config.Url("/v1/stt"), form))
+            {
+                config.Authorize(req);
+                req.timeout = 20;
+                yield return req.SendWebRequest();
+                IsThinking = false;
+                panel?.SetThinking(false);
+                long code = req.responseCode;
+                if (code == 404 || code == 405) { _noSttServer = config.serverBaseUrl; result.FallBack = true; yield break; }
+                if (req.result != UnityWebRequest.Result.Success)
+                {
+                    // network-level failure (no response): let the chat path try the audio; HTTP errors are shown
+                    if (code == 0) { result.FallBack = true; yield break; }
+                    panel?.AddAssistantMessage("(speech-to-text failed: " + req.error + ")", null, true);
+                    yield break;
+                }
+                try { result.Response = JsonUtility.FromJson<SttResponse>(req.downloadHandler.text); } catch (Exception) { }
+                if (result.Response == null) { result.FallBack = true; yield break; }
+                result.Ok = true;
+            }
+        }
+
         private UnityWebRequest MakeChatRequest(string path, byte[] body, string contentType, DownloadHandler download)
         {
             var upload = new UploadHandlerRaw(body) { contentType = contentType };
@@ -172,6 +271,7 @@ namespace Megamind
         {
             StopSpeech(); // the previous answer's audio, if still playing
             IsThinking = true;
+            _turnPhase = voice ? Phase.Transcribing : Phase.Thinking;
             panel?.SetThinking(true);
             float t0 = Time.unscaledTime;
             LastFirstTextSeconds = 0f;
@@ -247,6 +347,7 @@ namespace Megamind
             public int Events;
             public int AudioEvents;
             public float FirstText;
+            public List<Citation> Candidates;
             public readonly StringBuilder Text = new StringBuilder();
             public SpeechQueue Speech;
         }
@@ -347,7 +448,15 @@ namespace Megamind
                     var err = ParseEvent<ChatStreamError>(e.Data);
                     FailTurn(turn, "(error: " + (string.IsNullOrEmpty(err?.detail) ? "the answer failed" : err.detail) + ")");
                     break;
-                // "retrieval" (candidate moments before the answer) and unknown events: ignored; `final` has the citations
+                case "retrieval": // candidate moments: preview them now; `final` replaces them with the cited cards
+                    var ret = ParseEvent<ChatStreamRetrieval>(e.Data);
+                    if (ret?.candidates != null && ret.candidates.Count > 0)
+                    {
+                        turn.Candidates = ret.candidates;
+                        if (turn.Released) panel?.ShowCandidates(turn.Candidates);
+                    }
+                    break;
+                // unknown events: ignored
             }
         }
 
@@ -362,6 +471,7 @@ namespace Megamind
                 return;
             }
             if (!string.IsNullOrEmpty(text)) panel?.AddUserMessage(text);
+            _turnPhase = Phase.Thinking;
             Release(turn);
         }
 
@@ -371,6 +481,7 @@ namespace Megamind
             if (turn.Released) return;
             turn.Released = true;
             if (turn.Speech != null) turn.Speech.Released = true;
+            if (turn.Candidates != null) panel?.ShowCandidates(turn.Candidates);
             if (turn.Text.Length > 0) ShowDraft(turn);
         }
 
@@ -378,6 +489,7 @@ namespace Megamind
         {
             if (!turn.Released || turn.Text.Length == 0) return;
             panel?.SetDraft(turn.Text.ToString());
+            _turnPhase = Phase.Answering;
             if (turn.FirstText > 0f) return;
             turn.FirstText = LastFirstTextSeconds = Mathf.Max(0.001f, Time.unscaledTime - turn.T0);
             panel?.SetThinking(false); // the growing bubble shows progress now
@@ -418,6 +530,7 @@ namespace Megamind
         {
             turn.Over = true;
             panel?.DiscardDraft();
+            panel?.ClearCandidates();
             if (turn.Speech != null && turn.Speech == _speech) StopSpeech();
             else turn.Speech?.Cancel();
             panel?.AddAssistantMessage(message, null, true);
@@ -427,6 +540,7 @@ namespace Megamind
         {
             turn.Over = true;
             panel?.DiscardDraft();
+            panel?.ClearCandidates();
             if (turn.Speech != null && turn.Speech == _speech) StopSpeech();
             else turn.Speech?.Cancel();
         }

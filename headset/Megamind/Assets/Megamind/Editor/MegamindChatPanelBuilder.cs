@@ -69,12 +69,16 @@ namespace Megamind.EditorTools
             var thumb = ThumbPrefab();
             var sessionEntry = SessionEntryPrefab();
             var sessionGroup = SessionGroupPrefab();
+            var card = CitationCardPrefab();
+            var cardStrip = CardStripPrefab();
+            var turnActions = TurnActionsPrefab();
 
             var old = GameObject.Find("MegamindPanel");
             if (old) Undo.DestroyObjectImmediate(old);
 
             var head = FindHead();
-            var panel = BuildPanel(config, head, userBubble, assistantBubble, systemChip, metaLine, thumbRow, thumb, sessionEntry, sessionGroup);
+            var panel = BuildPanel(config, head, userBubble, assistantBubble, systemChip, metaLine, thumbRow, thumb, sessionEntry, sessionGroup,
+                                   card, cardStrip, turnActions);
             EnsureEventSystem(head);
 
             Undo.RegisterCreatedObjectUndo(panel, "Build Megamind panel");
@@ -89,7 +93,8 @@ namespace Megamind.EditorTools
 
         static GameObject BuildPanel(MegamindConfig config, Transform head, ChatBubble userBubble, ChatBubble assistantBubble,
                                      ChatBubble systemChip, RectTransform metaLine, RectTransform thumbRow, RectTransform thumb,
-                                     RectTransform sessionEntry, Text sessionGroup)
+                                     RectTransform sessionEntry, Text sessionGroup, CitationCard card, RectTransform cardStrip,
+                                     RectTransform turnActions)
         {
             var go = new GameObject("MegamindPanel", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
             var rt = go.GetComponent<RectTransform>();
@@ -153,42 +158,84 @@ namespace Megamind.EditorTools
             emptyHint.lineSpacing = 1.15f;
             emptyHint.rectTransform.Fill(new Vector2(Space4 + Space1, FooterH), new Vector2(-(Space4 + Space1), -HeaderH));
 
+            // Typing indicator: an assistant bubble ("● ○ ○" cycling) kept at the end of the transcript while thinking.
+            var typing = (ChatBubble)PrefabUtility.InstantiatePrefab(assistantBubble, crt);
+            typing.gameObject.name = "Typing";
+            typing.Text = "\u25cf \u25cb \u25cb";
+            typing.label.color = Secondary;
+            typing.gameObject.AddComponent<TypingIndicator>().label = typing.label;
+            typing.gameObject.SetActive(false);
+
+            // "↓ Latest" pill above the footer, shown by ChatPanel when the user scrolled up and new messages arrive.
+            var jump = MakeButton(go.transform, "JumpToLatest", "\u2193  Latest", FontCaption, sprite: RoundedM);
+            var jrt = jump.GetComponent<RectTransform>();
+            jrt.anchorMin = jrt.anchorMax = new Vector2(0.5f, 0f); jrt.pivot = new Vector2(0.5f, 0f);
+            jrt.anchoredPosition = new Vector2(0f, FooterH + Space1); jrt.sizeDelta = new Vector2(128f, 36f);
+            jump.GetComponent<Image>().color = SurfaceRaised; // solid pill over the transcript
+            jump.GetComponentInChildren<Text>().color = Accent;
+            jump.gameObject.SetActive(false);
+
             // Footer: state line ("Recording continuously" / "Paused") + listening/thinking indicators on top,
             // big Record|Pause / Hold to talk / Type buttons below (3 controls: no crowding).
             var footer = new GameObject("Footer", typeof(RectTransform));
             footer.transform.SetParent(go.transform, false);
             footer.GetComponent<RectTransform>().AnchorBottom(FooterH);
             Hairline(footer.transform, bottom: false);
+            // Top row: capture pill (Record | Pause + knob) and state text on the left, turn phase on the right.
+            float topH = FooterH - FooterButtonsH;
+            var recordButton = MakeButton(footer.transform, "RecordButton", "Record", FontCaption, sprite: RoundedS);
+            var rbRt = recordButton.GetComponent<RectTransform>();
+            rbRt.anchorMin = new Vector2(0f, 1f); rbRt.anchorMax = new Vector2(0f, 1f); rbRt.pivot = new Vector2(0f, 1f);
+            rbRt.anchoredPosition = new Vector2(Space2, -Space1); rbRt.sizeDelta = new Vector2(104f, topH - Space2);
+            var recordLabel = recordButton.GetComponentInChildren<Text>();
+            recordLabel.alignment = TextAnchor.MiddleLeft; recordLabel.rectTransform.offsetMin = new Vector2(Space3 + 4f, 0f);
+            var recordKnob = MakeImage(recordButton.transform, "Knob", Paused, Circle);
+            recordKnob.type = Image.Type.Simple; recordKnob.AnchorLeftCentre(12f, 12f, 12f);
             var stateLabel = MakeLabel(footer.transform, "StateLabel", "Paused", FontCaption, TextDim, TextAnchor.MiddleLeft);
+            stateLabel.horizontalOverflow = HorizontalWrapMode.Overflow; stateLabel.verticalOverflow = VerticalWrapMode.Truncate;
             stateLabel.rectTransform.anchorMin = new Vector2(0f, 1f); stateLabel.rectTransform.anchorMax = Vector2.one; stateLabel.rectTransform.pivot = new Vector2(0.5f, 1f);
-            stateLabel.rectTransform.offsetMin = new Vector2(Space3, -(FooterH - FooterButtonsH)); stateLabel.rectTransform.offsetMax = new Vector2(-280f, 0f);
+            stateLabel.rectTransform.offsetMin = new Vector2(Space2 + 104f + Space1 + 4f, -topH); stateLabel.rectTransform.offsetMax = new Vector2(-220f, 0f);
             var indicators = new GameObject("Indicators", typeof(RectTransform));
             indicators.transform.SetParent(footer.transform, false);
             var irt = indicators.GetComponent<RectTransform>();
             irt.anchorMin = new Vector2(1f, 1f); irt.anchorMax = Vector2.one; irt.pivot = new Vector2(1f, 1f);
-            irt.anchoredPosition = new Vector2(-Space3, 0f); irt.sizeDelta = new Vector2(260f, FooterH - FooterButtonsH);
-            var listening = MakeImage(indicators.transform, "ListeningIndicator", Rec, Circle);
-            listening.type = Image.Type.Simple; listening.AnchorLeftCentre(0f, 14f, 14f);
-            var listeningLabel = MakeLabel(listening.transform, "Label", "listening…", FontCaption, TextMain, TextAnchor.MiddleLeft);
-            listeningLabel.rectTransform.anchorMin = new Vector2(1f, 0.5f); listeningLabel.rectTransform.anchorMax = new Vector2(1f, 0.5f);
-            listeningLabel.rectTransform.pivot = new Vector2(0f, 0.5f); listeningLabel.rectTransform.anchoredPosition = new Vector2(Space1, 0f);
-            listeningLabel.rectTransform.sizeDelta = new Vector2(236f, 28f);
-            var thinking = MakeLabel(indicators.transform, "ThinkingIndicator", "thinking…", FontCaption, Secondary, TextAnchor.MiddleRight);
-            thinking.rectTransform.Stretch();
+            irt.anchoredPosition = new Vector2(-Space3, 0f); irt.sizeDelta = new Vector2(200f, topH);
+            var phaseDot = MakeImage(indicators.transform, "PhaseDot", Rec, Circle);
+            phaseDot.type = Image.Type.Simple;
+            phaseDot.rectTransform.anchorMin = phaseDot.rectTransform.anchorMax = new Vector2(1f, 0.5f); phaseDot.rectTransform.pivot = new Vector2(1f, 0.5f);
+            phaseDot.rectTransform.anchoredPosition = Vector2.zero; phaseDot.rectTransform.sizeDelta = new Vector2(10f, 10f);
+            var phaseLabel = MakeLabel(indicators.transform, "PhaseLabel", "", FontCaption, TextDim, TextAnchor.MiddleRight);
+            phaseLabel.horizontalOverflow = HorizontalWrapMode.Overflow;
+            phaseLabel.rectTransform.Fill(Vector2.zero, new Vector2(-(10f + Space1), 0f));
+            // ChatPanel's listening/thinking indicators are driven by PanelControls' phase line now; keep hidden stand-ins so
+            // the fields stay valid for scenes/scripts that read them.
+            var listening = MakeImage(indicators.transform, "ListeningIndicator", Rec, null); listening.rectTransform.sizeDelta = Vector2.zero;
+            var thinking = MakeLabel(indicators.transform, "ThinkingIndicator", "", FontCaption, Secondary, TextAnchor.MiddleRight); thinking.rectTransform.sizeDelta = Vector2.zero;
+
+            // Input bar (3 controls): Hold to talk with a level meter, the question field (Quest keyboard), Send.
             var buttons = new GameObject("Buttons", typeof(RectTransform), typeof(HorizontalLayoutGroup));
             buttons.transform.SetParent(footer.transform, false);
             var brt = buttons.GetComponent<RectTransform>();
             brt.AnchorBottom(FooterButtonsH); brt.offsetMin = new Vector2(Space2, Space2); brt.offsetMax = new Vector2(-Space2, FooterButtonsH);
             var bhlg = buttons.GetComponent<HorizontalLayoutGroup>();
-            bhlg.spacing = Space1; bhlg.childControlWidth = true; bhlg.childControlHeight = true; bhlg.childForceExpandWidth = true;
-            var recordButton = MakeButton(buttons.transform, "RecordButton", "Record", FontButton);
-            var recordLabel = recordButton.GetComponentInChildren<Text>();
-            recordLabel.rectTransform.offsetMin = new Vector2(Space3, 0f);
-            var recordKnob = MakeImage(recordButton.transform, "Knob", Paused, Circle);
-            recordKnob.type = Image.Type.Simple; recordKnob.AnchorLeftCentre(Space2, 14f, 14f);
+            bhlg.spacing = Space1; bhlg.childControlWidth = true; bhlg.childControlHeight = true; bhlg.childForceExpandWidth = false;
             var talkButton = MakeButton(buttons.transform, "HoldToTalkButton", "Hold to talk", FontButton);
-            var typeButton = MakeButton(buttons.transform, "TypeButton", "Type", FontButton);
-            typeButton.gameObject.AddComponent<LayoutElement>().flexibleWidth = 0.6f;
+            var tle = talkButton.gameObject.AddComponent<LayoutElement>(); tle.preferredWidth = 168f; tle.minWidth = 168f;
+            var talkLabel = talkButton.GetComponentInChildren<Text>();
+            talkLabel.rectTransform.offsetMin = new Vector2(Space3 + 8f, 0f);
+            var micIcon = MakeImage(talkButton.transform, "Mic", TextMain, Circle);
+            micIcon.type = Image.Type.Simple; micIcon.AnchorLeftCentre(Space2, 12f, 12f);
+            var meterTrack = MakeImage(talkButton.transform, "Meter", new Color(1f, 1f, 1f, 0.12f), RoundedS);
+            meterTrack.rectTransform.anchorMin = new Vector2(0f, 0f); meterTrack.rectTransform.anchorMax = new Vector2(1f, 0f); meterTrack.rectTransform.pivot = new Vector2(0.5f, 0f);
+            meterTrack.rectTransform.offsetMin = new Vector2(Space2, 6f); meterTrack.rectTransform.offsetMax = new Vector2(-Space2, 10f);
+            var meterFill = MakeImage(meterTrack.transform, "Fill", Rec, RoundedS);
+            meterFill.type = Image.Type.Filled; meterFill.fillMethod = Image.FillMethod.Horizontal; meterFill.fillOrigin = 0; meterFill.fillAmount = 0f;
+            meterFill.rectTransform.Stretch();
+            var inputField = MakeInputField(buttons.transform, "Question", "Ask Megamind\u2026");
+            inputField.GetComponent<LayoutElement>().flexibleWidth = 1f;
+            inputField.GetComponent<LayoutElement>().preferredHeight = 0f;
+            var sendButton = MakeButton(buttons.transform, "SendButton", "Send", FontButton, AccentButton);
+            var sle = sendButton.gameObject.AddComponent<LayoutElement>(); sle.preferredWidth = 96f; sle.minWidth = 96f;
 
             // Settings sheet (inactive by default; SettingsPanel.Awake hides it)
             var settingsRoot = Sheet(go.transform, "Settings");
@@ -242,6 +289,45 @@ namespace Megamind.EditorTools
             controlsText.lineSpacing = 1.1f;
             controlsText.rectTransform.Fill(new Vector2(Space3, Space2), new Vector2(-Space3, -(Space3 + 40f + Space2)));
             controlsText.verticalOverflow = VerticalWrapMode.Truncate;
+
+            // Lightbox: full-size viewer over the panel (scrim click = close). Viewport clips the pannable/zoomable image.
+            var lightRoot = Sheet(go.transform, "Lightbox");
+            lightRoot.color = new Color(PanelBg.r, PanelBg.g, PanelBg.b, 0.985f);
+            var scrim = lightRoot.gameObject.AddComponent<Button>(); scrim.transition = Selectable.Transition.None;
+            var lbCounter = MakeLabel(lightRoot.transform, "Counter", "1 / 1", FontTitle, TextMain, TextAnchor.MiddleLeft);
+            lbCounter.rectTransform.AnchorTop(40f); lbCounter.rectTransform.offsetMin = new Vector2(Space3, -(Space3 + 40f)); lbCounter.rectTransform.offsetMax = new Vector2(-(Space3 + 96f + Space1), -Space3);
+            var lbTime = MakeLabel(lightRoot.transform, "Time", "", FontCaption, TextDim, TextAnchor.MiddleLeft);
+            lbTime.rectTransform.AnchorTop(40f); lbTime.rectTransform.offsetMin = new Vector2(Space3 + 96f, -(Space3 + 40f)); lbTime.rectTransform.offsetMax = new Vector2(-(Space3 + 96f + Space1), -Space3);
+            var lbClose = SheetClose(lightRoot.transform);
+            var lbViewport = MakeImage(lightRoot.transform, "Viewport", new Color(0f, 0f, 0f, 0.45f), RoundedM);
+            lbViewport.raycastTarget = true; // drag target
+            lbViewport.gameObject.AddComponent<RectMask2D>();
+            lbViewport.rectTransform.Fill(new Vector2(Space3, Space3 + 88f), new Vector2(-Space3, -(Space3 + 40f + Space2)));
+            var lbImage = new GameObject("Image", typeof(RectTransform), typeof(RawImage));
+            lbImage.transform.SetParent(lbViewport.transform, false);
+            var lbiRt = lbImage.GetComponent<RectTransform>();
+            lbiRt.anchorMin = lbiRt.anchorMax = new Vector2(0.5f, 0.5f); lbiRt.pivot = new Vector2(0.5f, 0.5f); lbiRt.sizeDelta = new Vector2(480f, 360f);
+            lbImage.GetComponent<RawImage>().color = ThumbPlaceholder; lbImage.GetComponent<RawImage>().raycastTarget = false;
+            var lbPrev = RoundButton(lightRoot.transform, "Prev", "\u2039");
+            lbPrev.GetComponent<RectTransform>().anchorMin = lbPrev.GetComponent<RectTransform>().anchorMax = new Vector2(0f, 0.5f);
+            lbPrev.GetComponent<RectTransform>().anchoredPosition = new Vector2(Space3 + Space1, 20f);
+            var lbNext = RoundButton(lightRoot.transform, "Next", "\u203a");
+            lbNext.GetComponent<RectTransform>().anchorMin = lbNext.GetComponent<RectTransform>().anchorMax = new Vector2(1f, 0.5f);
+            lbNext.GetComponent<RectTransform>().anchoredPosition = new Vector2(-(Space3 + Space1), 20f);
+            var lbCaption = MakeLabel(lightRoot.transform, "Caption", "", FontCaption, TextMain, TextAnchor.UpperLeft);
+            lbCaption.verticalOverflow = VerticalWrapMode.Truncate;
+            lbCaption.rectTransform.anchorMin = Vector2.zero; lbCaption.rectTransform.anchorMax = new Vector2(1f, 0f); lbCaption.rectTransform.pivot = new Vector2(0.5f, 0f);
+            lbCaption.rectTransform.offsetMin = new Vector2(Space3, Space3); lbCaption.rectTransform.offsetMax = new Vector2(-(Space3 + 2f * 44f + Space1 + Space2), Space3 + 64f);
+            var lbZoomOut = RoundButton(lightRoot.transform, "ZoomOut", "\u2212");
+            lbZoomOut.GetComponent<RectTransform>().anchorMin = lbZoomOut.GetComponent<RectTransform>().anchorMax = new Vector2(1f, 0f);
+            lbZoomOut.GetComponent<RectTransform>().anchoredPosition = new Vector2(-(Space3 + 44f + Space1 + 22f), Space3 + 32f);
+            var lbZoomIn = RoundButton(lightRoot.transform, "ZoomIn", "+");
+            lbZoomIn.GetComponent<RectTransform>().anchorMin = lbZoomIn.GetComponent<RectTransform>().anchorMax = new Vector2(1f, 0f);
+            lbZoomIn.GetComponent<RectTransform>().anchoredPosition = new Vector2(-(Space3 + 22f), Space3 + 32f);
+            var lightbox = lbViewport.gameObject.AddComponent<Lightbox>();
+            lightbox.config = config; lightbox.root = lightRoot.gameObject; lightbox.viewport = lbViewport.rectTransform;
+            lightbox.image = lbImage.GetComponent<RawImage>(); lightbox.caption = lbCaption; lightbox.timeLabel = lbTime; lightbox.counter = lbCounter;
+            lightbox.prev = lbPrev; lightbox.next = lbNext;
 
             // Drawer: transparent backdrop (click anywhere = close) + a column down the right edge that PanelDrawer slides
             // in from above (clipped by DrawerClip). Built after the sheets so it draws on top of them.
@@ -309,6 +395,8 @@ namespace Megamind.EditorTools
             chatPanel.userBubblePrefab = userBubble; chatPanel.assistantBubblePrefab = assistantBubble;
             chatPanel.systemChipPrefab = systemChip; chatPanel.metaLinePrefab = metaLine;
             chatPanel.thumbnailRowPrefab = thumbRow; chatPanel.thumbnailPrefab = thumb;
+            chatPanel.cardPrefab = card; chatPanel.cardStripPrefab = cardStrip; chatPanel.turnActionsPrefab = turnActions;
+            chatPanel.lightbox = lightbox; chatPanel.typingIndicator = typing.gameObject; chatPanel.jumpToLatest = jump;
             chatPanel.listeningIndicator = listening.gameObject; chatPanel.thinkingIndicator = thinking.gameObject;
             chatPanel.emptyHint = emptyHint.gameObject;
             chatPanel.statusLine = statusLine; chatPanel.serverDot = dot; chatPanel.recDot = recDot;
@@ -342,7 +430,7 @@ namespace Megamind.EditorTools
             drawer.drawer = mrt; drawer.group = drawerGroup; drawer.backdrop = backdrop.gameObject; drawer.chevron = chevron;
             drawer.hiddenOffset = PanelH;
             var menu = go.AddComponent<PanelMenu>();
-            menu.root = menuRoot.gameObject; menu.backdrop = backdrop.gameObject; menu.drawer = drawer;
+            menu.root = menuRoot.gameObject; menu.backdrop = backdrop.gameObject; menu.drawer = drawer; menu.lightbox = lightbox;
             menu.debugRoot = debugRoot.gameObject; menu.debugText = debugText; menu.controlsRoot = controlsRoot.gameObject;
             menu.pinLabel = miPin.GetComponentInChildren<Text>(); menu.textSizeLabel = miTextSize.GetComponentInChildren<Text>();
             menu.hud = hud; menu.settings = settings; menu.anchor = anchor; menu.chatPanel = chatPanel;
@@ -359,7 +447,9 @@ namespace Megamind.EditorTools
             controls.recordLabel = recordLabel; controls.recordKnob = recordKnob; controls.stateLabel = stateLabel;
             controls.recColor = Rec; controls.pausedColor = Paused;
             controls.minimizeLabel = minimizeButton.GetComponentInChildren<Text>();
-            controls.hiddenWhenMinimized = new[] { background.gameObject, scrollGo, emptyHint.gameObject, footer.gameObject };
+            controls.inputField = inputField; controls.sendButton = sendButton; controls.phaseLabel = phaseLabel; controls.phaseDot = phaseDot;
+            controls.micMeter = meterFill;
+            controls.hiddenWhenMinimized = new[] { background.gameObject, scrollGo, emptyHint.gameObject, footer.gameObject, jump.gameObject };
             var holdToTalk = talkButton.gameObject.AddComponent<HoldToTalkButton>();
             holdToTalk.client = client; holdToTalk.background = talkButton.GetComponent<Image>();
             holdToTalk.idleColor = GhostButton.normalColor; holdToTalk.activeColor = Rec;
@@ -373,7 +463,13 @@ namespace Megamind.EditorTools
             UnityEventTools.AddPersistentListener(miControls.onClick, new UnityAction(menu.OpenControls));
             UnityEventTools.AddPersistentListener(controlsClose.onClick, new UnityAction(menu.CloseControls));
             UnityEventTools.AddPersistentListener(recordButton.onClick, new UnityAction(controls.ToggleRecord));
-            UnityEventTools.AddPersistentListener(typeButton.onClick, new UnityAction(controls.OpenKeyboard));
+            UnityEventTools.AddPersistentListener(sendButton.onClick, new UnityAction(controls.Send));
+            UnityEventTools.AddPersistentListener(scrim.onClick, new UnityAction(lightbox.Close));
+            UnityEventTools.AddPersistentListener(lbClose.onClick, new UnityAction(lightbox.Close));
+            UnityEventTools.AddPersistentListener(lbPrev.onClick, new UnityAction(lightbox.Prev));
+            UnityEventTools.AddPersistentListener(lbNext.onClick, new UnityAction(lightbox.Next));
+            UnityEventTools.AddPersistentListener(lbZoomIn.onClick, new UnityAction(lightbox.ZoomIn));
+            UnityEventTools.AddPersistentListener(lbZoomOut.onClick, new UnityAction(lightbox.ZoomOut));
             UnityEventTools.AddPersistentListener(minimizeButton.onClick, new UnityAction(controls.ToggleMinimized));
             UnityEventTools.AddPersistentListener(miPin.onClick, new UnityAction(menu.TogglePin));
             UnityEventTools.AddPersistentListener(miTextSize.onClick, new UnityAction(menu.CycleTextSize));
@@ -389,6 +485,7 @@ namespace Megamind.EditorTools
             settingsRoot.gameObject.SetActive(false);
             debugRoot.gameObject.SetActive(false);
             controlsRoot.gameObject.SetActive(false);
+            lightRoot.gameObject.SetActive(false);
             menuRoot.gameObject.SetActive(false);
             drawerGroup.alpha = 0f; drawerGroup.interactable = drawerGroup.blocksRaycasts = false;
             mrt.anchoredPosition = new Vector2(0f, PanelH); // PanelDrawer slides it down from here
@@ -603,6 +700,70 @@ namespace Megamind.EditorTools
             return SavePrefab(t.gameObject).GetComponent<Text>();
         }
 
+        // Card: rounded thumbnail (Mask) + age + caption snippet; the whole card is a Button (opens the Lightbox).
+        static CitationCard CitationCardPrefab()
+        {
+            var root = MakeImage(null, "CitationCard", Color.white, RoundedM);
+            root.raycastTarget = true;
+            var button = root.gameObject.AddComponent<Button>(); button.targetGraphic = root; button.colors = GhostButton;
+            var le = root.gameObject.AddComponent<LayoutElement>(); le.preferredWidth = le.minWidth = ThumbW + 2f * Space1; le.preferredHeight = ThumbH + 76f;
+            var frame = MakeImage(root.transform, "Frame", Color.white, RoundedS);
+            frame.gameObject.AddComponent<Mask>().showMaskGraphic = false;
+            frame.rectTransform.anchorMin = new Vector2(0f, 1f); frame.rectTransform.anchorMax = new Vector2(1f, 1f); frame.rectTransform.pivot = new Vector2(0.5f, 1f);
+            frame.rectTransform.offsetMin = new Vector2(Space1, -(Space1 + ThumbH)); frame.rectTransform.offsetMax = new Vector2(-Space1, -Space1);
+            var img = new GameObject("Image", typeof(RectTransform), typeof(RawImage));
+            img.transform.SetParent(frame.transform, false);
+            img.GetComponent<RectTransform>().Stretch();
+            img.GetComponent<RawImage>().color = ThumbPlaceholder; img.GetComponent<RawImage>().raycastTarget = false;
+            var age = MakeLabel(frame.transform, "Age", "n min ago", 15, TextMain, TextAnchor.LowerRight);
+            age.rectTransform.Stretch(); age.rectTransform.offsetMin = new Vector2(Space1, 6f); age.rectTransform.offsetMax = new Vector2(-Space1, -6f);
+            age.gameObject.AddComponent<Shadow>().effectColor = Color.black;
+            var cap = MakeLabel(root.transform, "Caption", "", 15, TextDim, TextAnchor.UpperLeft);
+            cap.verticalOverflow = VerticalWrapMode.Truncate; cap.lineSpacing = 1.05f;
+            cap.rectTransform.anchorMin = Vector2.zero; cap.rectTransform.anchorMax = new Vector2(1f, 0f); cap.rectTransform.pivot = new Vector2(0.5f, 0f);
+            cap.rectTransform.offsetMin = new Vector2(Space1 + 2f, Space1); cap.rectTransform.offsetMax = new Vector2(-(Space1 + 2f), Space1 + 56f);
+            var card = root.gameObject.AddComponent<CitationCard>();
+            card.image = img.GetComponent<RawImage>(); card.age = age; card.caption = cap; card.button = button;
+            return SavePrefab(root.gameObject).GetComponent<CitationCard>();
+        }
+
+        // Horizontal strip of cards (scrolls sideways when more than fit).
+        static RectTransform CardStripPrefab()
+        {
+            var go = new GameObject("CardStrip", typeof(RectTransform), typeof(ScrollRect), typeof(RectMask2D), typeof(LayoutElement));
+            go.GetComponent<LayoutElement>().preferredHeight = ThumbH + 76f;
+            var scroll = go.GetComponent<ScrollRect>();
+            scroll.vertical = false; scroll.horizontal = true; scroll.movementType = ScrollRect.MovementType.Clamped; scroll.scrollSensitivity = 30f;
+            var content = new GameObject("Content", typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(ContentSizeFitter));
+            content.transform.SetParent(go.transform, false);
+            var crt = content.GetComponent<RectTransform>();
+            crt.anchorMin = new Vector2(0f, 0f); crt.anchorMax = new Vector2(0f, 1f); crt.pivot = new Vector2(0f, 0.5f);
+            crt.offsetMin = Vector2.zero; crt.offsetMax = Vector2.zero;
+            var h = content.GetComponent<HorizontalLayoutGroup>();
+            h.spacing = Space1; h.childAlignment = TextAnchor.MiddleLeft;
+            h.childControlWidth = true; h.childControlHeight = true; h.childForceExpandWidth = false; h.childForceExpandHeight = true;
+            content.GetComponent<ContentSizeFitter>().horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
+            scroll.viewport = go.GetComponent<RectTransform>(); scroll.content = crt;
+            return SavePrefab(go).GetComponent<RectTransform>();
+        }
+
+        // Under an answer: meta caption ("0.9 s first · 2.4 s · high") + Copy + Retry ghost buttons, indented like MetaLine.
+        static RectTransform TurnActionsPrefab()
+        {
+            var go = new GameObject("TurnActions", typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(LayoutElement));
+            go.GetComponent<LayoutElement>().preferredHeight = 32f;
+            var h = go.GetComponent<HorizontalLayoutGroup>();
+            h.padding = new RectOffset((int)(AvatarSize + Space1 + Space2), 0, 0, 0); h.spacing = Space1; h.childAlignment = TextAnchor.MiddleLeft;
+            h.childControlWidth = true; h.childControlHeight = true; h.childForceExpandWidth = false; h.childForceExpandHeight = true;
+            var label = MakeLabel(go.transform, "Label", "", FontMono, TextMuted, TextAnchor.MiddleLeft);
+            label.gameObject.AddComponent<LayoutElement>().flexibleWidth = 1f;
+            var copy = MakeButton(go.transform, "Copy", "Copy", 14, sprite: RoundedS);
+            var cle = copy.gameObject.AddComponent<LayoutElement>(); cle.preferredWidth = 72f; cle.minWidth = 72f;
+            var retry = MakeButton(go.transform, "Retry", "Retry", 14, sprite: RoundedS);
+            var rle = retry.gameObject.AddComponent<LayoutElement>(); rle.preferredWidth = 72f; rle.minWidth = 72f;
+            return SavePrefab(go).GetComponent<RectTransform>();
+        }
+
         static RectTransform ThumbRowPrefab()
         {
             var go = new GameObject("ThumbRow", typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(LayoutElement));
@@ -722,6 +883,17 @@ namespace Megamind.EditorTools
             return b;
         }
 
+        // 44 px round ghost button with a single glyph (lightbox prev / next / zoom).
+        static Button RoundButton(Transform parent, string name, string glyph)
+        {
+            var b = MakeButton(parent, name, glyph, FontTitle, sprite: Circle);
+            b.GetComponent<Image>().type = Image.Type.Simple;
+            var rt = b.GetComponent<RectTransform>();
+            rt.pivot = new Vector2(0.5f, 0.5f); rt.sizeDelta = new Vector2(44f, 44f);
+            var c = b.colors; c.normalColor = new Color(1f, 1f, 1f, 0.18f); b.colors = c;
+            return b;
+        }
+
         static Transform ButtonRow(Transform parent, string name)
         {
             var row = new GameObject(name, typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(LayoutElement));
@@ -751,7 +923,9 @@ namespace Megamind.EditorTools
             "Panel\n" +
             "  Record / Pause  continuous capture on/off\n" +
             "  Hold to talk  point, hold trigger or pinch, speak, release\n" +
-            "  Type  on-screen keyboard for a typed question\n" +
+            "  Ask Megamind…  field opens the keyboard; Send asks\n" +
+            "  Thumbnail  tap to open it large; ‹ › prev/next, sticks pan/zoom, B/Y back\n" +
+            "  Copy / Retry  under each answer\n" +
             "  Hide / Show  collapse to the header (REC dot stays)\n" +
             "  Tab (top-right)  drawer: New chat, chats, Settings, Debug, Pin, Text size, Controls, Purge\n\n" +
             "Voice (hold trigger, say):\n  " + VoiceCommands.Hint;
