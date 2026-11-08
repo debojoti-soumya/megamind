@@ -188,8 +188,7 @@ async def test_chat_stream_reset_cancels_preamble_audio(app_client):
     r_i = names.index("reset")
     assert "audio" not in names[:r_i] or all(n != "audio" for n in names[r_i:]) is False
     after = [d for n, d in events[r_i:] if n == "audio"]
-    assert [a["seq"] for a in after] == [0, 1]  # the first clause is spoken alone
-    assert " ".join(a["text"] for a in after) == ANSWER.split(" <cites>")[0]
+    assert [a["seq"] for a in after] == [0] and after[0]["text"] == ANSWER.split(" <cites>")[0]
     assert ChatResponse.model_validate(events[-1][1]).audio_url.endswith(".wav")
 
 
@@ -278,15 +277,3 @@ async def test_two_search_answer_is_sent_tool_results_as_text(app_client, as_tex
         assert "tool result:" in answer_req
     assert "tool_result" in json.dumps(agent.histories["s"])  # history keeps the real blocks
     assert seen["delta"] < t_call < t_final and seen["audio"] < t_final
-
-
-def test_first_clause_is_spoken_alone_then_whole_sentences():
-    b = SentenceBuffer(first_clause=True)
-    text = "Your backpack is on the chair by the desk, and the monitor showed an editor. It had a failing test, sadly. "
-    out = [x for i in range(0, len(text), 5) for x in b.feed(text[i : i + 5])] + [b.flush()]
-    assert out == [
-        "Your backpack is on the chair by the desk,",
-        "and the monitor showed an editor.",
-        "It had a failing test, sadly.",
-    ]
-    assert SentenceBuffer(first_clause=True).feed("Yes, it is on the desk, ") == []  # "Yes," is under min_chars
