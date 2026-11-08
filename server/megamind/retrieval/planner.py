@@ -63,6 +63,7 @@ class QueryPlan:
     explicit_time: bool = False
     time_focus: TimeFocus = "center"  # "after lunch" -> start, "before I left" -> end
     route: PlanRoute = "ucc"
+    kinds: tuple[str, ...] | None = None  # "recent" mode only: restrict to these token kinds ("what did I hear?")
 
     @property
     def has_time(self) -> bool:
@@ -434,6 +435,19 @@ _GENERIC = frozenset(
     "memory memories snapshot snapshots captured".split()
 )
 
+# Speech questions with no subject ("what did I hear?", "who did I talk to?", "what did someone say?") ask for the
+# latest transcript tokens; the subject-free check also allows the person/people words the planner adds.
+_RE_SPEECH = re.compile(
+    r"\b(?:hear|heard|listen(?:ed)?|say|said|says|talk(?:ed|ing)?|told|tell|spoke|speak(?:ing)?|conversations?|"
+    r"chat(?:ted)?|discuss(?:ed)?|speech|voices?)\b",
+    re.I,
+)
+_SPEECH_GENERIC = _GENERIC | frozenset(
+    "hear heard hearing listen listened say said says talk talked talking told tell spoke speak speaking "
+    "conversation conversations chat chatted discuss discussed speech voice voices audio sound sounds "
+    "someone somebody anyone anybody person people".split()
+)
+
 # Query words -> what a caption/OCR is likely to say instead (kept tiny and obvious on purpose).
 _EXPAND: dict[str, str] = {
     "park": "parking garage car",
@@ -494,6 +508,9 @@ def plan_query(
     meal = _RE_MEAL.search(win.hint) if win and not text and focus == "center" else None
     if meal:  # "what did I have for lunch": the meal is the subject, not only the time -> search for food
         text = rewrite(meal.group(1))
+    kinds = None
+    if _RE_SPEECH.search(query) and all(w in _SPEECH_GENERIC for w in text.split()):
+        text, kinds = "", ("transcript",)  # "what did I hear?", "who did I talk to?": the latest speech
 
     explicit = time_from is not None or time_to is not None
     if explicit:
@@ -518,6 +535,7 @@ def plan_query(
         explicit_time=explicit,
         time_focus=focus,
         route=_route_for(mode),
+        kinds=kinds,
     )
 
 

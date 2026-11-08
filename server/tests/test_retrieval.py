@@ -396,3 +396,16 @@ async def test_contentless_explicit_window_near_now_falls_back_to_latest_frames(
         "what did I see?", k=1, time_from=now.timestamp() - 300, device_id="dev", now=now
     )
     assert r.widened and [x.token.id for x in r.tokens] == ["r3"]
+
+
+async def test_speech_recency_returns_latest_transcripts_else_latest_frames():
+    now = datetime(2026, 11, 8, 16, 0, tzinfo=UTC)
+    st = await _recency_store(now)
+    r = HybridRetriever(st, MockTextEmbedder(), None)
+    res = await r.retrieve("what did I hear?", k=2, device_id="dev", now=now)
+    assert res.plan.kinds == ("transcript",) and [x.token.id for x in res.tokens] == ["r3", "r2"]  # no speech yet
+    await st.add(
+        _tok("s1", now.timestamp() - 3000, "Speech: let's meet at noon", kind="transcript", transcript="meet at noon")
+    )
+    res = await r.retrieve("who did I talk to?", k=2, device_id="dev", now=now)
+    assert [x.token.id for x in res.tokens] == ["s1"]

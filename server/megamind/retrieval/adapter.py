@@ -165,10 +165,13 @@ class StoreAdapter:
         *,
         limit: int = 100,
         device_id: str | None = None,
+        kinds: tuple[str, ...] | None = None,
     ) -> list[MemoryToken]:
         if hasattr(self.store, "range"):
+            if kinds:
+                return await self.store.range(time_from, time_to, limit, device_id=device_id, kinds=kinds)
             return await self.store.range(time_from, time_to, limit, device_id=device_id)
-        pool = await self._pool(time_from, time_to, device_id)
+        pool = [t for t in await self._pool(time_from, time_to, device_id) if not kinds or t.kind in kinds]
         return sorted(pool, key=lambda t: t.ts)[:limit]
 
     async def neighbors(self, token_id: str, before: int = 1, after: int = 1) -> list[MemoryToken]:
