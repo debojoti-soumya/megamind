@@ -173,7 +173,8 @@ namespace Megamind
             string sent = u.Accepted == u.Sent ? $"{u.Sent} sent" : $"{u.Accepted}/{u.Sent} sent";
             string mic = audioRecorder != null ? $" · mic {audioRecorder.Sent}" : "";
             string net = u.Failed > 0 && !u.ServerReachable ? " · NET ERR" : "";
-            return $"{state} · {sent}{mic} · url:{cfg.overrideSource}{net}";
+            string spool = u.Spooled > 0 ? $" · spool {u.Spooled}" : "";
+            return $"{state} · {sent}{spool}{mic} · url:{cfg.overrideSource}{net}";
         }
 
         /// <summary>Everything the old HUD showed, as multi-line text for the Debug view.</summary>
@@ -203,6 +204,7 @@ namespace Megamind
                 $"{line1}\n" +
                 $"sent {u.Sent}  accepted {u.Accepted}  last {u.LastReason}  {u.LastLatencyMs:0} ms  {u.LastJpegBytes / 1024} KB" +
                 (u.SkippedMotion + u.SkippedBacklog + u.SkippedBackoff > 0 ? $"  skipped m{u.SkippedMotion}/b{u.SkippedBacklog}/r{u.SkippedBackoff}" : "") +
+                (u.Spooled + u.SpoolDropped > 0 ? $"  spool {u.Spooled} (dropped {u.SpoolDropped})" : "") +
                 (u.BackgroundCount + u.FocusLossCount > 0 ? $"  bg {u.BackgroundCount} unfocus {u.FocusLossCount}" : "") + "\n" +
                 MicLine() +
                 $"{u.ServerBaseUrl}  [{u.DeviceId}, url:{cfg.overrideSource}]{net}";

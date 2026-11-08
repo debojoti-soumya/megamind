@@ -25,9 +25,17 @@ namespace Megamind
         [Tooltip("Uploads in flight before new frames are skipped (slow-network backpressure).")]
         public int maxPendingUploads = 4;
         public int uploadTimeoutSeconds = 10;
-        [Tooltip("After a network error / 5xx / 429, skip captures for this long, doubling per consecutive failure (with +-20% jitter) up to backoffMaxSeconds. Saves encode + radio while the server is unreachable; there is no offline queue (frames are only useful live).")]
+        [Tooltip("After a network error / 5xx / 429, skip captures for this long, doubling per consecutive failure (with +-20% jitter) up to backoffMaxSeconds. With offlineSpool on, frames captured meanwhile go to the spool instead of being skipped.")]
         public float backoffBaseSeconds = 1f;
         public float backoffMaxSeconds = 30f;
+        [Tooltip("Keep frames on disk (persistentDataPath/frame-spool) while the server is unreachable (hotspot dead zone, Wi-Fi drop) and upload them oldest-first with their original timestamps once it answers. While frames are spooled, new ones queue behind them: the server drops a frame older than the device's newest kept one.")]
+        public bool offlineSpool = true;
+        [Tooltip("Spooled frames kept at most, oldest dropped first. 900 = 15 min at 1 fps.")]
+        public int offlineSpoolMaxFrames = 900;
+        [Tooltip("Disk cap for the spool in MB (a 1280x960 q80 frame is ~100-200 KB).")]
+        public int offlineSpoolMaxMB = 200;
+        [Tooltip("Spooled frames older than this are dropped instead of uploaded, so a spool left from an earlier run cannot land after a DELETE /v1/memories wipe.")]
+        public float offlineSpoolMaxAgeMinutes = 30f;
         [Tooltip("Stop the passthrough camera stream while capture is paused (A/X or app backgrounded); restarted on resume (battery + thermals).")]
         public bool stopCameraWhenPaused = true;
         [Tooltip("Also pause capture + ambient audio when the app only loses focus (system menu, boundary warning, Meta-button dialog). Off: only a real background (OnApplicationPause) pauses, so recording continues behind system overlays.")]

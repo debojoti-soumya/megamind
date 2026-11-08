@@ -6,7 +6,8 @@
 // so we Blit -> ReadPixels -> EncodeToJPG (the same path QuestCameraKit uses on device).
 //
 // Pipeline per tick:  backlog gate (pending uploads)  ->  backoff gate (server unreachable)  ->  motion gate (head deg/s)
-//                     ->  readback  ->  encode (next frame)  ->  upload.
+//                     ->  readback  ->  encode (next frame)  ->  upload, or the offline spool (FrameSpool) while the server is
+//                     unreachable or older frames are still spooled; DrainSpool uploads those oldest-first, one at a time.
 // Paused (A/X) or app backgrounded (OnApplicationPause): no capture and the camera stream is stopped (CaptureSettings.stopCameraWhenPaused).
 // Focus loss alone (system menu, boundary warning, Meta-button dialog: OnApplicationFocus(false) / OVRManager.InputFocusLost)
 // keeps capturing unless CaptureSettings.pauseOnFocusLoss; the app is focus aware and keeps running behind the overlay.
@@ -14,6 +15,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using Meta.XR;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -43,6 +45,8 @@ namespace Megamind
         public int SkippedBacklog { get; private set; }
         public int SkippedBackoff { get; private set; } // dropped while backing off after upload failures
         public int Pending => _pending;
+        public int Spooled => _spool != null ? _spool.Count : 0;            // frames waiting on disk for the server
+        public int SpoolDropped => _spool != null ? _spool.Dropped : 0;     // spool full: oldest dropped
         public string LastReason { get; private set; } = "-";
         public string LastError { get; private set; } = "";
         public float LastLatencyMs { get; private set; }
@@ -74,6 +78,7 @@ namespace Megamind
         private bool _appUnfocused;      // OnApplicationFocus(false): system overlay / boundary warning / Meta-button dialog
         private bool PausedByFocus => _appUnfocused && settings != null && settings.pauseOnFocusLoss;
         private float _backoffUntil;
+        private FrameSpool _spool;
 
         private void Awake()
         {
@@ -86,10 +91,21 @@ namespace Megamind
             Capturing = settings.captureOnStart;
             Debug.Log($"[Megamind] capture: server={ServerBaseUrl} device={DeviceId} fps={settings.captureFps} url-source={settings.overrideSource}");
             Debug.Log($"[Megamind] config: {settings.DescribeConfig(config)}");
+            if (settings.offlineSpool)
+            {
+                try
+                {
+                    _spool = new FrameSpool(Path.Combine(Application.persistentDataPath, "frame-spool"),
+                                            settings.offlineSpoolMaxFrames, (long)settings.offlineSpoolMaxMB * 1024 * 1024);
+                    if (_spool.Count > 0) Debug.Log($"[Megamind] offline spool: {_spool.Count} frames from an earlier run upload once the server answers");
+                }
+                catch (Exception e) { Debug.LogWarning("[Megamind] offline spool disabled: " + e.Message); }
+            }
         }
 
         private IEnumerator Start()
         {
+            StartCoroutine(DrainSpool());
             if (cameraAccess == null) cameraAccess = FindAnyObjectByType<PassthroughCameraAccess>(FindObjectsInactive.Include);
             if (headPose == null)
             {
@@ -269,7 +285,7 @@ namespace Megamind
                 LastReason = "client:backlog";
                 return;
             }
-            if (!force && Time.unscaledTime < _backoffUntil)
+            if (!force && Time.unscaledTime < _backoffUntil && _spool == null)
             {
                 SkippedBackoff++;
                 LastReason = "client:backoff";
@@ -304,7 +320,52 @@ namespace Megamind
                 yield break;
             }
             LastJpegBytes = jpeg.Length;
+            if (ShouldSpool())
+            {
+                _pending--;
+                Spool(jpeg, meta);
+                yield break;
+            }
             yield return Upload(jpeg, meta);
+        }
+
+        /// <summary>Spool instead of uploading while the server is backing off or older frames still wait: keeps uploads in ts order.</summary>
+        private bool ShouldSpool() => _spool != null && (_spool.Count > 0 || Time.unscaledTime < _backoffUntil);
+
+        private void Spool(byte[] jpeg, FrameMeta meta)
+        {
+            try
+            {
+                _spool.Enqueue(meta.ts, jpeg, JsonUtility.ToJson(meta));
+                LastReason = "client:spooled";
+            }
+            catch (Exception e) { LastError = "spool write failed: " + e.Message; }
+        }
+
+        /// <summary>Uploads spooled frames oldest-first, one at a time, whenever the server is not backing off.</summary>
+        private IEnumerator DrainSpool()
+        {
+            var poll = new WaitForSeconds(0.5f);
+            while (true)
+            {
+                _spool?.DropOlderThan(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 - settings.offlineSpoolMaxAgeMinutes * 60.0);
+                if (_spool == null || _spool.Count == 0 || Time.unscaledTime < _backoffUntil ||
+                    !_spool.TryPeek(out var stem, out var jpeg, out var json))
+                {
+                    yield return poll;
+                    continue;
+                }
+                FrameMeta meta = null;
+                try { meta = JsonUtility.FromJson<FrameMeta>(json); }
+                catch (Exception) { /* corrupt entry */ }
+                if (meta == null)
+                {
+                    _spool.Remove(stem);
+                    continue;
+                }
+                _pending++;
+                yield return Upload(jpeg, meta, stem);
+            }
         }
 
         /// <summary>ts = camera image timestamp (falls back to now), pose = RGB camera pose at that time (falls back to CenterEyeAnchor).</summary>
@@ -392,7 +453,9 @@ namespace Megamind
             return true;
         }
 
-        private IEnumerator Upload(byte[] jpeg, FrameMeta meta)
+        /// <summary>POST one frame. spoolStem != null: it came from the spool, which keeps it on a retryable failure and
+        /// drops it otherwise. A live frame that fails retryably is spooled (when the spool is on).</summary>
+        private IEnumerator Upload(byte[] jpeg, FrameMeta meta, string spoolStem = null)
         {
             var form = new List<IMultipartFormSection>
             {
@@ -410,6 +473,7 @@ namespace Megamind
                 LastUploadTs = meta.ts;
                 if (req.result == UnityWebRequest.Result.Success)
                 {
+                    _spool?.Remove(spoolStem);
                     Sent++;
                     _consecutiveFailures = 0;
                     _backoffUntil = 0f;
@@ -432,7 +496,10 @@ namespace Megamind
                     LastError = $"{req.responseCode} {req.error} {Truncate(body, 120)}".Trim();
                     LastReason = "net";
                     long code = req.responseCode;
-                    if (code == 0 || code == 429 || code >= 500) // unreachable / overloaded; a 4xx is a client bug, retrying faster won't help either way
+                    bool retryable = code == 0 || code == 429 || code >= 500;
+                    if (!retryable) _spool?.Remove(spoolStem); // a 4xx will not succeed later either
+                    else if (spoolStem == null && _spool != null) Spool(jpeg, meta);
+                    if (retryable) // unreachable / overloaded; a 4xx is a client bug, retrying faster won't help either way
                     {
                         float delay = settings.backoffBaseSeconds * Mathf.Pow(2f, Mathf.Min(_consecutiveFailures - 1, 10));
                         delay = Mathf.Min(settings.backoffMaxSeconds, delay) * UnityEngine.Random.Range(0.8f, 1.2f);
