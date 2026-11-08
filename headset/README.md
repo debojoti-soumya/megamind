@@ -327,11 +327,13 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | `FrameUploader.cs` | 1 | 1 fps sample of `PassthroughCameraAccess.GetTexture()` → JPEG → `POST /v1/frames` with pose meta |
 | `AmbientAudioRecorder.cs` | 1 | ambient mic → 15 s 16 kHz mono PCM16 WAV chunks → `POST /v1/audio`; silence gate, backoff, pauses for push-to-talk / A/X / background |
 | `AudioChunkCodec.cs` | 1 | pure C# WAV + meta encoding (native-app layout) and the RMS level for the silence gate |
-| `CaptureHud.cs` | 1 | world-locked capture status HUD (+ `mic:` line) + recording indicator, A/X or middle-pinch pause |
+| `CaptureHud.cs` | 1 | capture status data source (`ShortStatus()` header strip, `FullReport()` Debug view) + A/X or middle-pinch pause; the old head-locked canvas only with `showOwnCanvas` |
 | `ChatClient.cs` | 3 | push-to-talk (trigger or index pinch) → 16 kHz WAV → `POST /v1/chat` → play audio; barge-in, latency; tells `AmbientAudioRecorder` to release the mic while recording |
 | `ChatPanel.cs` | 3 | transcript bubbles, cited thumbnails, confidence/latency line, status HUD (`/v1/health` poll) |
 | `PanelAnchor.cs` | 3 | tag-along panel: eye height, `panelDistance` m ahead, glides back when the head leaves a 25° / 0.5 m dead zone; Pin/Unpin (world-lock), hold B/Y 0.5 s to drag; A-/A+ UI scale (PlayerPrefs `megamind.uiScale`) |
 | `SettingsPanel.cs` | 3 | runtime server URL / device id, new session, purge memory |
+| `PanelMenu.cs` | 3 | header **Menu** dropdown (Settings, Debug, Pin/Unpin, Text size, New session, Purge) + voice-command execution |
+| `VoiceCommands.cs` | 3 | normalized-string matcher for short spoken commands (no wake word, no dependencies) |
 | `Editor/MegamindSceneBuilder.cs` | 1 | the `Megamind` menu: create scene, apply player settings, build, build & run, push config, check project |
 | `Editor/MegamindChatPanelBuilder.cs` | 3 | `Megamind > 1b. Add Chat Panel To Current Scene`: bubble/thumb prefabs + the chat panel, all references wired |
 
@@ -344,14 +346,46 @@ field on `ChatPanel`/`ChatClient`/`PanelAnchor`/`SettingsPanel`, finds `CenterEy
 `FrameUploader`, and adds an `EventSystem` with Meta's `OVRInputModule` + `OVRRaycaster` (right-controller
 ray) when the SDK provides them:
 ```
-MegamindPanel (Canvas + CanvasScaler)  + PanelAnchor + ChatPanel + ChatClient + SettingsPanel + AudioSource
-  Background, Header (ServerDot, StatusLine, A- / A+ / Pin / Settings buttons)
+MegamindPanel (Canvas + CanvasScaler)  + PanelAnchor + ChatPanel + ChatClient + SettingsPanel + PanelMenu + AudioSource
+  Background, Header (RecDot, ServerDot, StatusLine, Menu button)
   Scroll -> Viewport -> Content (VerticalLayoutGroup)        = ChatPanel.content
-  EmptyHint, Indicators (ListeningIndicator, ThinkingIndicator)
+  EmptyHint (push-to-talk + voice phrases), Indicators (ListeningIndicator, ThinkingIndicator)
   Settings (inactive): ServerUrl, DeviceId, Save / New session / Purge, Reset / Close, Feedback
+  Debug (inactive): Title, Close, Scroll -> Viewport -> Text (CaptureHud.FullReport)
+  MenuBackdrop (inactive, click = close), MenuDropdown (inactive): Settings, Debug, Pin panel, Text size, New session, Purge
 ```
 Re-running the menu item replaces a previous `MegamindPanel`; tweak the result in the Inspector and save.
 Push-to-talk: hold the controller trigger (or index pinch); hold B/Y 0.5 s to drag the panel to your gaze.
+
+### Header status strip, Menu dropdown and voice commands (verify on device)
+
+The separate head-locked `CaptureHud` canvas is gone from the default scene (`CaptureHud.showOwnCanvas` now defaults to
+false, and menu 1b sets it explicitly). A scene that is **not** rebuilt with 1b after pulling has neither the old HUD nor
+the header REC dot — re-run 1b. `CaptureHud` stays on the `Megamind` object as the data source and still owns the A/X / middle-pinch capture
+toggle. The chat panel header shows:
+
+- **REC dot** (left): blinks red while frames are captured, solid grey when paused. It is the privacy indicator and is
+  always visible.
+- **Status strip**: `CaptureHud.ShortStatus()`, one line — `REC 1 fps · 143 sent · mic 9 · url:intent` (`143/150 sent`
+  when some frames were rejected, `PAUSED`, `camera starting…`, `· NET ERR`), prefixed with `OFFLINE ·` when `/v1/health`
+  fails (the small server dot next to the REC dot is green/red too).
+- **Menu** (right): a dropdown over the panel with *Settings* (the existing settings sub-panel), *Debug* (everything
+  the old HUD showed — state, resolution, head °/s, sent/accepted/last reason/latency/KB, skipped and bg/unfocus
+  counters, the `mic:` line, server URL + `url:<source>` — as a scrollable text block refreshed 4x/s), *Pin panel* /
+  *Unpin panel*, *Text size 1x → 1.25x → 1.5x → 2x*, *New session*, *Purge memory*. Only one overlay is open at a time;
+  the dropdown closes on the Menu button, on any menu entry, or by clicking anywhere else on the panel.
+
+**Voice commands.** STT runs inside `POST /v1/chat` (there is no STT-only endpoint), so `ChatClient` hands the returned
+`transcript` to `PanelMenu.TryVoiceCommand` before showing the answer: a short utterance (≤ 6 words after dropping
+fillers like "please", "hey", "megamind") that equals one of the phrases in `VoiceCommands.cs` is executed, the answer
+and its audio are dropped, and a dim system chip (`"open menu" → menu opened`) is added to the transcript. Cost: the
+server has already run the full turn (STT → agent/LLM → TTS) before the headset sees the transcript, so every command
+spends one LLM + TTS call and leaves the "pause recording" Q&A in the server-side session history; a future STT-only
+endpoint (e.g. `POST /v1/stt`) would avoid that (server change, not in this PR). Phrases:
+"open menu" / "show menu" / "menu", "close menu" / "close", "open settings" / "settings", "open debug" / "show debug" /
+"show stats", "start recording" / "resume recording" / "start capture" (two words on purpose — a misheard single
+word must not resume capture), "stop recording" / "pause recording" / "pause capture" / "pause", "bigger text" / "larger text" / "zoom in", "smaller text" / "zoom out", "pin panel" / "pin",
+"unpin panel" / "unpin" / "follow me". Anything else is a normal question. The panel's empty-state hint lists them.
 
 ### Panel placement and readability (verify on device)
 

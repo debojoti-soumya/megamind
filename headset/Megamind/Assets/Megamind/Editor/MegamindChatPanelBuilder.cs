@@ -1,6 +1,7 @@
 // Editor-only. Stream 3: adds the voice-first chat panel to the capture scene made by MegamindSceneBuilder
 // (Megamind > 1), creates the bubble/thumbnail prefabs, and wires every public reference on
-// ChatPanel / ChatClient / PanelAnchor / SettingsPanel. Run Megamind > 1, then Megamind > 1b, then build.
+// ChatPanel / ChatClient / PanelAnchor / SettingsPanel / PanelMenu (header status strip + REC dot fed by CaptureHud,
+// top-right Menu dropdown: Settings / Debug / Pin / Text size / New session / Purge). Run Megamind > 1, then 1b, then build.
 //
 // Why a script instead of committed .unity/.prefab YAML: hand-written scene YAML with cross-file GUIDs is
 // brittle across Unity versions and nobody can open it here to verify. This is re-runnable (it deletes a
@@ -94,21 +95,18 @@ namespace Megamind.EditorTools
 
             MakeImage(go.transform, "Background", PanelBg, Rounded).rectTransform.Stretch();
 
-            // Header: status line, server dot, A- / A+ (UI scale), Pin, Settings
+            // Header: REC dot (always visible, privacy), server dot, one-line status strip (CaptureHud.ShortStatus), Menu
             var header = MakeImage(go.transform, "Header", HeaderBg, Rounded);
             header.AnchorTop(HeaderH);
+            var recDot = MakeImage(header.transform, "RecDot", new Color(1f, 0.25f, 0.25f), Knob);
+            recDot.AnchorLeftCentre(12f, 18f, 18f);
             var dot = MakeImage(header.transform, "ServerDot", new Color(1f, 0.36f, 0.42f), Knob);
-            dot.AnchorLeftCentre(14f, 14f, 14f);
+            dot.AnchorLeftCentre(36f, 10f, 10f);
             var statusLine = MakeLabel(header.transform, "StatusLine", "connecting…", 18, TextDim, TextAnchor.MiddleLeft);
-            statusLine.rectTransform.Fill(new Vector2(36f, 0f), new Vector2(-262f, 0f));
-            var gear = MakeButton(header.transform, "SettingsButton", "Settings", 17);
-            gear.GetComponent<RectTransform>().AnchorRightCentre(10f, 86f, 40f);
-            var pin = MakeButton(header.transform, "PinButton", "Pin", 17);
-            pin.GetComponent<RectTransform>().AnchorRightCentre(102f, 64f, 40f);
-            var scaleUp = MakeButton(header.transform, "ScaleUpButton", "A+", 19);
-            scaleUp.GetComponent<RectTransform>().AnchorRightCentre(172f, 40f, 40f);
-            var scaleDown = MakeButton(header.transform, "ScaleDownButton", "A-", 19);
-            scaleDown.GetComponent<RectTransform>().AnchorRightCentre(216f, 40f, 40f);
+            statusLine.horizontalOverflow = HorizontalWrapMode.Overflow; statusLine.verticalOverflow = VerticalWrapMode.Truncate;
+            statusLine.rectTransform.Fill(new Vector2(54f, 0f), new Vector2(-96f, 0f));
+            var menuButton = MakeButton(header.transform, "MenuButton", "Menu", 17);
+            menuButton.GetComponent<RectTransform>().AnchorRightCentre(10f, 80f, 40f);
 
             // Scroll view with the transcript
             var scrollGo = new GameObject("Scroll", typeof(RectTransform), typeof(ScrollRect));
@@ -134,7 +132,9 @@ namespace Megamind.EditorTools
             scroll.viewport = viewport.GetComponent<RectTransform>();
             scroll.content = crt;
 
-            var emptyHint = MakeLabel(go.transform, "EmptyHint", "Hold the trigger (or pinch) and ask about something you saw.", 24, TextDim, TextAnchor.MiddleCenter);
+            var emptyHint = MakeLabel(go.transform, "EmptyHint",
+                "Hold the trigger (or pinch) and ask about something you saw.\n\nSay a short command instead of a question: " + VoiceCommands.Hint + ".",
+                22, TextDim, TextAnchor.MiddleCenter);
             emptyHint.rectTransform.Fill(new Vector2(40f, FooterH), new Vector2(-40f, -HeaderH));
 
             // Footer indicators
@@ -177,13 +177,57 @@ namespace Megamind.EditorTools
             var feedback = MakeLabel(settingsRoot.transform, "Feedback", "", 17, TextDim, TextAnchor.UpperLeft);
             feedback.PreferredHeight(72f);
 
+            // Debug sub-panel (CaptureHud.FullReport in a scroll view), same footprint as Settings
+            var debugRoot = MakeImage(go.transform, "Debug", new Color(0.05f, 0.06f, 0.08f, 0.97f), Rounded);
+            debugRoot.GetComponent<RectTransform>().Fill(new Vector2(0f, 0f), new Vector2(0f, -HeaderH));
+            var debugTitle = MakeLabel(debugRoot.transform, "Title", "Debug", 26, TextMain, TextAnchor.MiddleLeft);
+            debugTitle.rectTransform.AnchorTop(44f); debugTitle.rectTransform.offsetMin = new Vector2(18f, -44f); debugTitle.rectTransform.offsetMax = new Vector2(-120f, -4f);
+            var debugClose = MakeButton(debugRoot.transform, "Close", "Close", 19);
+            var dcRt = debugClose.GetComponent<RectTransform>();
+            dcRt.anchorMin = dcRt.anchorMax = new Vector2(1f, 1f); dcRt.pivot = new Vector2(1f, 1f);
+            dcRt.anchoredPosition = new Vector2(-14f, -8f); dcRt.sizeDelta = new Vector2(96f, 40f);
+            var debugScrollGo = new GameObject("Scroll", typeof(RectTransform), typeof(ScrollRect));
+            debugScrollGo.transform.SetParent(debugRoot.transform, false);
+            debugScrollGo.GetComponent<RectTransform>().Fill(new Vector2(14f, 12f), new Vector2(-14f, -56f));
+            var debugScroll = debugScrollGo.GetComponent<ScrollRect>();
+            debugScroll.horizontal = false; debugScroll.movementType = ScrollRect.MovementType.Clamped; debugScroll.scrollSensitivity = 30f;
+            var debugViewport = new GameObject("Viewport", typeof(RectTransform), typeof(RectMask2D));
+            debugViewport.transform.SetParent(debugScrollGo.transform, false);
+            debugViewport.GetComponent<RectTransform>().Stretch();
+            var debugText = MakeLabel(debugViewport.transform, "Text", "", 18, TextMain, TextAnchor.UpperLeft);
+            var dtRt = debugText.rectTransform;
+            dtRt.anchorMin = new Vector2(0f, 1f); dtRt.anchorMax = Vector2.one; dtRt.pivot = new Vector2(0.5f, 1f);
+            dtRt.offsetMin = new Vector2(4f, 0f); dtRt.offsetMax = new Vector2(-4f, 0f);
+            debugText.gameObject.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            debugScroll.viewport = debugViewport.GetComponent<RectTransform>(); debugScroll.content = dtRt;
+
+            // Dropdown: transparent backdrop (click anywhere = close) + list under the Menu button. Built last so it draws on top.
+            var backdrop = MakeImage(go.transform, "MenuBackdrop", new Color(0f, 0f, 0f, 0f), null);
+            backdrop.raycastTarget = true;
+            backdrop.rectTransform.Stretch();
+            var backdropButton = backdrop.gameObject.AddComponent<Button>();
+            backdropButton.transition = Selectable.Transition.None;
+            var menuRoot = MakeImage(go.transform, "MenuDropdown", new Color(0.05f, 0.06f, 0.08f, 0.98f), Rounded);
+            var mrt = menuRoot.rectTransform;
+            mrt.anchorMin = mrt.anchorMax = new Vector2(1f, 1f); mrt.pivot = new Vector2(1f, 1f);
+            mrt.anchoredPosition = new Vector2(-8f, -HeaderH - 4f); mrt.sizeDelta = new Vector2(280f, 0f);
+            var mvlg = menuRoot.gameObject.AddComponent<VerticalLayoutGroup>();
+            mvlg.padding = new RectOffset(8, 8, 8, 8); mvlg.spacing = 6f;
+            mvlg.childControlWidth = true; mvlg.childControlHeight = true; mvlg.childForceExpandHeight = false;
+            menuRoot.gameObject.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            var miSettings = MenuEntry(menuRoot.transform, "Settings", "Settings");
+            var miDebug = MenuEntry(menuRoot.transform, "Debug", "Debug");
+            var miPin = MenuEntry(menuRoot.transform, "Pin", "Pin panel");
+            var miTextSize = MenuEntry(menuRoot.transform, "TextSize", "Text size 1x");
+            var miNewSession = MenuEntry(menuRoot.transform, "NewSession", "New session");
+            var miPurge = MenuEntry(menuRoot.transform, "Purge", "Purge memory");
+
             // Components
             var speaker = go.AddComponent<AudioSource>();
             speaker.playOnAwake = false; speaker.spatialBlend = 0f;
 
             var anchor = go.AddComponent<PanelAnchor>();
             anchor.config = config; anchor.head = head;
-            anchor.pinLabel = pin.GetComponentInChildren<Text>();
 
             var chatPanel = go.AddComponent<ChatPanel>();
             chatPanel.config = config;
@@ -192,21 +236,24 @@ namespace Megamind.EditorTools
             chatPanel.thumbnailRowPrefab = thumbRow; chatPanel.thumbnailPrefab = thumb;
             chatPanel.listeningIndicator = listening.gameObject; chatPanel.thinkingIndicator = thinking.gameObject;
             chatPanel.emptyHint = emptyHint.gameObject;
-            chatPanel.statusLine = statusLine; chatPanel.serverDot = dot;
+            chatPanel.statusLine = statusLine; chatPanel.serverDot = dot; chatPanel.recDot = recDot;
             chatPanel.uploader = UnityEngine.Object.FindFirstObjectByType<FrameUploader>();
+            var hud = UnityEngine.Object.FindFirstObjectByType<CaptureHud>();
+            chatPanel.hud = hud;
 
             var client = go.AddComponent<ChatClient>();
             client.config = config; client.panel = chatPanel; client.speaker = speaker;
             chatPanel.client = client;
             client.leftHand = MegamindSceneBuilder.FindHand(OVRPlugin.Hand.HandLeft);
             client.rightHand = MegamindSceneBuilder.FindHand(OVRPlugin.Hand.HandRight);
-            var hud = UnityEngine.Object.FindFirstObjectByType<CaptureHud>();
             if (hud != null)
             {
                 if (hud.leftHand == null) hud.leftHand = client.leftHand;
                 if (hud.rightHand == null) hud.rightHand = client.rightHand;
+                hud.showOwnCanvas = false; // the panel header shows the status now
                 EditorUtility.SetDirty(hud);
             }
+            else Debug.LogWarning("[Megamind] no CaptureHud in the scene: the header status strip and Debug view will be empty. Re-run Megamind > 1.");
             if (client.leftHand == null || client.rightHand == null)
                 Debug.LogWarning("[Megamind] no OVRHand for " + (client.leftHand == null ? "left " : "") + (client.rightHand == null ? "right " : "") +
                                  "in the scene: pinch push-to-talk is off. Re-run Megamind > 1. Create Capture Scene (Overwrite), then 1b.");
@@ -216,10 +263,22 @@ namespace Megamind.EditorTools
             settings.root = settingsRoot.gameObject; settings.serverUrlField = serverField; settings.deviceIdField = deviceField;
             settings.feedback = feedback;
 
-            UnityEventTools.AddPersistentListener(gear.onClick, new UnityAction(settings.Toggle));
-            UnityEventTools.AddPersistentListener(pin.onClick, new UnityAction(anchor.TogglePinned));
-            UnityEventTools.AddPersistentListener(scaleUp.onClick, new UnityAction(anchor.ScaleUp));
-            UnityEventTools.AddPersistentListener(scaleDown.onClick, new UnityAction(anchor.ScaleDown));
+            var menu = go.AddComponent<PanelMenu>();
+            menu.root = menuRoot.gameObject; menu.backdrop = backdrop.gameObject;
+            menu.debugRoot = debugRoot.gameObject; menu.debugText = debugText;
+            menu.pinLabel = miPin.GetComponentInChildren<Text>(); menu.textSizeLabel = miTextSize.GetComponentInChildren<Text>();
+            menu.hud = hud; menu.settings = settings; menu.anchor = anchor; menu.chatPanel = chatPanel;
+            client.menu = menu;
+
+            UnityEventTools.AddPersistentListener(menuButton.onClick, new UnityAction(menu.Toggle));
+            UnityEventTools.AddPersistentListener(backdropButton.onClick, new UnityAction(menu.Close));
+            UnityEventTools.AddPersistentListener(miSettings.onClick, new UnityAction(menu.OpenSettings));
+            UnityEventTools.AddPersistentListener(miDebug.onClick, new UnityAction(menu.OpenDebug));
+            UnityEventTools.AddPersistentListener(miPin.onClick, new UnityAction(menu.TogglePin));
+            UnityEventTools.AddPersistentListener(miTextSize.onClick, new UnityAction(menu.CycleTextSize));
+            UnityEventTools.AddPersistentListener(miNewSession.onClick, new UnityAction(menu.NewSession));
+            UnityEventTools.AddPersistentListener(miPurge.onClick, new UnityAction(menu.Purge));
+            UnityEventTools.AddPersistentListener(debugClose.onClick, new UnityAction(menu.CloseDebug));
             UnityEventTools.AddPersistentListener(save.onClick, new UnityAction(settings.Save));
             UnityEventTools.AddPersistentListener(newSession.onClick, new UnityAction(settings.NewSession));
             UnityEventTools.AddPersistentListener(purge.onClick, new UnityAction(settings.Purge));
@@ -227,6 +286,9 @@ namespace Megamind.EditorTools
             UnityEventTools.AddPersistentListener(close.onClick, new UnityAction(settings.Hide));
 
             settingsRoot.gameObject.SetActive(false);
+            debugRoot.gameObject.SetActive(false);
+            menuRoot.gameObject.SetActive(false);
+            backdrop.gameObject.SetActive(false);
             listening.gameObject.SetActive(false);
             thinking.gameObject.SetActive(false);
             return go;
@@ -387,6 +449,15 @@ namespace Megamind.EditorTools
             var colors = b.colors; colors.highlightedColor = new Color(1f, 1f, 1f, 0.25f); colors.pressedColor = new Color(0.55f, 0.75f, 1f, 0.6f); b.colors = colors;
             var label = MakeLabel(img.transform, "Label", caption, size, TextMain, TextAnchor.MiddleCenter);
             label.rectTransform.Stretch();
+            return b;
+        }
+
+        static Button MenuEntry(Transform parent, string name, string caption)
+        {
+            var b = MakeButton(parent, name, caption, 20);
+            b.GetComponentInChildren<Text>().alignment = TextAnchor.MiddleLeft;
+            var lrt = b.GetComponentInChildren<Text>().rectTransform; lrt.offsetMin = new Vector2(14f, 0f);
+            b.gameObject.AddComponent<LayoutElement>().preferredHeight = 48f;
             return b;
         }
 
