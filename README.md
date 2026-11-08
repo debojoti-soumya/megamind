@@ -54,7 +54,7 @@ zero-infra storage; voice-first UI.
 docs/       design doc (LaTeX + PDF), api.md, prior-art.md, resources.md
 server/     FastAPI backend — ingest, memory store, agent (Python 3.11+)
 tools/      feeder.py (webcam/video → /v1/frames), ask.py (CLI chat)
-headset/    Unity project for Quest 3 — setup README + C# scripts
+headset/    Unity project for Quest 3 — frames + ambient audio + AR chat panel; setup README + C# scripts
 headset-android/  optional native Quest 3 capture app (Kotlin; frames + ambient audio, background + offline queue)
 .github/    CI: ruff + pytest on server/
 ```

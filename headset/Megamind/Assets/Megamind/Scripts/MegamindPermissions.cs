@@ -1,7 +1,7 @@
 // Single runtime-permission flow for Megamind (mirrors Meta's PassthroughCameraApiSamples RequestPermissionsOnce):
 // one OVRPermissionsRequester.Request(...) call, once per process, for
 //   horizonos.permission.HEADSET_CAMERA  (Passthrough Camera API, v74+; OVRPermissionsRequester.Permission.PassthroughCameraAccess)
-//   android.permission.RECORD_AUDIO      (push-to-talk, stream 3)
+//   android.permission.RECORD_AUDIO      (push-to-talk, stream 3; ambient audio memory, AmbientAudioRecorder)
 // Nothing else may request camera permission: keep OVRManager "Permission Requests On Startup" empty (the scene builder
 // clears it) and do not add the sample's PassthroughCameraPermissions/RequestPermissionsOnce to the scene.
 // PassthroughCameraAccess itself waits until the permission is granted, so this can run any time before/after it.

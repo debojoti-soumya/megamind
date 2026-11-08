@@ -38,6 +38,22 @@ namespace Megamind
         [Tooltip("Start capturing automatically once the camera permission is granted.")]
         public bool captureOnStart = true;
 
+        [Header("Ambient audio (AmbientAudioRecorder -> POST /v1/audio)")]
+        [Tooltip("Record the headset mic in fixed chunks and upload them so \"what did I hear?\" works. Paused with A/X, while backgrounded and during push-to-talk.")]
+        public bool ambientAudio = true;
+        [Tooltip("Chunk length in seconds. 5 = the native headset-android app's default chunk_sec, so the server sees the same chunks.")]
+        public int audioChunkSeconds = 5;
+        [Tooltip("Requested microphone rate (16 kHz mono PCM16 is what Whisper wants). The actual clip rate is written in the WAV header.")]
+        public int audioSampleRate = 16000;
+        [Tooltip("Drop a chunk on the device when its loudest 100 ms window is below this level (dBFS): saves Whisper cost on silence. -120 = upload everything.")]
+        public float audioSilenceDb = -50f;
+        [Tooltip("Chunks kept in memory while the server is unreachable (oldest dropped first). 24 x 5 s = 2 min.")]
+        public int audioMaxQueuedChunks = 24;
+        [Tooltip("Tries per chunk on 429/5xx (e.g. STT provider error) before it is dropped. Network errors retry until the queue overflows.")]
+        public int audioMaxAttempts = 3;
+        [Tooltip("POST /v1/audio transcribes synchronously, so allow longer than a frame upload.")]
+        public int audioUploadTimeoutSeconds = 30;
+
         /// <summary>Where the active server URL came from after Resolve(): "asset", "megamind.json" or "PlayerPrefs".</summary>
         [NonSerialized] public string overrideSource = "asset";
         [NonSerialized] public string fileServerBaseUrl;
@@ -61,6 +77,7 @@ namespace Megamind
             public string serverBaseUrl;
             public string deviceId;
             public float captureFps;
+            public string ambientAudio; // "on" / "off"; absent = keep the asset value
         }
 
         public static string OverrideFilePath => Path.Combine(Application.persistentDataPath, OverrideFileName);
@@ -91,6 +108,9 @@ namespace Megamind
                 if (!string.IsNullOrEmpty(o.serverBaseUrl)) fileServerBaseUrl = o.serverBaseUrl.Trim();
                 if (!string.IsNullOrEmpty(o.deviceId)) fileDeviceId = o.deviceId.Trim();
                 if (o.captureFps > 0f) captureFps = o.captureFps;
+                var aa = (o.ambientAudio ?? "").Trim().ToLowerInvariant();
+                if (aa == "on" || aa == "true") ambientAudio = true;
+                else if (aa == "off" || aa == "false") ambientAudio = false;
                 if (fileServerBaseUrl != null && !PlayerPrefs.HasKey(UrlPrefKey)) overrideSource = OverrideFileName;
             }
             catch (Exception e)

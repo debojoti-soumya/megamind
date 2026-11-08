@@ -21,3 +21,10 @@ MonoBehaviour:
   uploadTimeoutSeconds: 10
   maxHeadDegPerSec: 0
   captureOnStart: 1
+  ambientAudio: 1
+  audioChunkSeconds: 5
+  audioSampleRate: 16000
+  audioSilenceDb: -50
+  audioMaxQueuedChunks: 24
+  audioMaxAttempts: 3
+  audioUploadTimeoutSeconds: 30
