@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     reader_model: str = "google/gemma-4-31B-it"  # Qwen3.6-35B-A3B is flex-only on Sail (research/reports/04)
     reader_fallback_model: str = "nvidia/Gemma-4-31B-IT-NVFP4"  # tried once when the primary 429/503s; "" disables
     reader_provider: str = "auto"  # auto (vlm iff READER_API_KEY set) | vlm | mock
-    reader_timeout_s: float = 8.0
+    reader_timeout_s: float = 5.0  # per attempt; Sail Gemma asap calls take ~3 s
+    reader_deadline_s: float = 6.0  # wall budget for all attempts of one call, then captions-only
     reader_max_retries: int = 1
     reader_max_images: int = 12  # per call (Sail cap 20; report 04 says <=12 for latency); more -> chunk + merge
     reader_thumb_max_px: int = 512
