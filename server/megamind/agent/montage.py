@@ -28,6 +28,7 @@ successful `DELETE /v1/memories`. Settings: `MONTAGE_*` env vars (see `.env.exam
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -35,6 +36,7 @@ import re
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -84,7 +86,8 @@ class MontageSettings(BaseSettings):
     font: str = ""  # TTF for captions; default: first system font found, else ffmpeg's fontconfig default
     cache_dir: Path | None = None  # default <thumb_dir>/../montages
     cache_max_files: int = 16
-    max_concurrent_renders: int = 1
+    max_concurrent_renders: int = 1  # montages rendered at once
+    clip_workers: int = 4  # ffmpeg processes per montage: clips render in parallel, then one stream-copy concat
     # content-filtered ("smart") montages, see `smart_montage.py`: "montage of all shots of the guy in the black coat"
     smart: str = "auto"  # auto (subject found AND collection cue: "all/every ...", "shots of") | off (mode="smart")
     smart_max_candidates: int = 60  # retriever candidates sent to the verifier
@@ -344,32 +347,33 @@ def overlay_vf(clip: ClipSpec, cfg: MontageSettings, *, text: bool = True) -> st
     return ",".join(f)
 
 
+def _render_part(i: int, c: ClipSpec, part: Path, *, ffmpeg: str, cfg: MontageSettings) -> Path:
+    """One clip -> `part`, same size/fps/codec whatever the source, so the stream-copy concat works."""
+
+    def draw(vf: str) -> None:
+        if c.video:
+            render_video(c.video, part, ffmpeg=ffmpeg, fps=cfg.fps, max_width=cfg.width, extra_vf=vf)
+        else:
+            render_mp4(c.frames, part, ffmpeg=ffmpeg, fps=cfg.fps, max_width=cfg.width, tail_s=c.tail_s, extra_vf=vf)
+
+    try:
+        draw(overlay_vf(c, cfg))
+    except RuntimeError as e:  # e.g. ffmpeg built without libfreetype (no drawtext): uncaptioned clip
+        log.warning("montage: captions failed (%s); rendering clip %d without text", e, i)
+        draw(overlay_vf(c, cfg, text=False))
+    return part
+
+
 def render_montage(clips: list[ClipSpec], out: Path, *, ffmpeg: str, cfg: MontageSettings, timeout_s=300.0) -> Path:
-    """One `render_mp4` per clip (identical size/fps/codec), then a stream-copy concat."""
+    """One `render_mp4`/`render_video` per clip, `cfg.clip_workers` at a time, then a stream-copy concat."""
     if not clips:
         raise ValueError("no clips")
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=out.parent, prefix=".montage-") as td:
         tmp = Path(td)
-        parts = []
-        for i, c in enumerate(clips):
-            part = tmp / f"p{i:03d}.mp4"
-            if c.video:  # same size/fps/codec as render_mp4's parts, so the stream-copy concat still works
-
-                def draw(vf: str, c: ClipSpec = c, part: Path = part) -> None:
-                    render_video(c.video, part, ffmpeg=ffmpeg, fps=cfg.fps, max_width=cfg.width, extra_vf=vf)
-            else:
-                kw = dict(ffmpeg=ffmpeg, fps=cfg.fps, max_width=cfg.width, tail_s=c.tail_s)
-
-                def draw(vf: str, c: ClipSpec = c, part: Path = part, kw: dict = kw) -> None:
-                    render_mp4(c.frames, part, extra_vf=vf, **kw)
-
-            try:
-                draw(overlay_vf(c, cfg))
-            except RuntimeError as e:  # e.g. ffmpeg built without libfreetype (no drawtext): uncaptioned clip
-                log.warning("montage: captions failed (%s); rendering clip %d without text", e, i)
-                draw(overlay_vf(c, cfg, text=False))
-            parts.append(part)
+        jobs = [(i, c, tmp / f"p{i:03d}.mp4") for i, c in enumerate(clips)]
+        with ThreadPoolExecutor(max_workers=max(1, min(cfg.clip_workers, len(jobs)))) as pool:
+            parts = list(pool.map(lambda j: _render_part(*j, ffmpeg=ffmpeg, cfg=cfg), jobs))
         (tmp / "list.txt").write_text("".join(f"file '{p.name}'\n" for p in parts))
         tmp_out = tmp / "montage.mp4"
         cmd = [ffmpeg, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(tmp / "list.txt"),
@@ -519,11 +523,11 @@ def _use_replay(st) -> bool:
 
 async def _build_clips(st, cfg: MontageSettings, moments: list[tuple[MemoryToken, str, float]]) -> list[ClipSpec]:
     zone = _zone(st.settings.wearer_tz)
-    clips: list[ClipSpec] = []
-    for t, title, duration in moments:
-        spec = await build_clip(st, t, _short(title, 60), duration, cfg, zone, use_replay=_use_replay(st))
-        if spec is not None:
-            clips.append(spec)
+    use_replay = _use_replay(st)
+    specs = await asyncio.gather(
+        *(build_clip(st, t, _short(title, 60), dur, cfg, zone, use_replay=use_replay) for t, title, dur in moments)
+    )
+    clips = [spec for spec in specs if spec is not None]
     if not clips:
         raise HTTPException(404, "no stored video, buffered frames or stored thumbnails for the chosen moments")
     return clips
