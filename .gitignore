@@ -23,3 +23,25 @@ docs/*.aux docs/*.log docs/*.out docs/*.toc docs/*.fls docs/*.fdb_latexmk docs/*
 server/.eval_cache/
 server/.eval_cache_ucc/
 server/.eval_cache_*/
+
+# secrets / local data
+.env
+.env.*
+!.env.example
+/data/
+
+# Unity (headset/Megamind also has its own .gitignore)
+[Ll]ibrary/
+[Tt]emp/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+*.csproj
+*.sln
+!headset/tests/**/*.csproj
+
+# Android / builds
+*.apk
+*.aab
+
+# node
+node_modules/

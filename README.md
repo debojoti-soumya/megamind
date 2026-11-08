@@ -1,202 +1,164 @@
 # Megamind
 
+[![server](https://github.com/debojoti-soumya/megamind/actions/workflows/ci.yml/badge.svg)](https://github.com/debojoti-soumya/megamind/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **An AI assistant on Meta Quest 3 that remembers what you've seen.**
 
-> "Where did I leave my keys?" — *"On the kitchen counter next to the coffee machine, about 20 minutes ago."* (and it shows you the frame)
+> "Where did I leave my keys?" — *"On the kitchen counter next to the coffee machine, about 20 minutes ago."*
+> (and it shows you the frame, and pins an arrow on the keys' last known spot)
 
-Megamind continuously samples the Quest 3's passthrough cameras, distils keyframes into
-**memory tokens** (caption + OCR + entities + embeddings + thumbnail) and stores them in a
-vector database. A **Claude** agent exposes a `recall_memory` tool; when called, relevant
-tokens are retrieved and handed to a **Gemma 4 31B reader** sub-agent (a vision LLM on Sail
-Research's OpenAI-compatible API) that attends over the concatenated captions *and images* and
-returns cited evidence. Claude answers; the wearer
-hears it and sees the remembered frame on a world-locked AR panel.
+Megamind samples the Quest 3 passthrough camera (and, optionally, the mic), distils keyframes into
+**memory tokens** (caption + OCR + entities + embeddings + thumbnail) and stores them in LanceDB. A **Claude**
+agent answers questions with a `recall_memory` tool: hybrid retrieval finds the relevant tokens and Claude reads
+the cited images directly. The answer streams back to a world-locked AR panel and is spoken sentence by sentence.
 
-- Design document: [`docs/megamind-design.pdf`](docs/megamind-design.pdf) (read this first)
+- Design document: [`docs/megamind-design.pdf`](docs/megamind-design.pdf)
 - API contract (headset ⇄ server): [`docs/api.md`](docs/api.md)
-- Prior art & what's different: [`docs/prior-art.md`](docs/prior-art.md)
-- Hackathon credits/hardware → model choices: [`docs/resources.md`](docs/resources.md)
+- Quest 3 setup and demo runbook: [`docs/quest3-guide.md`](docs/quest3-guide.md)
+- Prior art: [`docs/prior-art.md`](docs/prior-art.md) · model/credit choices: [`docs/resources.md`](docs/resources.md)
 
 ## How it works
 
 ```
  Quest 3 (Unity)                      Server (FastAPI, Python)
- ┌───────────────────┐   JPEG 1 fps   ┌─────────┐  ┌────────┐  ┌───────────────┐  ┌───────┐  ┌───────────┐
- │ Passthrough camera├───────────────▶│ /frames │─▶│ dedupe │─▶│ caption + OCR │─▶│ embed │─▶│ LanceDB   │
- │ keyframe sampler  │                └─────────┘  └────────┘  │  (Gemma 4)    │  └───────┘  │ memory    │
- ├───────────────────┤                                         └───────────────┘             │ tokens    │
- │ AR chat panel     │   audio/text   ┌─────────┐  ┌─────┐  ┌──────────────┐  recall_memory  └─────┬─────┘
- │ push-to-talk, TTS │◀──────────────▶│  /chat  │─▶│ STT │─▶│ Claude agent │◀────────────────────┐ │ top-k
- └───────────────────┘  answer+thumbs └─────────┘  └─────┘  └──────┬───────┘   evidence + cites  │ ▼
-                                                                   │ query, k           ┌────────┴────────┐
-                                                                   └───────────────────▶│ Gemma 4 reader  │
-                                                                                        │ attention over  │
-                                                                                        │ memory tokens   │
-                                                                                        └─────────────────┘
+ ┌────────────────────┐ JPEG ~1 fps  ┌──────────┐  ┌────────┐  ┌───────────────┐  ┌───────┐  ┌───────────┐
+ │ Passthrough camera ├─────────────▶│ /frames  │─▶│ filter │─▶│ caption + OCR │─▶│ embed │─▶│ LanceDB   │
+ │ + offline spool    │  WAV chunks  │ /audio   │  │ dHash  │  │ (VLM / local) │  │       │  │ memory    │
+ ├────────────────────┤              └──────────┘  └────────┘  └───────────────┘  └───────┘  │ tokens    │
+ │ AR chat panel      │ voice/text   ┌──────────────┐  ┌───────────────┐  recall_memory      └─────┬─────┘
+ │ push-to-talk       ├─────────────▶│ /stt         │  │ Claude agent  │◀─────────────────────┐    │
+ │ sentence TTS       │◀─────────────┤ /chat/stream ├─▶│ (Sonnet)      │  hybrid retrieval    │    │ top-k
+ │ collage lightbox   │  SSE: text,  └──────────────┘  │ reads cited   │  vector+BM25+time,   └────┘
+ │ object markers     │  audio, cites,                 │ images        │  RRF
+ └────────────────────┘  collage, markers              └───────┬───────┘
+                                                               │ make_collage, locate (marker box)
 ```
 
-Three streams of work:
+Features on current `main`:
 
-| # | Stream | Where | Status |
-|---|---|---|---|
-| 1 | **Capture → tokenize → store.** Passthrough Camera API → 1 fps JPEG → dHash dedupe → VLM (Gemma 4 31B) caption/OCR/entities → text + SigLIP embeddings → LanceDB | `headset/.../FrameUploader.cs`, `server/megamind/ingest`, `server/megamind/store` | filter, worker, VLM + keyless local enricher, embeddings, in-memory + LanceDB stores done |
-| 2 | **Retrieval tool + reader.** `recall_memory(query, time_from, time_to, k, mode)` → hybrid search (vector + BM25 + time filter, RRF) → Gemma 4 31B reads captions + thumbnails → evidence with citations → Claude | `server/megamind/agent/{tools,reader,claude_agent}.py` | done: Claude tool-use loop, Gemma 4 reader (6 s deadline, then caption-only), `server/tools/eval_agent.py` |
-| 3 | **AR chat.** World-locked panel, push-to-talk → STT, spoken reply via TTS, cited thumbnails | `headset/.../{ChatClient,ChatPanel,PanelAnchor,SettingsPanel}.cs`, `server/megamind/agent/{stt,tts}.py`, `server/megamind/ui` (browser prototype at `/ui`) | browser prototype works end-to-end; OpenAI/Deepgram STT + OpenAI/ElevenLabs TTS implemented; Quest 3 APK playtested (capture + PTT chat + cited thumbnails) with mock providers — see `headset/README.md` |
+- **Capture → tokenize → store.** `POST /v1/frames` → keyframe filter (dHash dedupe, blur/luma, pose, rate cap) →
+  enricher (any OpenAI-compatible VLM, or keyless SigLIP label + Tesseract OCR) → text + SigLIP image embeddings →
+  LanceDB (or an in-memory store). Ambient audio (`POST /v1/audio`) becomes transcript tokens; episodes are
+  consolidated into summary tokens. Code: `server/megamind/{ingest,store}`.
+- **Retrieval.** `server/megamind/retrieval/hybrid.py`: text-vector + BM25 + image-vector lists fused with weighted
+  RRF plus a recency prior and time filters. Alternatives behind `RETRIEVER_BACKEND` (`hier`, `ucc`, `combo`).
+- **Reader.** With `ANTHROPIC_API_KEY` set (`READER_PROVIDER=auto`) Claude reads the cited snapshots itself
+  (`ClaudeVisionReader` in `server/megamind/agent/reader.py`). An OpenAI-compatible VLM reader (e.g. Gemma 4 31B on
+  Sail Research, or Qwen-VL on vLLM) is the option without an Anthropic key; without either it is captions-only.
+- **Answers.** `POST /v1/chat` and streamed `POST /v1/chat/stream` (SSE; each sentence is spoken via TTS as Claude
+  finishes it). `POST /v1/stt` transcribes voice turns first (the bubble shows at once) and handles voice commands without Claude.
+- **Photo collage.** Claude's `make_collage` tool (and `POST /v1/collage`) builds a verified collage of matching
+  moments; the headset opens it in a Lightbox.
+- **Object markers.** For "where is X" questions `server/megamind/agent/locate.py` boxes the object in a cited frame
+  (`ChatResponse.markers`); headset `ObjectMarkers.cs` pins an arrow and a pulsing golden halo in the room.
+- **Replay and montage.** `GET /v1/replay.mp4`, `POST /v1/montage` (incl. content-filtered "smart" montages).
+- **Browser clients.** `/ui` is a browser version of the AR panel (webcam as passthrough, hold Space to talk);
+  `/xr` is Memory Theater, a WebXR view of memories.
+- **Privacy.** Optional bystander face blur, `DELETE /v1/memories` purge, hot JPEG → cold AV1 → text-only retention.
 
-Key decisions (details and rationale in the design doc §3): one Unity app does both capture
-and chat (Horizon OS suspends background apps); a memory token is a *record*, not a learned
-vector; Claude orchestrates while an open VLM (Gemma 4 31B) reads; the headset is a thin client; LanceDB for
-zero-infra storage; voice-first UI.
+Without API keys the server runs on deterministic mocks, so the whole loop works on a laptop.
+
+## Quickstart
+
+### Server (local)
+
+Python >= 3.11 (a 3.10 venv makes `pip install` hang).
+
+```bash
+git clone https://github.com/debojoti-soumya/megamind.git && cd megamind/server
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,tools]"     # or with uv: uv venv && source .venv/bin/activate && uv pip install -e ".[dev,tools]"
+cp .env.example .env          # optional; every key may stay empty (mocks)
+uvicorn megamind.main:app --reload --port 8000
+```
+
+Main `.env` variables (full list with comments in [`server/.env.example`](server/.env.example)):
+
+| variable | purpose |
+|---|---|
+| `ANTHROPIC_API_KEY`, `CLAUDE_MODEL` | Claude agent + image reader (default `claude-sonnet-5-5`) |
+| `OPENAI_API_KEY` | embeddings, STT, TTS, object locator |
+| `READER_API_KEY`, `READER_BASE_URL`, `READER_MODEL` | OpenAI-compatible VLM for captions/OCR (and the reader without Claude) |
+| `STORE_BACKEND=lancedb` | persist memories in `server/data/lancedb` (default `memory` is lost on restart) |
+| `API_TOKEN` | require `Authorization: Bearer <token>` on every route (public deployments) |
+
+Feed frames and ask without a headset (from the repo root):
+
+```bash
+source server/.venv/bin/activate
+python tools/feeder.py --server http://localhost:8000 --source walk.mp4 --fps 1 --realtime   # or --source 0 (webcam)
+python tools/ask.py --server http://localhost:8000 "what did I just see?"
+```
+
+Use `--realtime` for video files, otherwise most frames are dropped as `too_soon`. Or open <http://localhost:8000/ui>.
+
+### Server (Modal, public HTTPS)
+
+```bash
+pip install modal && modal setup
+MEGAMIND_MIN_CONTAINERS=1 modal deploy deploy/modal_app.py      # from the repo root; keeps one container warm
+```
+
+Secrets, volumes, rollback and the keyless `MEGAMIND_PROFILE=mock` smoke test: [`deploy/README.md`](deploy/README.md).
+
+### Headset (Quest 3)
+
+1. Install **Unity 6000.0.66f2** with Android Build Support; open `headset/Megamind/` (Meta XR Core SDK / MRUK
+   **85.0.0** resolve from `Packages/manifest.json`).
+2. Run the menu items **Megamind › 1. Create Capture Scene**, then **Megamind › 1b. Add Chat Panel To Current
+   Scene**, then **Megamind › 3. Build APK** (or **4. Build and Run on headset**).
+3. Point the app at your server through the config fields `serverBaseUrl`, `deviceId` and `apiToken` (only when the
+   server sets `API_TOKEN`), e.g. `adb shell am start ... --es serverBaseUrl https://... --es deviceId quest3-1 --es apiToken <token>`,
+   or from the in-app settings panel.
+
+Details, permissions, the offline frame spool and troubleshooting: [`headset/README.md`](headset/README.md).
 
 ## Repository layout
 
 ```
-docs/       design doc (LaTeX + PDF), api.md, prior-art.md, resources.md
-server/     FastAPI backend — ingest, memory store, agent (Python 3.11+)
-tools/      feeder.py (webcam/video → /v1/frames), ask.py (CLI chat)
-headset/    Unity project for Quest 3 — frames + ambient audio + AR chat panel; setup README + C# scripts
-headset-android/  optional native Quest 3 capture app (Kotlin; frames + ambient audio, background + offline queue)
-.github/    CI: ruff + pytest on server/
+server/           FastAPI backend: ingest, memory store (LanceDB), retrieval, Claude agent, STT/TTS, /ui, /xr (Python 3.11+)
+headset/          Unity 6 project for Quest 3: capture + offline spool, AR chat panel, lightbox, object markers
+headset-android/  optional native Kotlin capture app (frames, ambient audio, 30 fps video; no chat UI)
+deploy/           Modal app (modal_app.py) plus latency bench and keep-warm scripts
+docs/             design doc (LaTeX + PDF), API contract, Quest 3 guide, prior art, resources
+tools/            dev/eval scripts: feeder.py (fake headset), ask.py (CLI chat), example-day builders and evals
+research/         hackathon research notes and reports used to pick models/defaults (archived; research bot paused)
+.github/          CI: ruff + pytest on server/, FrameSpool C# tests, Unity APK build
 ```
-
-## Quick start (no headset required)
-
-Needs Python >= 3.11; a 3.10 venv makes `pip install` hang or fail without a clear error. The block uses
-`python3.12`; if you don't have that on PATH, use any >= 3.11 interpreter, e.g.
-`~/.pyenv/versions/3.12.x/bin/python -m venv .venv` (check with `python --version` after activating).
-
-**Terminal 1: server** (from `server/`)
-
-```bash
-git clone https://github.com/debojoti-soumya/megamind.git && cd megamind/server
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev,tools]"
-cp .env.example .env        # optional: API keys; everything runs on mocks without any
-uvicorn megamind.main:app --reload --port 8000
-```
-
-**Terminal 2: feed frames, query, ask** (from the repo root; `tools/` lives there, not in `server/`)
-
-```bash
-source server/.venv/bin/activate
-curl localhost:8000/v1/health
-
-# a video file (--realtime stamps frames with their position in the video), or --source 0 for the webcam
-python tools/feeder.py --server http://localhost:8000 --source walk.mp4 --fps 1 --realtime
-
-curl "localhost:8000/v1/memories?q=frame&k=5"
-python tools/ask.py --server http://localhost:8000 "what did I just see?"   # prints cited ids + thumbnail URLs
-python tools/ask.py --server http://localhost:8000 "frame"                  # mock mode: see below
-curl -o t.jpg localhost:8000/v1/thumbs/<id>.jpg
-curl -X DELETE "localhost:8000/v1/memories?device_id=feeder"
-```
-
-Gotchas:
-
-- **`--realtime` for video files.** Without it, the feeder sends frames as fast as it can decode them and stamps them
-  all with the current time, so the keyframe filter (`FILTER_MIN_GAP_S=2`) drops ~90% as `too_soon` (shown in the feeder's `last=` field). The webcam
-  (`--source 0`) is paced in real time and doesn't need it.
-- **Mock captions.** The enricher (`ENRICH_PROVIDER=auto`) captions frames with the VLM when `READER_API_KEY` (or
-  `ENRICH_API_KEY` + `ENRICH_BASE_URL`) is set. Without a key it uses the keyless local enricher if an image embedder
-  is configured (`IMAGE_EMBED_PROVIDER=openclip`: SigLIP zero-shot scene label, plus Tesseract OCR with
-  `pip install -e ".[local-enrich]"` and `brew install tesseract`), and otherwise writes `mock caption for frame …`,
-  so `q=keys` finds nothing. Without `ANTHROPIC_API_KEY`, `ask.py` searches with your raw question. "what did I just see?" is all
-  stop words to the planner, so against mock captions it can come back empty ("I don't have a memory of that").
-  Search or ask `frame` for a reliable mock demo, or configure real keys (below) to get searchable captions.
-- **Persistence.** The default `STORE_BACKEND=memory` loses everything on restart. Set `STORE_BACKEND=lancedb` in
-  `server/.env` to keep memories in `server/data/lancedb` (gitignored).
-- **Timestamps in URLs.** Use `Z`, not `+00:00`, e.g. `since=2026-11-07T18:00:00Z`. An unencoded `+` decodes to a
-  space and the server returns 400.
-- **Episodes.** An episode gets its `kind="episode"` summary token only once it has >= 3 frames, its last frame is
-  `EPISODE_GAP_S=120` s in the past, and the consolidator has run (every `CONSOLIDATE_INTERVAL_S=600` s). For a demo,
-  set both low in `server/.env` (e.g. `EPISODE_GAP_S=20`, `CONSOLIDATE_INTERVAL_S=30`). With `--realtime`, a
-  video's frames are stamped forward from when the feeder started, so wait until the video's length has passed.
-
-With no API keys configured the server runs entirely on deterministic mocks (mock captions,
-hashing embeddings, caption-only reader, no STT/TTS), so the whole loop is exercisable on a
-laptop. Set `ANTHROPIC_API_KEY`, `READER_API_KEY` + `READER_BASE_URL`, `EMBED_PROVIDER`, `STT_PROVIDER`,
-`TTS_PROVIDER` to turn on the real thing — see `server/.env.example` and `docs/resources.md`.
-
-**Reader.** Default: Sail Research (`READER_BASE_URL=https://api.sailresearch.com/v1`, OpenAI-compatible)
-serving `READER_MODEL=google/gemma-4-31B-it` with image input; `READER_FALLBACK_MODEL=nvidia/Gemma-4-31B-IT-NVFP4`
-starts in parallel when the primary hasn't answered after `READER_HEDGE_S=3.25` s (healthy calls take 3.1–3.25 s), or at
-once after a 429/503/timeout, and the first good answer wins within `READER_DEADLINE_S=7.0`; past that the
-reader degrades to the captions + OCR of every hit. A turn with Claude is ~5–7 s. Any
-OpenAI-compatible endpoint works by changing those two variables. Plan B if Sail is unavailable:
-self-host a VLM (e.g. Qwen2.5-VL-7B) on vLLM on Modal and point `READER_BASE_URL` at it.
-
-**Memory Theater.** Open `http://localhost:8000/xr` for a 3D/WebXR view of your memories (ask, replay cited
-moments, browse recent cards). On Quest 3 it runs in the browser in passthrough; see the
-[Quest 3 guide](docs/quest3-guide.md#8-memory-theater-xr-in-the-quest-browser).
-
-### Headset
-
-See [`headset/README.md`](headset/README.md), and the [Quest 3 guide](docs/quest3-guide.md) for first-time
-Quest users (connections, sideloading, test runbook, demo-day card). Requirements: Quest 3 / 3S on Horizon OS v74+
-with developer mode, Unity 2022.3 LTS or Unity 6, Meta XR Core SDK v74+, and Meta's
-[Passthrough Camera API samples](https://github.com/oculus-samples/Unity-PassthroughCameraApiSamples).
-Build and run Meta's *unmodified* sample first; only then add our scripts.
-
-Optional, capture only: [`headset-android/`](headset-android/README.md) is a small native Kotlin app (no Unity) that
-streams passthrough frames to `/v1/frames`, ambient audio to `/v1/audio` and 5 s H.264 clips of real 30 fps video to
-`/v1/video` (replays and montages then use real video instead of 1 fps frames), keeps capturing behind the Quest
-Browser (foreground service), and queues uploads on disk while offline. Its capture code is verified on a Quest 3
-(Horizon OS v209). The Unity app above remains the full experience (capture plus the AR chat panel).
 
 ## Development
 
 ```bash
 cd server && source .venv/bin/activate
-ruff check . && ruff format --check .      # lint
-pytest -q                                  # tests (offline, mocks)
+ruff check . && ruff format --check .    # lint
+pytest -q                                # tests (offline, mocks)
 ```
 
-Browser prototype of the AR panel (no headset needed): <http://localhost:8000/ui> — webcam as
-passthrough, hold **Space** to talk, cited thumbnails, TTS playback, status HUD, and an optional
-1 fps capture toggle (settings ⚙) so the whole loop runs on one laptop. Real STT/TTS need
-`OPENAI_API_KEY` (or Deepgram / ElevenLabs keys) in `server/.env`; without keys the mock
-providers are used.
+Headset and server talk **only** through [`docs/api.md`](docs/api.md): a contract change updates `api.md`,
+`server/megamind/models.py` and `headset/.../Dto.cs` in the same PR.
 
-Rules:
-- Headset and server communicate **only** through `docs/api.md`. A contract change is one PR
-  that updates `api.md`, `server/megamind/models.py` and `headset/.../Dto.cs` together.
-- Everything server-side must be testable with `curl` / the feeder, without hardware.
-- Every `TODO(stream-N)` marks work owned by that stream; keep interfaces (`MemoryStore`,
-  `Enricher`, `Reader`, `STT`, `TTS`, `TextEmbedder`, `ImageEmbedder`) stable.
-- No model training. No on-device inference.
+### Contributing
 
-## Demo script (target)
-
-1. Walk around the room wearing the headset for 2–3 minutes; put keys down, glance at a
-   whiteboard with text, pick up a coffee mug.
-2. "Hey, where did I leave my keys?" → answer + thumbnail of the counter.
-3. "What did the whiteboard say?" → OCR'd text read back.
-4. "What was I doing about five minutes ago?" → time-filtered recall.
+- Open pull requests against `main`; keep each PR focused.
+- CI (ruff, pytest, headset tests) must pass before merge.
+- Never commit secrets: keys live in `server/.env` (gitignored) or Modal secrets.
 
 ## Privacy
 
-Capture is visible (status HUD), storage is local to the server you run, nothing identifies
-people (prompts forbid identity claims), and `DELETE /v1/memories` purges everything.
-This is a hackathon prototype; do not wear it where recording isn't welcome.
+Capture is visible (status HUD), storage stays on the server you run, prompts forbid identity claims about people,
+and `DELETE /v1/memories` purges everything (including frames still in the pipeline). `PRIVACY_BLUR_FACES=true`
+blurs bystander faces in stored thumbnails (`pip install -e ".[privacy]"`). This is a hackathon prototype; do not
+wear it where recording isn't welcome.
 
-- **Bystander face blur** (off by default): `PRIVACY_BLUR_FACES=true` blurs every detected face
-  in the stored thumbnail, which is also what the headset displays and what the reader VLM
-  receives. `PRIVACY_BLUR_FACES_VLM=true` additionally blurs the frame before it goes to the
-  caption VLM / image embedder, so raw face pixels never leave the server (captions may then
-  say less about people). Detection is OpenCV's Haar cascade: `pip install -e ".[privacy]"`;
-  without OpenCV the server logs a warning and stores frames unblurred. The raw upload sits on
-  disk for the second or so before the worker blurs it.
-- **Purge** (`DELETE /v1/memories?device_id=&since=`) also drops frames that were accepted but
-  not yet stored (queued or mid-enrichment) and the dedupe state for the purged window, so
-  those frames do not reappear afterwards. (An episode summary the background consolidator is
-  writing at that moment can still land; purge again if it does.)
-- **Retention tiers**: kept frames stay JPEG for `HOT_RETENTION_H` (72 h), are then re-encoded
-  into AV1 chunks (about 10x smaller, still served at `/v1/thumbs`), and lose their pixels after
-  `COLD_RETENTION_DAYS` (100 d) while captions, OCR and vectors stay searchable. Chunks are made
-  from the stored (blurred) thumbnail, and purging a frame re-encodes its chunk without it. Needs
-  ffmpeg with an AV1 encoder; `GET /v1/stats` shows tiers, disk use and a 100-day projection.
+## Team
+
+Kartik Ramachandrula ([@kartikramachandrula](https://github.com/kartikramachandrula)),
+Debojoti Das Soumya ([@debojoti-soumya](https://github.com/debojoti-soumya)),
+Asher ([@asherps](https://github.com/asherps)),
+Tim Guan ([@ChefAltoids](https://github.com/ChefAltoids)).
+Much of the code was written with [Devin](https://devin.ai) agents.
 
 ## License
 
-MIT (to be added).
+[MIT](LICENSE) © 2026 Megamind contributors.
