@@ -79,6 +79,9 @@ Response:
 `replay_url` is optional and `null` when the server holds no buffered frames around the citation
 (older than the replay window, replay disabled, or a different device). It covers `ts - 5 s .. ts + 5 s`.
 `cited[].thumb_url` is `""` when the cited token has no image (heard speech): show the caption, skip the thumbnail.
+For questions about the present ("what am I looking at right now", "what did I just see") the evidence also
+includes live short-term memory (see `GET /live/{id}.jpg`): a cited raw frame has an id starting `now_`, a
+caption starting `LIVE NOW-<n>:` and `thumb_url` `/v1/live/{id}.jpg`. Treat `thumb_url` as an opaque URL.
 
 ## `GET /replay.mp4?device_id=...&from=...&to=...`
 Moment replay: an H.264 mp4 of **every** frame received from the device in `[from, to]` (not just the
@@ -92,6 +95,12 @@ The server keeps raw frames for a sliding window per device (default 15 min, bou
 - Headers: `X-Replay-Start` (unix ts at offset 0), `X-Replay-Device`, `X-Replay-Frames`.
 - 404 when no frames are buffered in the window; 503 when ffmpeg is not available on the server.
 Rendered clips are cached; `DELETE /memories` also purges the matching buffered frames and the clip cache.
+
+## `GET /live/{id}.jpg`
+Live short-term memory frame (JPEG): a raw frame from the replay buffer that was shown to the reader as a
+`NOW-<n>` evidence item because enrichment had not caught up yet. Only `thumb_url`s of `now_*` citations point
+here. 404 once the frame leaves the replay buffer (window / `DELETE /memories`) or the small live cache.
+Opt out with `LIVE_MEMORY_ENABLED=false` (`LIVE_MEMORY_*` knobs in `server/.env.example`).
 
 ## `GET /audio/{id}.wav`
 TTS output for a chat response.

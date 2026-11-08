@@ -155,7 +155,7 @@ class HybridRetriever(Retriever):
         if text_lists:
             legs.append(("bm25", w.bm25, self.adapter.keyword_search(text, n, **flt)))
             if self.text_embedder is not None:
-                legs.append(("text", w.text, vec(self.text_embedder.embed, "text_vec")))
+                legs.append(("text", w.text, vec(self.text_embedder.embed_query, "text_vec")))
         if mode in ("semantic", "hybrid") and w.ocr_bm25:
             legs.append(("ocr_bm25", w.ocr_bm25, self.adapter.ocr_search(text, n, **flt)))
         if mode in ("visual", "hybrid") and self.image_embedder is not None:

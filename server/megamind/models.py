@@ -100,7 +100,7 @@ class Citation(BaseModel):
     id: str
     ts: float
     caption: str
-    thumb_url: str
+    thumb_url: str  # /v1/thumbs/{id}.jpg; /v1/live/{id}.jpg for live NOW frames (id "now_..."); "" = no image
     replay_url: str | None = None  # /v1/replay.mp4 clip around ts; null when no frames are buffered
 
 
