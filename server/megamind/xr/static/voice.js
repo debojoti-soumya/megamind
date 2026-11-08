@@ -160,14 +160,16 @@ class MicCapture {
     this.stream?.getTracks().forEach((t) => t.stop());
     this.ac?.close().catch(() => {});
     this.node = this.stream = this.ac = null;
+    this.chunks = []; // don't hold the last clip's samples between questions
   }
 }
 
 /**
  * Phases: idle -> starting -> listening -> transcribing -> idle, or -> error (fades back to idle).
  *
- * @param {{onAudio: (wav: Blob) => Promise<string>, onChange?: (r: VoiceRecorder) => void, capture?: object}} opts
- *   `onAudio` sends the clip and resolves to the transcript ("" = nothing heard); a rejection becomes an error.
+ * @param {{onAudio: (wav: Blob) => Promise<string|null>, onChange?: (r: VoiceRecorder) => void, capture?: object}} opts
+ *   `onAudio` sends the clip and resolves to the transcript ("" = nothing heard, null = superseded by a newer
+ *   question, so neither success nor "didn't catch that"); a rejection becomes an error.
  */
 export class VoiceRecorder {
   constructor({ onAudio, onChange, capture } = {}) {
@@ -297,8 +299,10 @@ export class VoiceRecorder {
   async send(blob) {
     this.set("transcribing");
     try {
-      const text = String((await this.onAudio(blob)) || "").trim();
+      const res = await this.onAudio(blob);
       if (this.phase !== "transcribing") return;
+      if (res === null) return this.set("idle"); // a newer question took over the answer panel
+      const text = String(res || "").trim();
       if (!text) return this.fail("Didn't catch that. Try again, a little closer to the mic.");
       this.set("idle");
     } catch (e) {

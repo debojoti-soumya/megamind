@@ -158,6 +158,19 @@ function make(opts = {}, transcript = "where are my keys") {
   r.dispose();
 }
 
+// superseded by a newer question (onAudio resolves null): back to idle, no "didn't catch that"
+{
+  const { r, sent } = make({}, null);
+  r.toggle();
+  await flush();
+  r.toggle();
+  await flush();
+  assert.equal(sent.length, 1);
+  assert.equal(r.phase, "idle");
+  assert.equal(r.error, null);
+  r.dispose();
+}
+
 // server failure surfaces its message
 {
   const { r } = make({}, () => {

@@ -152,7 +152,8 @@ function replayFor(m) {
  * The one ask flow, for typed and spoken questions alike: POST /v1/chat, then show the answer, cite cards and
  * play the first cited moment. `body` is a JSON ChatRequest or a FormData with `audio` (the server's STT
  * transcribes it in the same request). `question` is shown while thinking; for voice (`question` null) the
- * server's `transcript` takes its place. Resolves to the question that was answered ("" when nothing was heard).
+ * server's `transcript` takes its place. Resolves to the question that was answered ("" when nothing was heard),
+ * or null when a newer question superseded this one (its outcome is no longer shown).
  */
 async function submit(question, body) {
   const token = ++askToken;
@@ -169,7 +170,7 @@ async function submit(question, body) {
       if (token === askToken) theater.setAnswer(json ? question : null, text || "Searching your day…");
     });
     const q = json ? question : (resp.transcript || "").trim();
-    if (token !== askToken) return q; // a newer question superseded this one
+    if (token !== askToken) return null; // a newer question superseded this one
     if (!q) {
       theater.setAnswer(null, "Didn't catch that. Try again, a little closer to the mic.", false);
       return "";
@@ -182,7 +183,8 @@ async function submit(question, body) {
     if (resp.audio_url) new Audio(resp.audio_url).play().catch(() => {});
     return q;
   } catch (e) {
-    if (token === askToken) theater.setAnswer(json ? question : null, `Something went wrong: ${e.message}`, false);
+    if (token !== askToken) return null;
+    theater.setAnswer(json ? question : null, `Something went wrong: ${e.message}`, false);
     throw e;
   }
 }
@@ -195,7 +197,7 @@ function ask(question) {
   submit(q, body).catch(() => {}); // shown on the answer panel
 }
 
-/** A spoken question (16 kHz WAV from voice.js) through the same flow; resolves to the transcript. */
+/** A spoken question (16 kHz WAV from voice.js) through the same flow; resolves to the transcript (null if superseded). */
 function askByVoice(wav) {
   const fd = new FormData();
   fd.append("session_id", SESSION);
