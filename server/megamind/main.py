@@ -33,6 +33,7 @@ from megamind.live import wrap_retriever as wrap_live_retriever
 from megamind.models import HealthResponse
 from megamind.replay import install as install_replay
 from megamind.retrieval import build_retriever
+from megamind.retrieval.hier import HierRetriever
 from megamind.store import build_store
 from megamind.store.consolidate import Consolidator, build_summarizer
 from megamind.store.embeddings import build_image_embedder, build_text_embedder
@@ -121,6 +122,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.worker.media = st.media
         st.reader = build_reader(settings, image_loader=st.media.read)
         st.retriever, st.ucc_indexer = build_retriever(settings, st.store, st.text_embedder, st.image_embedder)
+        hier = st.retriever if isinstance(st.retriever, HierRetriever) else None
         st.retriever = wrap_live_retriever(st, settings, st.retriever)  # NOW items for "right now" questions
         st.recall = RecallMemory(
             st.store, st.text_embedder, st.image_embedder, st.reader, retriever=st.retriever, tz=settings.wearer_tz
@@ -144,10 +146,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.consolidate_task = None
         if settings.consolidate_enabled:
             st.consolidate_task = asyncio.create_task(st.consolidator.run_forever(settings.consolidate_interval_s))
+        st.hier_task = None
+        if hier is not None and settings.hier_refresh_s > 0:
+            st.hier_task = asyncio.create_task(hier.run_forever(settings.hier_refresh_s))
         st.aging_task = None
         if settings.media_age_interval_s > 0:
             st.aging_task = asyncio.create_task(aging_loop(st, settings.media_age_interval_s))
         yield
+        if st.hier_task is not None:
+            st.hier_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await st.hier_task
         if st.aging_task is not None:
             st.aging_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

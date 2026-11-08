@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     hier_base_url: str = "https://api.openai.com/v1"
     hier_api_key: str = ""  # "" -> openai_api_key
     hier_cache_path: str = "data/hier_notes.json"  # "" = keep notes in memory only
+    hier_refresh_s: float = 300.0  # server: write new block/hour/day notes in the background this often (0 = off)
     ucc_api_key: str = ""
     ucc_base_url: str = "https://api.universalconstructor.co/v1"
     ucc_corpus: str = "megamind"

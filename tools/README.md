@@ -149,7 +149,8 @@ its target time, searching only memories from before `query_time`. The default w
 **Speech with `--srt-dir`.** Each subtitle cue goes out once, as `FrameMeta.transcript`. Servers without the
 speech port PR ignore the field, so there `--audio` is the way to get speech in.
 
-**Offline eval.** `--offline` builds main's retriever from the server's env with `RETRIEVER_BACKEND=hybrid` and
+**Offline eval.** `--offline` builds main's retriever from the server's env with `RETRIEVER_BACKEND=hybrid` (or
+`--backend hier` for the LLM notes + rerank backend; needs `OPENAI_API_KEY`, notes are cached in `HIER_CACHE_PATH`) and
 the planner clock in UTC (the eval calendar maps EgoLife wall-clock times onto UTC). `--calibrate default` follows
 `SEARCH_CALIBRATE_IMAGE` like the server does; `on`/`off` force it.
 

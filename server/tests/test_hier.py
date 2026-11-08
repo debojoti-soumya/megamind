@@ -12,6 +12,7 @@ import pytest
 
 from megamind.models import MemoryToken
 from megamind.retrieval import build_retriever
+from megamind.retrieval.adapter import StoreAdapter
 from megamind.retrieval.base import RetrievalResult, RetrievedToken, Retriever
 from megamind.retrieval.hier import ChatJSON, HierConfig, HierMemory, HierRetriever, window_lines
 from megamind.retrieval.planner import plan_query
@@ -95,6 +96,34 @@ async def test_llm_ids_rank_first_and_unknown_or_future_ids_are_dropped():
     assert "[b1]" in stage2 and "[c1]" not in stage2  # c1 is after `now`: never shown
 
 
+class VecBase(FixedRetriever):
+    """A base that exposes an embedder + adapter like HybridRetriever, so vector block ranking runs."""
+
+    def __init__(self, toks, store) -> None:
+        super().__init__(toks)
+        self.adapter = StoreAdapter(store)
+        self.text_embedder = SimpleNamespace(embed_query=self._embed)
+
+    async def _embed(self, text: str) -> list[float]:
+        return [0.0, 1.0]
+
+    async def _embed_query(self, field, embed, text):
+        return await embed(text)
+
+
+async def test_vector_ranked_blocks_join_the_llm_picks():
+    store = InMemoryStore()
+    a1 = tok("a1", T0 + 30, "kitchen, a person cuts onions").model_copy(update={"text_vec": [1.0, 0.0]})
+    b1 = tok("b1", T0 + 700, "living room, keys on the sofa").model_copy(update={"text_vec": [0.0, 1.0]})
+    await store.add_many([a1, b1])
+    llm = FakeLLM(stage1={"blocks": ["B0"]}, stage2={"ids": ["b1"]})
+    r = HierRetriever(store, VecBase([a1], store), HierMemory(store, llm, tz="UTC"), config=HierConfig(vec_blocks=1))
+    res = await r.retrieve("where are my keys", k=2, now=datetime.fromtimestamp(T0 + 1300, UTC))
+    assert r.last_trace["blocks"] == [T0, T0 + 600]  # B0 from the LLM, B1 from the vector ranking
+    assert "[b1]" in llm.calls[-1] and res.ranked[0].token.id == "b1"
+    assert "B1" in llm.calls[-2].split("search hits fall in blocks:")[1]
+
+
 async def test_llm_failure_falls_back_to_base():
     store = await _store()
     base = FixedRetriever([await store.get("a1"), await store.get("b1")])
@@ -164,3 +193,20 @@ def test_retry_after_honours_headers():
     assert _retry_after(httpx.Response(429, headers={"x-ratelimit-reset-tokens": "1m3s"}), 0) == 30.0
     assert _retry_after(httpx.Response(429, headers={"x-ratelimit-reset-tokens": "250ms"}), 0) == 0.5
     assert _retry_after(httpx.Response(500), 2) == 6.0
+
+
+async def test_large_note_backlog_builds_in_background_not_inline():
+    store = await _store()
+    llm = FakeLLM(stage1={"blocks": []}, stage2={"ids": []})
+    mem = HierMemory(store, llm, tz="UTC")
+    r = HierRetriever(store, FixedRetriever([await store.get("a1")]), mem, config=HierConfig(inline_build_max=1))
+    now = datetime.fromtimestamp(T0 + 1250, UTC)
+    assert await mem.pending(now.timestamp()) == 2
+    await r.retrieve("keys", k=1, now=now)
+    assert r._bg is not None
+    await r._bg
+    assert await mem.pending(now.timestamp()) == 0 and len(mem.notes) == 2
+    r.cfg.inline_build_max = 3
+    await store.add_many([tok("c2", T0 + 1400, "hallway, a coat")])
+    await r.retrieve("coat", k=1, now=datetime.fromtimestamp(T0 + 1900, UTC))
+    assert f"block:{T0 + 1200:.0f}" in mem.notes  # a small backlog is written inline
