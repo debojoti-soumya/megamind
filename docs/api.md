@@ -183,6 +183,37 @@ Response:
 replay, `REPLAY_FFMPEG`); 404 when `MONTAGE_ENABLED=false`; 409 when `DELETE /memories` ran while it was
 being made (nothing is kept; POST again). The same plan always yields the same `id`.
 
+### Content-filtered ("smart") montages
+"Montage of all shots of the guy in the black coat": every clip must show the query's subject. Additive request
+field `mode`: `""`/`"auto"` (default; `MONTAGE_SMART` decides), `"smart"`, `"classic"` (the highlight reel above).
+- Subject: the query minus its framing ("make a montage of all shots of") and any time phrase. A query with no
+  content words ("my afternoon", "make me a highlight reel") has none, and a request without a query never does:
+  those always take the classic path, exactly as before.
+- Auto (`MONTAGE_SMART=auto`): smart iff there is a subject AND (the query asks for a collection: "all", "every
+  time", "shots/clips/photos of", "montage of" ... OR the Claude verifier is configured). `MONTAGE_SMART=off`:
+  only `mode:"smart"` opts in. `mode:"classic"` always opts out.
+- Candidates: the retriever's top `2 x MONTAGE_SMART_MAX_CANDIDATES` hits for the subject across all history
+  (or `time_from`/`time_to`, or a time phrase in the query), spread so one long visit can't fill the pool, cut to
+  `MONTAGE_SMART_MAX_CANDIDATES` (60).
+- Verification: Claude `MONTAGE_VERIFY_MODEL` (`claude-haiku-5-5`) looks at each candidate's caption, OCR text and
+  thumbnail, `MONTAGE_VERIFY_BATCH` (8) per call, and keeps matches with confidence >= `MONTAGE_VERIFY_MIN_CONFIDENCE`
+  (0.5). Without `ANTHROPIC_API_KEY` (or `MONTAGE_VERIFIER=offline`), and for a batch whose call failed, candidates
+  are kept unverified in retrieval order.
+- Clips: matches within `MONTAGE_MOMENT_GAP_S` (90 s) of each other are one moment; one clip per moment (its most
+  confident token), chronological, at most `MONTAGE_SMART_MAX_CLIPS` (12, or `max_clips` if smaller), evenly
+  spread in time when there are more. Clip sources/render/caching are the same as above.
+- No match: **404** with a speakable `detail`, e.g. `"I couldn't find any moments matching the guy in the black
+  coat in your memories (checked 37 candidate moments), so there's no montage to make."`
+
+Additive response fields (classic defaults in brackets): `mode` (`"classic"`), `subject` (`""`), `candidates`
+(`0`, retriever candidates checked), `matches` (`0`, moments the verifier confirmed). `planner` is `"claude"` when
+the verifier checked the clips, `"offline"` when they are unverified retrieval hits.
+```json
+{ "id": "9b1c...", "url": "/v1/montages/9b1c....mp4", "title": "The guy in the black coat",
+  "narration": "Found 4 moments matching the guy in the black coat across 2 days.", "planner": "claude",
+  "mode": "smart", "subject": "the guy in the black coat", "candidates": 60, "matches": 4, "clips": [ ... ] }
+```
+
 ## `GET /montages/{id}.mp4`
 The rendered montage (H.264, `MONTAGE_WIDTH`x`MONTAGE_HEIGHT`, default 960x540). `GET` or `HEAD`; supports
 `Range: bytes=...` (206 / 416) exactly like `/replay.mp4`. Montages are a bounded cache (newest

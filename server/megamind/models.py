@@ -174,6 +174,9 @@ class MontageRequest(BaseModel):
     time_from: float | str | None = None
     time_to: float | str | None = None
     max_clips: int | None = Field(None, ge=0, le=24)  # None/0 = MONTAGE_MAX_CLIPS
+    # "" / "auto" (MONTAGE_SMART decides) | "smart" (content-filtered: every clip shows the query's subject) |
+    # "classic" (highlight reel, the pre-smart behaviour). Time-range-only requests are always classic.
+    mode: Literal["", "auto", "smart", "classic"] | None = None
 
 
 class MontageClip(BaseModel):
@@ -192,6 +195,11 @@ class MontageResponse(BaseModel):
     narration: str = ""
     planner: Literal["claude", "offline"] = "offline"
     clips: list[MontageClip] = Field(default_factory=list)
+    # content-filtered ("smart") montages only; defaults on the classic path
+    mode: Literal["classic", "smart"] = "classic"
+    subject: str = ""  # what every clip shows, e.g. "the guy in the black coat"
+    candidates: int = 0  # retriever candidates checked
+    matches: int = 0  # matching moments the verifier confirmed (0 when unverified: planner="offline")
 
 
 class HealthResponse(BaseModel):

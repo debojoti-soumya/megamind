@@ -62,7 +62,8 @@ namespace Megamind
 
     // POST /v1/montage. time_from/time_to: unix seconds or ISO-8601 as strings; JsonUtility sends "" for null,
     // which the server reads as unbounded (and query "" as no query). max_clips 0 = server default.
-    [Serializable] public class MontageRequest { public string device_id; public string query; public string time_from; public string time_to; public int max_clips; }
+    // mode: "" = auto (server decides), "smart" = content-filtered (every clip shows the query's subject), "classic".
+    [Serializable] public class MontageRequest { public string device_id; public string query; public string time_from; public string time_to; public int max_clips; public string mode; }
 
     [Serializable] public class MontageClip { public string token_id; public double ts; public string title; public double duration_s; public string source; public string thumb_url; }
 
@@ -75,5 +76,10 @@ namespace Megamind
         public string narration;
         public string planner;
         public List<MontageClip> clips = new List<MontageClip>();
+        // content-filtered ("smart") montages; classic: "classic", "", 0, 0
+        public string mode;
+        public string subject;
+        public int candidates;
+        public int matches;
     }
 }
