@@ -1,0 +1,33 @@
+[
+ {
+  "ID": "1",
+  "type": "EntityLog",
+  "need_audio": false,
+  "question": "Where did I put the scissors?",
+  "query_time": {
+   "date": "DAY1",
+   "time": "11200000"
+  },
+  "target_time": {
+   "date": "DAY1",
+   "time": "11150000"
+  }
+ },
+ {
+  "ID": "2",
+  "type": "EventRecall",
+  "need_audio": true,
+  "question": "What did Shure say about the cake?",
+  "query_time": {
+   "date": "DAY1",
+   "time": "12000000"
+  },
+  "target_time": {
+   "date": "DAY1",
+   "time_list": [
+    "11100000",
+    "11400000"
+   ]
+  }
+ }
+]

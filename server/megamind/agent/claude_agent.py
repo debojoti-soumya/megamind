@@ -35,6 +35,7 @@ from ulid import ULID
 
 from megamind.agent.tools import OCR_MATCH_PREFIX, RECALL_MEMORY_TOOL, RecallMemory, keywords
 from megamind.config import Settings
+from megamind.live import live_question
 from megamind.models import ChatResponse, Citation, RecallResult, ToolCallRecord
 from megamind.retrieval.planner import QueryPlan, plan_query
 
@@ -242,6 +243,7 @@ class ClaudeAgent:
     ) -> tuple[ChatResponse, TurnStats]:
         """`now` pins the wall clock (system prompt, relative times) for deterministic evals."""
         stats = TurnStats(request_id=str(ULID()))
+        live_question.set(text)  # lets live short-term memory see "right now" behind Claude's keyword query
         t0 = time.perf_counter()
         if not self.enabled:
             stats.path = "fallback"

@@ -1,0 +1,39 @@
+{
+ "annotations": [
+  {
+   "id": 11,
+   "image_id": 101,
+   "caption": "Three cups of coffee on a wooden dining table. "
+  },
+  {
+   "id": 12,
+   "image_id": 101,
+   "caption": "A table set with mugs next to a chair."
+  },
+  {
+   "id": 13,
+   "image_id": 101,
+   "caption": "Coffee mugs lined up on a kitchen table."
+  },
+  {
+   "id": 21,
+   "image_id": 202,
+   "caption": "A laptop and a book on a desk."
+  },
+  {
+   "id": 22,
+   "image_id": 202,
+   "caption": "An open laptop beside a paperback."
+  },
+  {
+   "id": 23,
+   "image_id": 202,
+   "caption": "A work desk with a computer and a chair."
+  },
+  {
+   "id": 31,
+   "image_id": 303,
+   "caption": "A man standing in a field."
+  }
+ ]
+}
