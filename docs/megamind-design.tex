@@ -54,7 +54,7 @@
 \thispagestyle{empty}
 
 \begin{abstract}
-\noindent Megamind gives a Meta Quest 3 wearer an AI assistant that remembers what they have seen. The headset's passthrough cameras are sampled continuously; keyframes are filtered, described, embedded, and stored as \emph{memory tokens} in a vector database. A Claude-based agent exposes a \texttt{recall\_memory} tool; when invoked, relevant tokens are retrieved and handed to a Qwen vision-language ``reader'' sub-agent that attends over the concatenated tokens and returns grounded evidence. Claude composes the final answer, which is delivered through a voice-first AR chat interface on the headset. This document fixes the architecture, interfaces, model choices, work split and risk plan so that four engineers and several coding agents can build it in parallel.
+\noindent Megamind gives a Meta Quest 3 wearer an AI assistant that remembers what they have seen. The headset's passthrough cameras are sampled continuously; keyframes are filtered, described, embedded, and stored as \emph{memory tokens} in a vector database. A Claude-based agent exposes a \texttt{recall\_memory} tool; when invoked, relevant tokens are retrieved and handed to an open vision-language ``reader'' sub-agent (Gemma~4~31B on Sail) that attends over the concatenated tokens and returns grounded evidence. Claude composes the final answer, which is delivered through a voice-first AR chat interface on the headset. This document fixes the architecture, interfaces, model choices, work split and risk plan so that four engineers and several coding agents can build it in parallel.
 \end{abstract}
 
 \tableofcontents
@@ -70,7 +70,7 @@ Demonstrate, live, a wearer asking the headset questions whose answers depend on
 \begin{itemize}
   \item Continuous passthrough capture on Quest~3, sampled and uploaded as keyframes.
   \item Server-side filtering, captioning/OCR, embedding and storage of memory tokens.
-  \item A Claude agent with a \texttt{recall\_memory} tool; a Qwen-VL reader sub-agent that performs attention over retrieved tokens.
+  \item A Claude agent with a \texttt{recall\_memory} tool; a Gemma~4 VLM reader sub-agent that performs attention over retrieved tokens.
   \item Voice-first AR chat panel on the headset (push-to-talk in, text + speech out), with the cited memory thumbnail shown.
   \item A laptop/webcam feeder that emulates the headset so the backend is testable without hardware.
 \end{itemize}
@@ -97,7 +97,7 @@ The use case is not new; the open, agent-callable system on a consumer headset i
 \begin{enumerate}
   \item Persistent, passive episodic \emph{visual} memory on a consumer headset via the Passthrough Camera API.
   \item Memory exposed as an agent tool (\texttt{recall\_memory}) with a published schema, decoupled from any one assistant.
-  \item A two-model read path in which a Qwen-VL reader re-attends over the retrieved \emph{frames}, not just captions.
+  \item A two-model read path in which a VLM reader (Gemma~4~31B) re-attends over the retrieved \emph{frames}, not just captions.
   \item Temporal + semantic + visual hybrid retrieval with time-range filtering.
   \item Grounded answers: the cited frame is rendered in AR next to the reply.
   \item Open, device-agnostic (feeder, phone, webcam) with a local-first store and purge.
@@ -114,12 +114,12 @@ Horizon OS keeps a single immersive app in the foreground and suspends others, s
 
 \begin{decision}
 \textbf{D2 --- A memory token is a record, not a learned vector.}
-Each token = one keyframe at time $t$ with: a dense caption, OCR text, entity list, a text embedding, an image embedding, and the JPEG thumbnail. ``Attention over tokens'' is performed by the Qwen-VL reader, which receives the concatenated captions \emph{and} thumbnails as real vision/text tokens in its context. This is honest to the pitch and buildable in a day.
+Each token = one keyframe at time $t$ with: a dense caption, OCR text, entity list, a text embedding, an image embedding, and the JPEG thumbnail. ``Attention over tokens'' is performed by the VLM reader, which receives the concatenated captions \emph{and} thumbnails as real vision/text tokens in its context. This is honest to the pitch and buildable in a day.
 \end{decision}
 
 \begin{decision}
-\textbf{D3 --- Two-model agent: Claude orchestrates, Qwen-VL reads memory.}
-Claude (Sonnet) is the user-facing agent and tool caller. The \texttt{recall\_memory} tool retrieves top-$k$ tokens and invokes an open-VLM reader (Gemma~4~31B~IT via Sail's \texttt{asap} window, or self-hosted Qwen2.5-VL) that answers the sub-question over those tokens with citations. Claude never sees raw frames unless the reader's evidence is insufficient, keeping its context small and latency bounded.
+\textbf{D3 --- Two-model agent: Claude orchestrates, an open VLM reads memory.}
+Claude (Sonnet) is the user-facing agent and tool caller. The \texttt{recall\_memory} tool retrieves top-$k$ tokens and invokes an open-VLM reader (Gemma~4~31B~IT via Sail's OpenAI-compatible API on the \texttt{asap} window, NVFP4 variant as fallback; plan~B: self-hosted Qwen2.5-VL on vLLM/Modal) that answers the sub-question over those tokens with citations. Claude never sees raw frames unless the reader's evidence is insufficient, keeping its context small and latency bounded.
 \end{decision}
 
 \begin{decision}
@@ -164,7 +164,7 @@ Push-to-talk (controller button or hand pinch) $\rightarrow$ server STT. Replies
 \node[sv] (chat) at (5.6,-4.5) {POST /v1/chat};
 \node[sv] (stt) at (9.0,-4.5) {STT};
 \node[sv] (claude) at (12.4,-4.5) {Claude agent\\calls recall\_memory};
-\node[sv] (reader) at (17.0,-4.5) {Qwen-VL reader\\attention over tokens};
+\node[sv] (reader) at (17.0,-4.5) {Gemma~4 reader\\attention over tokens};
 \node[sv] (tts) at (9.0,-6.4) {TTS};
 \begin{scope}[on background layer]
 \node[fit=(cam)(sampler)(ui), draw=mmgreen!60, fill=mmgreen!4, rounded corners, inner sep=5pt, label={[font=\small\bfseries\color{mmgreen}]above:Quest 3 --- Unity app}] {};
@@ -195,7 +195,7 @@ Push-to-talk (controller button or hand pinch) $\rightarrow$ server STT. Replies
   \item[Headset app (Unity 2022.3 LTS / Unity 6, Meta XR SDK $\geq$ v74).] Reads the passthrough camera via Meta's Passthrough Camera API (exposed as Android Camera2; the Meta sample wraps it in \texttt{WebCamTextureManager}). Samples one frame per second, encodes JPEG ($\leq$ 960 px wide, quality 75), and POSTs to \texttt{/v1/frames} with device id, UTC timestamp and head pose. Renders a world-locked chat panel; records microphone on push-to-talk; plays returned audio.
   \item[Ingest service (\texttt{server/megamind/ingest}).] Accepts frames, drops near-duplicates (perceptual dHash Hamming distance $<$ 6 within the last 30 s, and minimum 2 s gap), then enqueues to a worker that produces a memory token (Section~\ref{sec:token}) and writes it to the store.
   \item[Memory store (\texttt{server/megamind/store}).] LanceDB table of memory tokens with two vector columns (text, image) and full-text search on \texttt{caption} + \texttt{ocr\_text}. Hybrid query: vector + BM25 fused by reciprocal rank, pre-filtered by time range.
-  \item[Agent service (\texttt{server/megamind/agent}).] STT $\rightarrow$ Claude with tools $\rightarrow$ (\texttt{recall\_memory} $\rightarrow$ store $\rightarrow$ Qwen-VL reader) $\rightarrow$ Claude answer $\rightarrow$ TTS. Returns text, audio, and the ids/thumbnails of memories cited.
+  \item[Agent service (\texttt{server/megamind/agent}).] STT $\rightarrow$ Claude with tools $\rightarrow$ (\texttt{recall\_memory} $\rightarrow$ store $\rightarrow$ VLM reader) $\rightarrow$ Claude answer $\rightarrow$ TTS. Returns text, audio, and the ids/thumbnails of memories cited.
   \item[Feeder (\texttt{tools/feeder.py}).] Emulates the headset from a laptop webcam or a video file. Used for all backend development and as a demo fallback.
 \end{description}
 
@@ -274,8 +274,8 @@ Claude's system prompt instructs it to call \texttt{recall\_memory} whenever the
   \item Return top-$k$ (default 12; hard cap 24 to bound reader cost).
 \end{enumerate}
 
-\subsection{Reader sub-agent (Qwen-VL)}
-The reader receives, in one prompt, the concatenated tokens: for each, \texttt{[id] [timestamp] caption / ocr} plus the thumbnail image, followed by the query. It is asked to answer only from the tokens, cite token ids, and emit a confidence label as JSON. This is the component that literally performs attention across memories. Qwen3.6-35B-A3B accepts up to 20 images per request on Sail; if its flex-window latency is too high for live Q\&A, switch the reader to Gemma~4~31B (same API) or self-host Qwen2.5-VL on Modal.
+\subsection{Reader sub-agent (Gemma~4~31B)}
+The reader receives, in one prompt, the concatenated tokens: for each, \texttt{[id] [timestamp] caption / ocr} plus the thumbnail image, followed by the query. It is asked to answer only from the tokens, cite token ids, and emit a confidence label as JSON. This is the component that literally performs attention across memories. The reader is Gemma~4~31B~IT on Sail's OpenAI-compatible API (\texttt{asap} window, up to 20 images per request; we send at most 12 and chunk beyond that). A call takes $\approx$3~s; a 6~s wall-clock deadline covers one retry, which goes to the \texttt{nvidia/Gemma-4-31B-IT-NVFP4} variant, after which the reader degrades to captions only. Qwen3.6-35B-A3B is flex-only on Sail and unusable live. Plan~B, if Sail is unavailable: self-host Qwen2.5-VL on vLLM on Modal and point \texttt{READER\_BASE\_URL} at it.
 
 \paragraph{Why two models.} Claude keeps the conversation, tool-use discipline and final phrasing; the reader does cheap, parallelisable, image-heavy evidence extraction. Claude's context never fills with thumbnails, so multi-turn chat remains fast.
 
@@ -286,15 +286,15 @@ The reader receives, in one prompt, the concatenated tokens: for each, \texttt{[
 STT (Whisper / Deepgram) & 0.8 s \\
 Claude turn 1 (decide tool call) & 1.5 s \\
 Retrieval (LanceDB) & 0.1 s \\
-Reader (Qwen-VL, 12 images) & 2.5 s \\
+Reader (Gemma~4~31B, 12 images) & 3.0 s \\
 Claude turn 2 (compose answer) & 1.5 s \\
 TTS (first chunk) & 0.8 s \\
 \midrule
-Total & $\approx$ 7.2 s \\
+Total & $\approx$ 7.7 s \\
 \bottomrule
 \end{tabular}
 \end{center}
-Stream Claude's final text to the panel while TTS renders so the UI feels responsive.
+Stream Claude's final text to the panel while TTS renders so the UI feels responsive. Measured on the agent eval (Sonnet~4.6 + Sail Gemma, no STT/TTS): $\approx$5--6~s per turn at p50; the reader's $\approx$3~s per call is the floor.
 
 % -------------------------------------------------------------------
 \section{Stream 3 --- AR Chat Interface}
@@ -405,7 +405,7 @@ Privacy of bystanders & Low (hackathon) & Visible capture indicator, local stora
 All secrets and model selections via environment variables (\texttt{server/.env.example}):
 \begin{lstlisting}
 ANTHROPIC_API_KEY=...
-CLAUDE_MODEL=claude-sonnet-4-5
+CLAUDE_MODEL=claude-sonnet-4-6
 READER_BASE_URL=https://api.sailresearch.com/v1  # Sail (credits); or vLLM on Modal
 READER_API_KEY=...
 READER_MODEL=google/gemma-4-31B-it           # vision, asap; fallback nvidia/Gemma-4-31B-IT-NVFP4
@@ -420,7 +420,7 @@ THUMB_DIR=./data/thumbs
 
 \section{Open Questions}
 \begin{itemize}
-  \item GPU availability for local Qwen-VL via vLLM, or hosted only?
+  \item GPU availability for a self-hosted reader (Qwen2.5-VL on vLLM/Modal) if Sail is unavailable?
   \item Hackathon end time (fixes the phase boundaries above).
   \item Preferred STT/TTS vendor given available credits.
 \end{itemize}
