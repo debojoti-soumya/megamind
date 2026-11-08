@@ -5,9 +5,12 @@ hits) so the reader sees context. Returns <= k tokens in chronological order.
 
 from __future__ import annotations
 
+import asyncio
 import math
+from collections.abc import Coroutine
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from megamind.ingest.enrich import ImageEmbedder, TextEmbedder
@@ -131,32 +134,28 @@ class HybridRetriever(Retriever):
     ) -> list[tuple[str, float, list[str]]]:
         """Weighted RRF over the ranked lists selected by `mode`, plus a recency prior."""
         flt = dict(time_from=time_from, time_to=time_to, device_id=device_id)
-        lists: list[tuple[str, float, list[str]]] = []  # (name, weight, ranked ids)
         n = self.cfg.pool
 
-        if mode in ("semantic", "hybrid"):
-            kw = await self.adapter.keyword_search(text, n, **flt)
-            lists.append(("bm25", w.bm25, [i for i, _ in kw]))
+        async def ids(coro) -> list[str]:
+            return [i for i, _ in await coro]
+
+        async def vec_ids(embed, field: str) -> list[str]:
+            return await ids(self.adapter.vector_search(await embed(text), n, field, **flt))
+
+        # the legs are independent store calls (LanceDB runs each in a worker thread): run them concurrently
+        legs: list[tuple[str, float, Coroutine[Any, Any, list[str]]]] = []
+        text_lists = mode in ("semantic", "hybrid") or (mode == "visual" and self.image_embedder is None)
+        if text_lists:
+            legs.append(("bm25", w.bm25, ids(self.adapter.keyword_search(text, n, **flt))))
             if self.text_embedder is not None:
-                qv = await self.text_embedder.embed(text)
-                tv = await self.adapter.vector_search(qv, n, "text_vec", **flt)
-                lists.append(("text", w.text, [i for i, _ in tv]))
-            if w.ocr_bm25:
-                ocr = await self.adapter.ocr_search(text, n, **flt)
-                lists.append(("ocr_bm25", w.ocr_bm25, [i for i, _ in ocr]))
+                legs.append(("text", w.text, vec_ids(self.text_embedder.embed, "text_vec")))
+        if mode in ("semantic", "hybrid") and w.ocr_bm25:
+            legs.append(("ocr_bm25", w.ocr_bm25, ids(self.adapter.ocr_search(text, n, **flt))))
         if mode in ("visual", "hybrid") and self.image_embedder is not None:
-            iv_q = await self.image_embedder.embed_text(text)
-            iv = await self.adapter.vector_search(iv_q, n, "image_vec", **flt)
             weight = 1.0 if mode == "visual" else w.image
-            lists.append(("image", weight, [i for i, _ in iv]))
-        if mode == "visual" and self.image_embedder is None:
-            # no image tower available: degrade gracefully to the text lists
-            kw = await self.adapter.keyword_search(text, n, **flt)
-            lists.append(("bm25", w.bm25, [i for i, _ in kw]))
-            if self.text_embedder is not None:
-                qv = await self.text_embedder.embed(text)
-                tv = await self.adapter.vector_search(qv, n, "text_vec", **flt)
-                lists.append(("text", w.text, [i for i, _ in tv]))
+            legs.append(("image", weight, vec_ids(self.image_embedder.embed_text, "image_vec")))
+        ranked = await asyncio.gather(*(c for _, _, c in legs))
+        lists = [(name, weight, r) for (name, weight, _), r in zip(legs, ranked, strict=True)]
 
         scores: dict[str, float] = {}
         reasons: dict[str, list[str]] = {}
