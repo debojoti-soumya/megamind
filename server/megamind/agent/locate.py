@@ -240,12 +240,16 @@ class Locator:
         if not cands:
             return []
         try:
-            return await asyncio.wait_for(self._locate(question, answer, cands), self.cfg.timeout_s)
+            m, shown, jpegs = await asyncio.wait_for(self._locate(question, answer, cands), self.cfg.timeout_s)
         except Exception as e:  # noqa: BLE001  (markers are best-effort; never break the turn)
             log.warning("locate failed (%s: %s)", type(e).__name__, e)
             return []
+        if m is not None and self.refiner is not None:  # own timeout (refine_timeout_s); failure keeps the LLM box
+            m = await self._refine(m, shown, jpegs)
+        return [m] if m is not None else []
 
-    async def _locate(self, question: str, answer: str, cands: list[Citation]) -> list[Marker]:
+    async def _locate(self, question: str, answer: str, cands: list[Citation]):
+        """(LLM marker or None, shown frames, their JPEGs)."""
         shown: list[tuple[Citation, str | None, int, int]] = []
         jpegs: list[bytes] = []
         images: list[tuple[str, str]] = []  # (header, base64 jpeg)
@@ -259,16 +263,13 @@ class Locator:
             jpegs.append(data)
             shown.append((c, device_id, w, h))
         if not shown:
-            return []
+            return None, shown, jpegs
         prompt = _PROMPT.format(question=question, answer=answer)
         t0 = time.perf_counter()
         call = self._ask_anthropic if self.provider == "anthropic" else self._ask_openai
         out = await call(images, prompt)
         log.info("locate[%s]: %r -> %s (%.0f ms)", self.provider, question, out, (time.perf_counter() - t0) * 1000)
-        m = _to_marker(out, shown, self.cfg.min_confidence)
-        if m is not None and self.refiner is not None:
-            m = await self._refine(m, shown, jpegs)
-        return [m] if m is not None else []
+        return _to_marker(out, shown, self.cfg.min_confidence), shown, jpegs
 
     async def _refine(self, m: Marker, shown, jpegs: list[bytes]) -> Marker:
         """Redraw `m.box` with the detector in the same frame; any failure keeps the LLM's box."""

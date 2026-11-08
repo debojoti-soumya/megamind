@@ -243,7 +243,10 @@ class FakeRefiner:
     def __init__(self, result):
         self.result, self.calls = result, []
 
+    delay = 0.0
+
     def detect(self, jpeg, query, min_score):
+        time.sleep(self.delay)
         self.calls.append(query)
         if isinstance(self.result, Exception):
             raise self.result
@@ -260,12 +263,12 @@ def _jpeg(w=320, h=240) -> bytes:
     return buf.getvalue()
 
 
-async def _locate_with(refiner):
+async def _locate_with(refiner, **cfg):
     async def load(c):
         return _jpeg(), "dev1"
 
     fake = ScriptedAnthropic([report(found=True, image=0, label="pen", box=[0, 0, 160, 120], confidence=0.9)])
-    loc = Locator(_settings(), _cfg(), load, client=fake.client(), refiner=refiner)
+    loc = Locator(_settings(), _cfg(**cfg), load, client=fake.client(), refiner=refiner)
     return await loc.markers("where is my pen?", "On the desk.", [_cit()], now=100.0)
 
 
@@ -295,3 +298,13 @@ def test_build_refiner_none_and_missing_deps(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", no_torch)
     assert build_refiner(_cfg(refine="auto")) is None
+
+
+async def test_refine_has_its_own_budget_beyond_the_llm_timeout():
+    ref = FakeRefiner([((32, 24, 96, 72), 0.7)])
+    ref.delay = 0.4
+    (m,) = await _locate_with(ref, timeout_s=0.3, refine_timeout_s=2.0)
+    assert m.box == [0.1, 0.1, 0.3, 0.3]
+    ref.delay = 0.3
+    (m,) = await _locate_with(ref, timeout_s=2.0, refine_timeout_s=0.05)
+    assert m.box == [0.0, 0.0, 0.5, 0.5]  # refine timed out: the LLM box survives
