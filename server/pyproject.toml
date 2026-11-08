@@ -27,6 +27,9 @@ privacy = ["opencv-python-headless>=4.9,<5"]  # PRIVACY_BLUR_FACES face detectio
 # CPU torch: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu (PyPI torchvision is CUDA)
 # ambient audio with local Whisper (AUDIO_STT_PROVIDER=faster-whisper); also needs ffmpeg on PATH
 local-stt = ["faster-whisper>=1.0"]
+# keyless enricher OCR (ENRICH_PROVIDER=local, or auto without a key); also needs the tesseract binary on PATH
+# (brew install tesseract / apt install tesseract-ocr)
+local-enrich = ["pytesseract>=0.3.10"]
 local-embeddings = ["open-clip-torch>=2.24", "sentence-transformers>=3.0", "transformers", "sentencepiece", "protobuf"]
 
 [build-system]
@@ -38,6 +41,7 @@ include = ["megamind*"]
 
 [tool.setuptools.package-data]
 megamind = ["ui/*.html"]
+"megamind.xr" = ["static/*"]  # Memory Theater page (GET /xr)
 
 [tool.ruff]
 line-length = 120

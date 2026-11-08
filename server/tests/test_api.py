@@ -169,6 +169,7 @@ async def test_health_reports_mocks_when_keys_are_missing(tmp_path):
         "claude": "fallback (claude-sonnet-4-6 configured, no key)",
         "reader": "mock (vlm configured, no key)",
         "embed": "mock (openai configured, no key)",
+        "enrich": "mock (auto: no enrich/reader key, no image embedder)",
         "stt": "mock (deepgram configured, no key)",
         "tts": "mock",
     }
@@ -199,3 +200,53 @@ async def test_health_says_not_installed_for_local_embeddings_without_torch(tmp_
     monkeypatch.setitem(sys.modules, "torch", None)  # EMBED_PROVIDER=local is real now: make its import fail too
     models = await _health(tmp_path, embed_provider="local")
     assert models["embed"] == "mock (local configured, not installed)"
+
+
+async def _post_frame_meta(c, jpeg, meta):
+    return await c.post("/v1/frames", files={"image": ("f.jpg", jpeg, "image/jpeg")}, data={"meta": json.dumps(meta)})
+
+
+async def test_frame_transcript_becomes_transcript_token_even_when_frame_rejected(client):
+    c, app = client
+    kf = app.state.keyframe_filter
+    r = await _post_frame_meta(c, _noisy_jpeg(1), {"device_id": "dev1", "ts": 1000.0, "transcript": "the wifi"})
+    assert r.json()["accepted"]
+    r = await _post_frame_meta(
+        c, _noisy_jpeg(1), {"device_id": "dev1", "ts": 1001.0, "transcript": "password is hunter2"}
+    )
+    assert r.json()["reason"] == "duplicate"  # the frame is dropped, the words are not
+    r = await _post_frame_meta(c, _noisy_jpeg(5), {"device_id": "dev1", "ts": 1030.0, "transcript": "  "})
+    assert r.json()["accepted"]
+    await app.state.worker.queue.join()
+
+    frames = await app.state.store.range(None, None, kinds=("frame",))
+    speech = await app.state.store.range(None, None, kinds=("transcript",))
+    assert len(frames) == 2 and all("hunter2" not in f.caption for f in frames)  # never attached to a frame
+    assert len(speech) == 1  # 1 s apart -> merged; blank text -> nothing
+    assert speech[0].caption == 'Speech heard nearby: "the wifi password is hunter2"'
+    assert speech[0].ts == 1000.0 and speech[0].thumb_url == ""
+    assert sum(kf.counts.values()) == 3  # one filter decision per frame; speech never touches the budget
+
+    hits = (await c.get("/v1/memories", params={"q": "wifi password"})).json()["results"]
+    assert hits[0]["kind"] == "transcript"
+
+
+async def test_frame_transcript_rejected_with_bad_image(client):
+    c, app = client
+    r = await c.post(
+        "/v1/frames",
+        files={"image": ("f.jpg", b"not a jpeg", "image/jpeg")},
+        data={"meta": json.dumps({"device_id": "dev1", "ts": 1000.0, "transcript": "hello"})},
+    )
+    assert r.status_code == 400
+    assert await app.state.store.count() == 0
+
+
+async def test_health_reports_enricher(tmp_path):
+    assert (await _health(tmp_path, reader_api_key="none"))["enrich"].startswith("mock (auto")
+    assert (await _health(tmp_path, enrich_provider="mock"))["enrich"] == "mock"
+    models = await _health(tmp_path, reader_api_key="sk-x", reader_model="gemma")
+    assert models["enrich"] == "vlm:gemma"
+    assert (await _health(tmp_path, enrich_provider="local", reader_api_key="none"))["enrich"].startswith(
+        "local (degraded: no image embedder"
+    )

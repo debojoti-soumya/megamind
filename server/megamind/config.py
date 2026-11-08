@@ -30,8 +30,12 @@ class Settings(BaseSettings):
     reader_skip_on_ocr: bool = True  # Claude path: skip the VLM when every query keyword is in a top hit's OCR
     recall_prefetch: bool = True  # run recall_memory on the raw question while Claude picks its tool call
     reader_extra_body: str = ""  # JSON merged into the request, e.g. {"chat_template_kwargs":{"enable_thinking":false}}
-    enrich_base_url: str = ""
-    enrich_model: str = ""
+    enrich_provider: str = "auto"  # auto (vlm iff an enrich/reader key is set, else local if installed, else mock)
+    enrich_base_url: str = ""  # "" -> reader_base_url (and the reader's extra body / completion window)
+    enrich_model: str = ""  # "" -> reader_model
+    enrich_api_key: str = ""  # "" -> reader_api_key, but only when enrich_base_url is "" (same endpoint)
+    enrich_timeout_s: float = 20.0  # per attempt; one retry on 429/5xx/timeout, then the local/empty fallback
+    enrich_max_tokens: int = 400
 
     embed_provider: str = "mock"
     embed_model: str = "text-embedding-3-small"
@@ -87,9 +91,12 @@ class Settings(BaseSettings):
     filter_max_per_min: int = 20  # per-device cap on kept frames (token bucket; heartbeat/pose exempt)
 
     episode_gap_s: float = 120.0
-    episode_split_sim: float = 0.80
-    episode_rejoin_sim: float = 0.85
+    episode_split_sim: float = 0.70  # vs the mean of the last episode_recent_n image vectors (SigLIP B/16, #54)
+    episode_rejoin_sim: float = 0.80  # vs a recent episode's whole centroid, to rejoin it after a detour
     episode_rejoin_last: int = 4
+    episode_recent_n: int = 6
+    episode_max_s: float = 1800.0  # split episodes longer than this so long stays still get summarised (0 = off)
+    episode_move_m: float = 3.0  # split when the wearer is this far from the episode's pose centroid (0 = off)
     consolidate_enabled: bool = True  # background Consolidator in the server lifespan
     consolidate_interval_s: float = 600.0
     consolidate_min_tokens: int = 3
@@ -101,6 +108,9 @@ class Settings(BaseSettings):
     audio_stt_model: str = ""  # "" -> whisper-1 (openai) / small.en (faster-whisper)
     audio_window_s: float = 15.0  # transcript segments are merged into memory tokens spanning at most this long
     audio_enhance: bool = True  # band-pass + loudnorm when ffmpeg decodes (low-rate headset mics)
+    speech_merge_s: float = 10.0  # speech starting <= this long after the device's last transcript token joins it
+    speech_max_token_s: float = 60.0  # ... unless the merged token would span longer than this
+    speech_link_s: float = 15.0  # retrieval: pair a transcript hit with the nearest frame within +-N s (0 = off)
 
     def provider_key(self, provider: str) -> str | None:
         """The API key `provider` authenticates with ("" if unset), or None for keyless/unknown providers."""
@@ -111,6 +121,7 @@ class Settings(BaseSettings):
             "deepgram": self.deepgram_api_key,
             "elevenlabs": self.elevenlabs_api_key,
             "vlm": "" if self.reader_api_key == "none" else self.reader_api_key,
+            "enrich": self.enrich_key,
         }
         return keys.get(provider.lower())
 
@@ -121,6 +132,12 @@ class Settings(BaseSettings):
     @property
     def enrich_model_name(self) -> str:
         return self.enrich_model or self.reader_model
+
+    @property
+    def enrich_key(self) -> str:
+        """Bearer key for the enrich endpoint; the reader key is only reused for the reader's own endpoint."""
+        key = self.enrich_api_key or ("" if self.enrich_base_url else self.reader_api_key)
+        return "" if key == "none" else key
 
 
 @lru_cache
