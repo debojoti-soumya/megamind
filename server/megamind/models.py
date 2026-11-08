@@ -304,6 +304,22 @@ class DevicesResponse(BaseModel):
     devices: list[DeviceInfo]  # most recently active (`last_ts`) first
 
 
+class CommandMatch(BaseModel):
+    """`POST /v1/stt` `command`: the `command_hints` phrase the transcript matched (normalized, fuzzy)."""
+
+    phrase: str  # the hint exactly as the client sent it
+    score: float  # 1.0 = exact after normalization; >= 0.8 (fuzzy) otherwise
+
+
+class SttResponse(BaseModel):
+    """`POST /v1/stt`: the transcript only (no agent turn, no TTS), for client-side voice commands."""
+
+    transcript: str
+    duration_s: float | None = None  # clip length when the upload is a parseable WAV, else null
+    model: str  # what transcribed it, e.g. "openai:gpt-transcribe" | "deepgram:nova-2" | "mock"
+    command: CommandMatch | None = None  # null when no `command_hints` were sent or none matched
+
+
 class ChatStreamRetrieval(BaseModel):
     """`POST /v1/chat/stream` event `retrieval`: candidates from one recall (cited first), before the answer."""
 
@@ -322,6 +338,14 @@ class ChatStreamTranscript(BaseModel):
     (first event of a multipart/voice turn; never sent for typed questions). Same text as `final.transcript`."""
 
     text: str
+
+
+class ChatStreamAudio(BaseModel):
+    """`POST /v1/chat/stream` event `audio`: TTS of one sentence of the answer, in order (`seq` 0, 1, ...)."""
+
+    seq: int
+    url: str  # /v1/audio/{id}-{seq}.wav
+    text: str  # the sentence this clip speaks
 
 
 class ChatStreamError(BaseModel):

@@ -12,10 +12,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
 from ulid import ULID
 
+from megamind.agent.speech import StreamingSpeaker
 from megamind.devices import ChatDevice, resolve_chat_device
 from megamind.models import (
     ChatRequest,
     ChatResponse,
+    ChatStreamAudio,
     ChatStreamDelta,
     ChatStreamError,
     ChatStreamRetrieval,
@@ -61,11 +63,15 @@ async def _chat_input(request: Request) -> ChatInput:
     raise HTTPException(415, "use application/json or multipart/form-data")
 
 
-async def _finish(app, resp: ChatResponse, dev: ChatDevice) -> ChatResponse:
-    """Replay links + TTS, concurrently (independent: one reads `cited`, the other `answer`)."""
+async def _finish(app, resp: ChatResponse, dev: ChatDevice, speaker: StreamingSpeaker | None = None) -> ChatResponse:
+    """Replay links + TTS, concurrently (independent: one reads `cited`, the other `answer`). With a `speaker`
+    (streamed turn, TTS_STREAM) most sentences are already rendered: this speaks the tail and joins the clips."""
 
     async def tts() -> None:
-        resp.audio_url = await app.tts.synthesize(resp.answer, str(ULID()))
+        if speaker is not None:
+            resp.audio_url = await speaker.finish(resp.answer)
+        else:
+            resp.audio_url = await app.tts.synthesize(resp.answer, str(ULID()))
 
     await asyncio.gather(annotate_citations(app, resp.cited, dev.device_id), tts())
     resp.device_id_used, resp.warning = dev.device_id, dev.warning
@@ -90,8 +96,9 @@ def _sse(event: str, data: dict | BaseModel) -> bytes:
 async def chat_stream(request: Request):
     """Same turn as `POST /chat`, as Server-Sent Events: `transcript` (voice questions, right after speech-to-text),
     `retrieval` (candidate citations, once per tool result), `delta` (answer text), `reset` (drop the streamed
-    text), then `final` (exactly the `POST /chat` body) or `error`. Bad requests fail before the stream starts,
-    with the same status codes as `POST /chat`."""
+    text), `audio` (TTS of one sentence, in order, while the rest is still being written; `TTS_STREAM`), then
+    `final` (exactly the `POST /chat` body) or `error`. Bad requests fail before the stream starts, with the same
+    status codes as `POST /chat`."""
     app = request.app.state
     settings = app.settings
     inp = await _chat_input(request)
@@ -102,8 +109,18 @@ async def chat_stream(request: Request):
     if inp.voice:  # show what was heard at once (and lets a client spot a voice command and hang up)
         queue.put_nowait(("transcript", ChatStreamTranscript(text=inp.text)))
 
-    async def on_event(name: str, data: dict) -> None:
+    async def put(name: str, data: dict) -> None:
         await queue.put((name, data))  # never blocks the turn: replay links are added on the sending side
+
+    speaker = StreamingSpeaker(app.tts, app.settings.audio_dir, put) if app.settings.tts_stream else None
+
+    async def on_event(name: str, data: dict) -> None:
+        if speaker is not None:
+            if name == "delta":
+                await speaker.feed(data["text"])
+            elif name == "reset":
+                await speaker.reset()
+        await put(name, data)
 
     async def annotate_candidates(cands: list) -> None:
         """replay_url lookups for the `retrieval` event, bounded so answer text queued behind it is not held up."""
@@ -124,14 +141,18 @@ async def chat_stream(request: Request):
             data = ChatStreamRetrieval(confidence=data["confidence"], candidates=cands)
         elif name == "delta":
             data = ChatStreamDelta(**data)
+        elif name == "audio":
+            data = ChatStreamAudio(**data)
         return _sse(name, data)
 
     async def run() -> None:
         try:
             resp, _ = await app.agent.chat_with_stats(inp.session_id, inp.text, device_id, on_event=on_event)
-            await queue.put(("final", await _finish(app, resp, dev)))
+            await queue.put(("final", await _finish(app, resp, dev, speaker)))
         except Exception as e:  # noqa: BLE001 - the stream is already 200: report the failure in-band
             log.exception("chat stream failed")
+            if speaker is not None:
+                await speaker.cancel()
             await queue.put(("error", ChatStreamError(detail=f"{type(e).__name__}: {e}")))
         finally:
             await queue.put(None)
@@ -152,6 +173,8 @@ async def chat_stream(request: Request):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+            if speaker is not None:
+                await speaker.cancel()
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     return StreamingResponse(events(), media_type="text/event-stream", headers=headers)
