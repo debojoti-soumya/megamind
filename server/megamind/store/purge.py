@@ -48,6 +48,10 @@ async def purge(
     if dry_run:
         rows = await store.range(since_ts, None, limit=1_000_000, device_id=device_id)
         return len(rows)
+    if delete_thumbs:  # frames aged into AV1 chunks: rewrite those chunks without the purged frames
+        from megamind.store.media import MediaStore
+
+        await MediaStore(settings, store).purge_window(device_id, since_ts)
     return await store.purge(device_id, since_ts=since_ts, delete_thumbs=delete_thumbs)
 
 

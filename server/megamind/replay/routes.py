@@ -12,6 +12,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 
+from megamind.replay.buffer import BufferedFrame
+from megamind.replay.keyframes import kept_frames, kept_tokens
 from megamind.replay.render import FFMPEG_HINT, find_ffmpeg
 
 router = APIRouter()
@@ -117,14 +119,29 @@ async def replay_mp4(
 
     dev = buf.resolve_device(t0, t1, device_id)
     frames = buf.frames(dev, t0, t1) if dev is not None else []
-    if not frames:
-        raise HTTPException(404, f"no buffered frames for device={device_id or '*'} in [{t0:.3f}, {t1:.3f}]")
+    source, tag, toks = "buffer", "", []
+    if not frames:  # older than the ring buffer: fall back to the kept keyframes (hot or cold tier)
+        dev, toks = await kept_tokens(st, t0, t1, device_id)
+        if not toks:
+            raise HTTPException(
+                404, f"no buffered or kept frames for device={device_id or '*'} in [{t0:.3f}, {t1:.3f}]"
+            )
+        source = "keyframes"
+        tag = "kf|" + hashlib.sha1(",".join(t.id for t in toks).encode()).hexdigest()[:12] + "|"
+        # placeholders for the cache key and headers; pixels are read below on a cache miss. Their path never
+        # exists, so a clip pruned between the check and the render reads as "evicted; retry" (404), not a crash.
+        gone = st.replay_cache.dir / ".unread"
+        frames = [BufferedFrame(ts=t.ts, size=0, path=gone) for t in toks]
     ffmpeg = find_ffmpeg(cfg.ffmpeg)
     if ffmpeg is None:
         raise HTTPException(503, FFMPEG_HINT)
 
-    raw = f"{dev}|{frames[0].ts:.6f}|{frames[-1].ts:.6f}|{len(frames)}|{cfg.out_fps}|{cfg.max_width}"
+    raw = f"{tag}{dev}|{frames[0].ts:.6f}|{frames[-1].ts:.6f}|{len(frames)}|{cfg.out_fps}|{cfg.max_width}"
     key = hashlib.sha1(raw.encode()).hexdigest()[:20]
+    if toks and not st.replay_cache.path(key).exists():  # read (decode, for cold frames) only on a cache miss
+        frames = await kept_frames(st, toks)
+        if not frames:
+            raise HTTPException(404, "kept frames are no longer readable")
     try:
         p = await st.replay_cache.get_or_render(key, frames, ffmpeg=ffmpeg, fps=cfg.out_fps, max_width=cfg.max_width)
     except FileNotFoundError:
@@ -135,6 +152,7 @@ async def replay_mp4(
         "X-Replay-Device": dev,
         "X-Replay-Start": f"{frames[0].ts:.3f}",  # unix ts at mp4 offset 0
         "X-Replay-Frames": str(len(frames)),
+        "X-Replay-Source": source,  # buffer = every received frame; keyframes = only the frames the filter kept
         "Cache-Control": "private, max-age=300",
     }
     return ranged_file_response(p, request, "video/mp4", headers)

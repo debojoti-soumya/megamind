@@ -190,6 +190,11 @@ This is a hackathon prototype; do not wear it where recording isn't welcome.
   not yet stored (queued or mid-enrichment) and the dedupe state for the purged window, so
   those frames do not reappear afterwards. (An episode summary the background consolidator is
   writing at that moment can still land; purge again if it does.)
+- **Retention tiers**: kept frames stay JPEG for `HOT_RETENTION_H` (72 h), are then re-encoded
+  into AV1 chunks (about 10x smaller, still served at `/v1/thumbs`), and lose their pixels after
+  `COLD_RETENTION_DAYS` (100 d) while captions, OCR and vectors stay searchable. Chunks are made
+  from the stored (blurred) thumbnail, and purging a frame re-encodes its chunk without it. Needs
+  ffmpeg with an AV1 encoder; `GET /v1/stats` shows tiers, disk use and a 100-day projection.
 
 ## License
 
