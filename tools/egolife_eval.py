@@ -115,7 +115,9 @@ def iso(ts: float) -> str:
 
 
 def evaluate(server: str, qa_path: Path, day: str, windows: list[float], k: int, out: Path | None) -> dict:
-    qa = [q for q in json.load(open(qa_path)) if q["target_time"]["date"] == day and q["query_time"]["date"] == day]
+    qa = [
+        q for q in json.loads(qa_path.read_text()) if q["target_time"]["date"] == day and q["query_time"]["date"] == day
+    ]
     w_max = max(windows)
     rows = []
     with httpx.Client(base_url=server, timeout=60) as http:
@@ -153,6 +155,34 @@ def evaluate(server: str, qa_path: Path, day: str, windows: list[float], k: int,
     return summary
 
 
+def reepisode(lancedb_path: Path) -> None:
+    """Re-run online episode assignment over a stored LanceDB (server stopped), e.g. after tuning EPISODE_*."""
+    import asyncio
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
+    from megamind.config import Settings
+    from megamind.ingest.episodes import EpisodeTracker
+    from megamind.store.lancedb_store import LanceDBStore
+
+    async def run() -> None:
+        s = Settings()
+        store = LanceDBStore(lancedb_path, text_dim=384, image_dim=768)
+        tracker = EpisodeTracker(s, None)
+        toks = await store.list_tokens()
+        store._e.delete("true")
+        eps = {}
+        for t in toks:
+            e = await tracker.assign(t)
+            eps[e.id] = e
+        await store.add_many(toks)
+        for e in eps.values():
+            await store.upsert_episode(e)
+        print(f"{len(toks)} tokens -> {len(eps)} episodes")
+
+    asyncio.run(run())
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -168,6 +198,8 @@ def main() -> None:
     i.add_argument("--fps", type=float, default=1.0)
     i.add_argument("--device-id", default="aria-jake")
     i.add_argument("--max-queue", type=int, default=60)
+    r = sub.add_parser("reepisode")
+    r.add_argument("--lancedb", type=Path, required=True)
     v = sub.add_parser("eval")
     v.add_argument("--server", default="http://localhost:8000")
     v.add_argument("--qa", type=Path, required=True)
@@ -180,6 +212,8 @@ def main() -> None:
         extract(a.clips, a.out, a.fps, a.width)
     elif a.cmd == "ingest":
         ingest(a.server, a.frames, a.srt_dir, a.fps, a.device_id, a.max_queue)
+    elif a.cmd == "reepisode":
+        reepisode(a.lancedb)
     else:
         evaluate(a.server, a.qa, a.day, [float(x) for x in a.windows.split(",")], a.k, a.out)
 
