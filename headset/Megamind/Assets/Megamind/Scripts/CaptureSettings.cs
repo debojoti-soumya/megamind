@@ -19,9 +19,9 @@ namespace Megamind
         public Vector2Int cameraResolution = new Vector2Int(1280, 960);
         [Tooltip("Camera stream frame rate cap. We sample 1 fps, so 30 saves GPU/battery vs the API default of 60.")]
         public int cameraMaxFramerate = 30;
-        [Tooltip("Frames are downscaled to this width before JPEG encoding (docs/api.md recommends <= 960).")]
-        public int jpegMaxWidth = 960;
-        [Range(30, 95)] public int jpegQuality = 75;
+        [Tooltip("Frames are downscaled to this width before JPEG encoding (1280 = full camera frame; small text stays legible).")]
+        public int jpegMaxWidth = 1280;
+        [Range(30, 95)] public int jpegQuality = 80;
         [Tooltip("Uploads in flight before new frames are skipped (slow-network backpressure).")]
         public int maxPendingUploads = 4;
         public int uploadTimeoutSeconds = 10;

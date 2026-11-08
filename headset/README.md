@@ -223,7 +223,7 @@ added. Don't commit a real token.
    `backoffMaxSeconds` 30 s, ±20% jitter, reset by the next success; no offline queue — stale frames are
    worthless to a live memory) or, if `maxHeadDegPerSec` > 0, when the head is turning faster than that (off by
    default — the server's blur filter handles motion blur);
-2. blits `cameraAccess.GetTexture()` into a ≤ `jpegMaxWidth` (960 px) texture (GPU resize +
+2. blits `cameraAccess.GetTexture()` into a ≤ `jpegMaxWidth` (1280 px, the full camera frame) texture (GPU resize +
    `ReadPixels`), then JPEG-encodes it on the *next* frame (`jpegQuality` 75 ⇒ ~60–120 KB) so
    readback and encode never hitch the same render frame;
 3. POSTs multipart `image` + `meta` JSON to `/v1/frames` per `docs/api.md`: `ts` is

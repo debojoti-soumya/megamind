@@ -33,7 +33,7 @@ Running both at once would capture twice (two `device_id`s); pick one for captur
   the Kotlin stdlib (JUnit for host tests).
 - Camera: left passthrough camera, picked by Meta metadata (`camera_source==0`, `position==0`, camera id `50` on
   our headset), YUV_420_888 at 1280x960 / 15 fps. One frame per interval (default 1 s) goes NV21 -> JPEG and is
-  downscaled to 960x720 (`docs/api.md` recommends <= 960 px wide).
+  uploaded at the full 1280x960 (`MAX_UPLOAD_WIDTH`).
 - Video (ported from Recall's app, `VideoRecorder.kt`): a hardware H.264 encoder (`MediaCodec`, `video/avc`) records
   **real 30 fps video** at 1280x960, ~3 Mbps VBR, IDR every 1 s. Its input `Surface` is a second Camera2 output in
   the same session as the YUV `ImageReader` (zero-copy, no CPU-side YUV conversion); with it on, the camera runs at

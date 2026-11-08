@@ -1,4 +1,4 @@
-// Stream 1: sample the passthrough camera at ~1 fps, JPEG-encode a <= 960 px copy and
+// Stream 1: sample the passthrough camera at ~1 fps, JPEG-encode a <= jpegMaxWidth (1280 px: full frame) copy and
 // POST multipart (image + meta JSON) to /v1/frames. See docs/api.md.
 //
 // Camera source: MRUK's PassthroughCameraAccess (com.meta.xr.mrutilitykit >= 81, Horizon OS v74+),

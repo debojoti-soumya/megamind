@@ -15,8 +15,8 @@ MonoBehaviour:
   captureFps: 1
   cameraResolution: {x: 1280, y: 960}
   cameraMaxFramerate: 30
-  jpegMaxWidth: 960
-  jpegQuality: 75
+  jpegMaxWidth: 1280
+  jpegQuality: 80
   maxPendingUploads: 4
   uploadTimeoutSeconds: 10
   maxHeadDegPerSec: 0
