@@ -269,7 +269,9 @@ Server env `TTS_STREAM=false` turns the clips off (one TTS call after the turn, 
 back; a link not found in time is `null` in that event and present in `final.cited`.
 Clients can swap it in for `POST /chat` and fall back to `POST /chat` on 404/405 (older servers). The model
 requests are identical to `POST /chat` apart from streaming, so answers are the same. With `RECALL_FIRST` a
-standalone question's `retrieval` arrives before Claude is called at all.
+standalone question's `retrieval` arrives before Claude is called at all. After a tool round the server sends Claude that round's tool calls and results
+as plain text (`CLAUDE_TOOL_RESULTS_AS_TEXT`, default on), because Claude otherwise returns the whole answer in one
+burst at the end of the call instead of as a stream of `delta`s.
 
 Headset client (Unity `ChatClient`, `headset/`): asks every question (typed JSON and voice multipart) on
 `POST /chat/stream` and falls back to `POST /chat` with the same body on 404/405, or when the stream fails before its
