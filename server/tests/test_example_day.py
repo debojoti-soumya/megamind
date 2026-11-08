@@ -72,3 +72,19 @@ def test_committed_gold_matches_generator():
         "regenerate: python tools/make_example_day.py --gold-only --date 2026-11-08 --tz America/Los_Angeles "
         "--gold server/tools/data/example_day.json"
     )
+
+
+def test_live_scorer_uses_eval_agent_and_clip_windows(capsys, monkeypatch):
+    live = _load("eval_example_day", SERVER.parent / "tools" / "eval_example_day.py")
+    monkeypatch.delitem(sys.modules, "eval_agent")  # as when run as a script: the scorer must import it itself
+    score = live._scorer()
+    assert "plain substring scoring" not in capsys.readouterr().err  # number-normalised scorer, not the fallback
+    assert score("You parked on level three.", ["level 3"])
+    assert score("I don't have a memory of that.", ["__not_found__"])
+    assert not score("It was on level 4.", ["level 3"])
+    raw = json.loads(GOLD.read_text())
+    win = live.windows(raw)
+    assert set(win) == {e["id"] for e in raw["stream"]}
+    a, b = win["car-park"]
+    car_park = next(t for t in eval_agent.load_day(GOLD).tokens if t.id == "car-park")
+    assert (a, b) == (car_park.ts + 30, car_park.ts + 48)  # clip 17:52:30 + 18 s; the token's HH:MM ts is 17:52

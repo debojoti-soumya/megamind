@@ -298,6 +298,8 @@ def feed_script(date: str, tz: str, clips: list[tuple[str, str]]) -> str:
         "#   SERVER=http://localhost:8000 FEEDER=tools/feeder.py sh feed.sh",
         "# With a feeder that supports --start/--srt, frames carry the scene's real clock time (and its",
         "# dialogue as FrameMeta.transcript); otherwise they are stamped 'now' and the dialogue is skipped.",
+        "# Feed a freshly started server: the keyframe filter keeps per-device state in memory and drops frames",
+        "# older than the device's last kept frame as too_soon (DELETE /v1/memories does not reset it).",
         "set -e",
         'HERE=$(cd "$(dirname "$0")" && pwd)',
         "SERVER=${SERVER:-http://localhost:8000}",

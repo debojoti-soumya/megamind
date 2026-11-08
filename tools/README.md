@@ -41,6 +41,10 @@ The generator writes `scenes/*.mp4`, `scenes/*.srt` (what was said in each clip)
   to `feeder.py` when the feeder supports those flags. Otherwise every frame is stamped "now" and the
   dialogue is skipped. Questions that depend on the time of day ("this morning", "this afternoon") need
   real timestamps, a matching `--tz`, and a server clock after 19:36 on `--date`.
+- **Feed a fresh server.** The keyframe filter keeps per-device state in memory and drops any frame
+  older than the device's last kept frame as `too_soon`. Feeding the day a second time, or after the
+  same device id was fed "now" frames, keeps almost nothing, and `DELETE /v1/memories` does not reset
+  this. Restart the server before each feed (or edit `--device-id` in `feed.sh` and pass `--device-id` to the scorer).
 - **Gold file.** `example_day.json` uses the same schema as `server/tools/data/agent_day.json`. Each
   `stream` entry is one shot, with ground-truth caption, OCR and entities. A few extra keys are ignored
   by the loaders: `at`/`dur_s` (the exact clip window, which the live scorer matches against citation

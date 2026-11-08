@@ -34,9 +34,16 @@ NOT_FOUND = "__not_found__"
 def _scorer():
     """eval_agent.score_answer (handles "two"/"2", "level three"/"level 3") when the server package imports."""
     try:
-        spec = importlib.util.spec_from_file_location("eval_agent", REPO / "server" / "tools" / "eval_agent.py")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        mod = sys.modules.get("eval_agent")
+        if mod is None:
+            spec = importlib.util.spec_from_file_location("eval_agent", REPO / "server" / "tools" / "eval_agent.py")
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["eval_agent"] = mod  # @dataclass resolves annotations through sys.modules[cls.__module__]
+            try:
+                spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            except BaseException:
+                sys.modules.pop("eval_agent", None)
+                raise
         return lambda answer, expect: mod.score_answer(answer, mod.Case(q="", gold=[], expect=expect))
     except Exception as exc:  # noqa: BLE001 - fall back to plain substrings
         print(f"(plain substring scoring: {exc})", file=sys.stderr)
