@@ -173,20 +173,21 @@ class ClaudeAgent:
         return resp
 
     async def chat_with_stats(
-        self, session_id: str, text: str, device_id: str | None
+        self, session_id: str, text: str, device_id: str | None, *, now: float | None = None
     ) -> tuple[ChatResponse, TurnStats]:
+        """`now` pins the wall clock (system prompt, relative times) for deterministic evals."""
         stats = TurnStats(request_id=str(ULID()))
         t0 = time.perf_counter()
         if not self.enabled:
             stats.path = "fallback"
-            resp = await self._no_llm_fallback(text, device_id, stats)
+            resp = await self._no_llm_fallback(text, device_id, stats, now=now)
         else:
             try:
-                resp = await self._claude_turn(session_id, text, device_id, stats)
+                resp = await self._claude_turn(session_id, text, device_id, stats, now=now)
             except (anthropic.APIError, anthropic.APIConnectionError) as e:  # network, 4xx/5xx, timeouts
                 log.warning("req=%s claude failed (%s); using caption fallback", stats.request_id, e)
                 stats.path, stats.error = "fallback", f"{type(e).__name__}: {e}"
-                resp = await self._no_llm_fallback(text, device_id, stats)
+                resp = await self._no_llm_fallback(text, device_id, stats, now=now)
         stats.total_ms = (time.perf_counter() - t0) * 1000
         log.info(
             "req=%s session=%s path=%s llm_calls=%d tool_calls=%d in_tok=%d out_tok=%d "
@@ -204,9 +205,11 @@ class ClaudeAgent:
         )
         return resp, stats
 
-    async def _claude_turn(self, session_id: str, text: str, device_id: str | None, stats: TurnStats) -> ChatResponse:
+    async def _claude_turn(
+        self, session_id: str, text: str, device_id: str | None, stats: TurnStats, *, now: float | None = None
+    ) -> ChatResponse:
         assert self._client is not None
-        now = time.time()
+        now = time.time() if now is None else now
         turn: list[dict] = [{"role": "user", "content": text}]
         prior = [m for t in self.histories.get(session_id, []) for m in t]
         tool_calls: list[ToolCallRecord] = []
@@ -241,7 +244,7 @@ class ClaudeAgent:
             for use in uses:
                 args = dict(use.input) if isinstance(use.input, dict) else {}
                 t_tool = time.perf_counter()
-                r = await self._run_tool(use.name, args, device_id)
+                r = await self._run_tool(use.name, args, device_id, now)
                 stats.tool_ms += (time.perf_counter() - t_tool) * 1000
                 stats.tool_calls += 1
                 tool_calls.append(ToolCallRecord(name=use.name, args=args, confidence=r.confidence))
@@ -280,21 +283,23 @@ class ClaudeAgent:
         del hist[:-MAX_TURNS]
         return ChatResponse(transcript=text, answer=answer, cited=cited, tool_calls=tool_calls)
 
-    async def _run_tool(self, name: str, args: dict, device_id: str | None) -> RecallResult:
+    async def _run_tool(self, name: str, args: dict, device_id: str | None, now: float | None = None) -> RecallResult:
         if name != "recall_memory":
             return RecallResult(evidence=f"Unknown tool {name}.", confidence="not_found", cited=[], all_retrieved=[])
         allowed = {"query", "time_from", "time_to", "k", "mode"}
         kwargs = {k: v for k, v in args.items() if k in allowed and v is not None}
         kwargs.setdefault("query", "")
         try:
-            return await self.recall(device_id=device_id, **kwargs)
+            return await self.recall(device_id=device_id, now=now, **kwargs)
         except ValueError as e:  # bad ISO timestamp etc. -> tell the model instead of crashing the turn
             return RecallResult(evidence=f"Tool error: {e}", confidence="not_found", cited=[], all_retrieved=[])
 
-    async def _no_llm_fallback(self, text: str, device_id: str | None, stats: TurnStats | None = None) -> ChatResponse:
+    async def _no_llm_fallback(
+        self, text: str, device_id: str | None, stats: TurnStats | None = None, *, now: float | None = None
+    ) -> ChatResponse:
         """Deterministic path used before Claude is wired: always recall, echo evidence."""
         t_tool = time.perf_counter()
-        r = await self.recall(query=text, device_id=device_id)
+        r = await self.recall(query=text, device_id=device_id, now=now)
         if stats is not None:
             stats.tool_ms += (time.perf_counter() - t_tool) * 1000
             stats.tool_calls += 1

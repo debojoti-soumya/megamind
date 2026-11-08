@@ -6,7 +6,7 @@ stream-4 (harness) owns the reader call and the `RecallResult` mapping below it.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from megamind.agent.reader import Reader
@@ -81,12 +81,19 @@ class RecallMemory:
         k: int = 12,
         mode: SearchMode = "hybrid",
         device_id: str | None = None,
+        now: float | None = None,
     ) -> RecallResult:
         k = max(1, min(k, 24))
         # --- retrieval (stream-3): plan the query (relative times, type-dependent weights, rewrite),
         # hybrid-rank, dedupe, add temporal context; `mode` and explicit bounds from Claude win over the plan.
         res = await self.retriever.retrieve(
-            query, k=k, mode=mode, time_from=_ts(time_from), time_to=_ts(time_to), device_id=device_id
+            query,
+            k=k,
+            mode=mode,
+            time_from=_ts(time_from),
+            time_to=_ts(time_to),
+            device_id=device_id,
+            now=datetime.fromtimestamp(now, UTC) if now is not None else None,
         )
         # Hand-off contract (issue #5): full tokens, best-first, context tokens at the tail, <= k.
         hits = res.hits()
@@ -94,7 +101,7 @@ class RecallMemory:
         if not tokens:
             return RecallResult(evidence="No memories match.", confidence="not_found", cited=[], all_retrieved=[])
         # --- reader + result mapping (stream-4) ---
-        out = await self.reader.read(query, tokens)
+        out = await self.reader.read(query, tokens, now=now)
         by_id = {h.id: h for h in hits}
         evidence = out.evidence
         if out.degraded:

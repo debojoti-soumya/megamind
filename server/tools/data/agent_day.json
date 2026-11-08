@@ -1,0 +1,560 @@
+{
+ "date": "2026-11-08",
+ "tz": "America/Los_Angeles",
+ "now": "18:30",
+ "device_id": "eval-device",
+ "_comment": "Same schema as tools/data/retrieval_day.json (stream = retrieval's synthetic day). questions[].expect = any-of substrings a correct spoken answer contains; expect=['__not_found__'] means the agent must decline.",
+ "stream": [
+  {
+   "id": "h01",
+   "time": "07:02",
+   "episode": "home-am",
+   "caption": "Kitchen counter with a kettle, a mug and a box of cereal.",
+   "ocr": "",
+   "entities": [
+    "kettle",
+    "mug",
+    "cereal"
+   ]
+  },
+  {
+   "id": "h02",
+   "time": "07:05",
+   "episode": "home-am",
+   "caption": "A hand pouring coffee into a white mug next to the sink.",
+   "ocr": "",
+   "entities": [
+    "coffee",
+    "mug",
+    "sink"
+   ]
+  },
+  {
+   "id": "h03",
+   "time": "07:11",
+   "episode": "home-am",
+   "caption": "Car keys and a wallet on the hallway table by the front door.",
+   "ocr": "",
+   "entities": [
+    "keys",
+    "wallet",
+    "hallway table"
+   ]
+  },
+  {
+   "id": "h04",
+   "time": "07:14",
+   "episode": "home-am",
+   "caption": "Front door with a coat rack; a blue jacket hanging on it.",
+   "ocr": "",
+   "entities": [
+    "coat rack",
+    "jacket",
+    "door"
+   ]
+  },
+  {
+   "id": "c01",
+   "time": "07:25",
+   "episode": "commute-am",
+   "caption": "A bus stop sign on a city street with people waiting.",
+   "ocr": "ROUTE 22 DOWNTOWN",
+   "entities": [
+    "bus stop",
+    "sign"
+   ]
+  },
+  {
+   "id": "c02",
+   "time": "07:40",
+   "episode": "commute-am",
+   "caption": "Inside a bus, a phone screen showing a calendar app.",
+   "ocr": "9:30 Standup\n11:00 Design review\n14:00 Design sync",
+   "entities": [
+    "phone",
+    "calendar"
+   ]
+  },
+  {
+   "id": "c03",
+   "time": "07:52",
+   "episode": "commute-am",
+   "caption": "Street view with a coffee shop storefront.",
+   "ocr": "BLUE BOTTLE COFFEE",
+   "entities": [
+    "coffee shop",
+    "storefront"
+   ]
+  },
+  {
+   "id": "o01",
+   "time": "08:10",
+   "episode": "office-am",
+   "caption": "Office lobby with a reception desk and a sign.",
+   "ocr": "VISITORS CHECK IN AT FRONT DESK",
+   "entities": [
+    "lobby",
+    "reception desk",
+    "sign"
+   ]
+  },
+  {
+   "id": "o02",
+   "time": "08:20",
+   "episode": "office-am",
+   "caption": "Desk with a laptop, a notebook and a pen; a monitor behind.",
+   "ocr": "",
+   "entities": [
+    "laptop",
+    "notebook",
+    "pen",
+    "monitor"
+   ]
+  },
+  {
+   "id": "o03",
+   "time": "09:35",
+   "episode": "office-am",
+   "caption": "A whiteboard with a sprint plan written in blue marker.",
+   "ocr": "SPRINT 14\n- ship ingest\n- fix latency\nDEMO SUN 10:30",
+   "entities": [
+    "whiteboard",
+    "sprint plan"
+   ]
+  },
+  {
+   "id": "o04",
+   "time": "09:37",
+   "episode": "office-am",
+   "caption": "Close-up of the lower half of the whiteboard.",
+   "ocr": "DEMO SUN 10:30\nowner: Priya",
+   "entities": [
+    "whiteboard"
+   ]
+  },
+  {
+   "id": "o05",
+   "time": "09:50",
+   "episode": "office-am",
+   "caption": "Standup: three colleagues standing around the whiteboard talking.",
+   "ocr": "",
+   "entities": [
+    "people",
+    "whiteboard"
+   ]
+  },
+  {
+   "id": "o06",
+   "time": "10:15",
+   "episode": "office-am",
+   "caption": "Desk with the laptop; a red USB stick lies next to the keyboard.",
+   "ocr": "",
+   "entities": [
+    "laptop",
+    "usb stick",
+    "keyboard"
+   ]
+  },
+  {
+   "id": "m01",
+   "time": "11:02",
+   "episode": "design-review",
+   "caption": "Meeting room: a colleague presenting slides on a wall TV.",
+   "ocr": "Q4 ROADMAP",
+   "entities": [
+    "meeting room",
+    "tv",
+    "person"
+   ]
+  },
+  {
+   "id": "m02",
+   "time": "11:05",
+   "episode": "design-review",
+   "caption": "Slide on the TV showing a bar chart of latency numbers.",
+   "ocr": "p50 120ms  p95 480ms",
+   "entities": [
+    "slide",
+    "bar chart",
+    "latency"
+   ]
+  },
+  {
+   "id": "m03",
+   "time": "11:20",
+   "episode": "design-review",
+   "caption": "A woman with glasses handing over a printed document across the table.",
+   "ocr": "",
+   "entities": [
+    "person",
+    "document"
+   ]
+  },
+  {
+   "id": "m04",
+   "time": "11:40",
+   "episode": "design-review",
+   "caption": "Printed document lying on the meeting table.",
+   "ocr": "Vendor agreement - Acme Robotics\nSignature: ____",
+   "entities": [
+    "document",
+    "contract"
+   ]
+  },
+  {
+   "id": "l01",
+   "time": "12:15",
+   "episode": "lunch",
+   "caption": "A taqueria counter with a menu board above it.",
+   "ocr": "CARNITAS TACO $4\nBURRITO $11",
+   "entities": [
+    "taqueria",
+    "menu board"
+   ]
+  },
+  {
+   "id": "l02",
+   "time": "12:30",
+   "episode": "lunch",
+   "caption": "A plate with three tacos and a lime on an outdoor table.",
+   "ocr": "",
+   "entities": [
+    "tacos",
+    "plate",
+    "lime"
+   ]
+  },
+  {
+   "id": "l03",
+   "time": "12:45",
+   "episode": "lunch",
+   "caption": "A man in a green hoodie sitting across the table, talking and smiling.",
+   "ocr": "",
+   "entities": [
+    "person",
+    "green hoodie"
+   ]
+  },
+  {
+   "id": "a01",
+   "time": "13:30",
+   "episode": "office-pm",
+   "caption": "Back at the office; reading glasses left on top of the printer.",
+   "ocr": "",
+   "entities": [
+    "reading glasses",
+    "printer"
+   ]
+  },
+  {
+   "id": "a02",
+   "time": "14:05",
+   "episode": "office-pm",
+   "caption": "Video call on the monitor; a participant tile named Marcus Lee.",
+   "ocr": "Marcus Lee\nDesign sync",
+   "entities": [
+    "video call",
+    "monitor",
+    "Marcus Lee"
+   ]
+  },
+  {
+   "id": "a03",
+   "time": "15:10",
+   "episode": "office-pm",
+   "caption": "A yellow sticky note stuck on the edge of the monitor.",
+   "ocr": "Call dentist 415-555-0188",
+   "entities": [
+    "sticky note",
+    "monitor"
+   ]
+  },
+  {
+   "id": "a04",
+   "time": "15:40",
+   "episode": "office-pm",
+   "caption": "Kitchenette with a microwave and a bowl of snacks.",
+   "ocr": "",
+   "entities": [
+    "kitchenette",
+    "microwave",
+    "snacks"
+   ]
+  },
+  {
+   "id": "a05",
+   "time": "15:42",
+   "episode": "office-pm",
+   "caption": "A blue water bottle left next to the kitchenette sink.",
+   "ocr": "",
+   "entities": [
+    "water bottle",
+    "sink"
+   ]
+  },
+  {
+   "id": "a06",
+   "time": "16:30",
+   "episode": "office-pm",
+   "caption": "Desk with the laptop; a phone charger coiled on the desk, no USB stick in sight.",
+   "ocr": "",
+   "entities": [
+    "laptop",
+    "phone charger"
+   ]
+  },
+  {
+   "id": "e01",
+   "time": "17:20",
+   "episode": "commute-pm",
+   "caption": "Parking garage sign with level markings on a concrete pillar.",
+   "ocr": "LEVEL 3  ZONE B",
+   "entities": [
+    "parking garage",
+    "sign"
+   ]
+  },
+  {
+   "id": "e02",
+   "time": "17:45",
+   "episode": "grocery",
+   "caption": "Grocery store aisle with cartons of oat milk and almond milk.",
+   "ocr": "OAT MILK $4.99",
+   "entities": [
+    "oat milk",
+    "almond milk",
+    "shelf"
+   ]
+  },
+  {
+   "id": "e03",
+   "time": "17:55",
+   "episode": "grocery",
+   "caption": "Self-checkout screen showing the total.",
+   "ocr": "TOTAL $23.47",
+   "entities": [
+    "self-checkout",
+    "screen"
+   ]
+  },
+  {
+   "id": "e04",
+   "time": "18:10",
+   "episode": "home-pm",
+   "caption": "Home hallway; keys dropped into a ceramic bowl on the table.",
+   "ocr": "",
+   "entities": [
+    "keys",
+    "bowl",
+    "hallway table"
+   ]
+  },
+  {
+   "id": "e05",
+   "time": "18:20",
+   "episode": "home-pm",
+   "caption": "Living room: a TV remote on the sofa cushion.",
+   "ocr": "",
+   "entities": [
+    "tv remote",
+    "sofa"
+   ]
+  }
+ ],
+ "questions": [
+  {
+   "q": "where are my keys",
+   "gold": [
+    "e04"
+   ],
+   "expect": [
+    "bowl",
+    "hallway"
+   ]
+  },
+  {
+   "q": "where did I leave my keys this morning",
+   "gold": [
+    "h03"
+   ],
+   "expect": [
+    "hallway table",
+    "front door"
+   ]
+  },
+  {
+   "q": "where are my reading glasses",
+   "gold": [
+    "a01"
+   ],
+   "expect": [
+    "printer"
+   ]
+  },
+  {
+   "q": "where is my water bottle",
+   "gold": [
+    "a05"
+   ],
+   "expect": [
+    "kitchenette",
+    "sink"
+   ]
+  },
+  {
+   "q": "did I leave my USB stick on the desk",
+   "gold": [
+    "o06",
+    "a06"
+   ],
+   "expect": [
+    "no usb stick",
+    "no longer",
+    "not there",
+    "gone",
+    "wasn't",
+    "was not"
+   ]
+  },
+  {
+   "q": "what did the whiteboard say",
+   "gold": [
+    "o03",
+    "o04"
+   ],
+   "expect": [
+    "sprint 14",
+    "ship ingest"
+   ]
+  },
+  {
+   "q": "when is the demo",
+   "gold": [
+    "o03",
+    "o04"
+   ],
+   "expect": [
+    "10:30"
+   ]
+  },
+  {
+   "q": "what was the p95 latency on the slide",
+   "gold": [
+    "m02"
+   ],
+   "expect": [
+    "480"
+   ]
+  },
+  {
+   "q": "what was the total at checkout",
+   "gold": [
+    "e03"
+   ],
+   "expect": [
+    "23.47"
+   ]
+  },
+  {
+   "q": "how much was the oat milk",
+   "gold": [
+    "e02"
+   ],
+   "expect": [
+    "4.99"
+   ]
+  },
+  {
+   "q": "what's the dentist's phone number",
+   "gold": [
+    "a03"
+   ],
+   "expect": [
+    "415-555-0188",
+    "415 555 0188"
+   ]
+  },
+  {
+   "q": "who is the vendor agreement with",
+   "gold": [
+    "m04"
+   ],
+   "expect": [
+    "acme"
+   ]
+  },
+  {
+   "q": "what was on the lobby sign",
+   "gold": [
+    "o01"
+   ],
+   "expect": [
+    "check in",
+    "front desk"
+   ]
+  },
+  {
+   "q": "which bus route did I take",
+   "gold": [
+    "c01"
+   ],
+   "expect": [
+    "22"
+   ]
+  },
+  {
+   "q": "where did I park",
+   "gold": [
+    "e01"
+   ],
+   "expect": [
+    "level 3",
+    "zone b"
+   ]
+  },
+  {
+   "q": "who did I have lunch with",
+   "gold": [
+    "l03"
+   ],
+   "expect": [
+    "green hoodie"
+   ]
+  },
+  {
+   "q": "what did I have for lunch",
+   "gold": [
+    "l02",
+    "l01"
+   ],
+   "expect": [
+    "taco"
+   ]
+  },
+  {
+   "q": "who was on the video call this afternoon",
+   "gold": [
+    "a02"
+   ],
+   "expect": [
+    "marcus"
+   ]
+  },
+  {
+   "q": "who owns the demo on the whiteboard",
+   "gold": [
+    "o04"
+   ],
+   "expect": [
+    "priya"
+   ]
+  },
+  {
+   "q": "did I feed the cat today",
+   "gold": [],
+   "expect": [
+    "__not_found__"
+   ]
+  }
+ ]
+}
