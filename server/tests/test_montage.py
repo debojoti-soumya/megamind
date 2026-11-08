@@ -1,6 +1,7 @@
 import io
 import random
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -408,3 +409,66 @@ async def test_face_blur_uses_blurred_thumbnails_not_replay_frames(app_client, m
 def test_overlay_forces_even_size():
     c = ClipSpec(_tok(1, "x"), "t", "9:05 AM", ((0.0, b""), (1.0, b"")), 1.0, "replay")
     assert overlay_vf(c, MontageSettings(width=641, height=361, _env_file=None)).startswith("scale=640:360:")
+
+
+def _stub_concat(monkeypatch):
+    """`subprocess.run` for the concat step: the montage is the concat list, so tests can check clip order."""
+    from megamind.agent import montage
+
+    def _run(cmd, **_kw):
+        lst, out = cmd[cmd.index("-i") + 1], cmd[-1]
+        Path(out).write_bytes(Path(lst).read_bytes())
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(montage.subprocess, "run", _run)
+
+
+def _clips(n: int) -> list[ClipSpec]:
+    tok = _tok(0, "desk")
+    return [ClipSpec(tok, f"clip {i}", "09:00", ((0.0, b"j"), (1.0, b"j")), 0.5, "timelapse") for i in range(n)]
+
+
+def test_render_montage_renders_clips_in_parallel_and_keeps_order(tmp_path, monkeypatch):
+    """Clips render on `clip_workers` threads at once; the concat list (so the reel) still follows plan order."""
+    import threading
+
+    from megamind.agent import montage
+
+    gate = threading.Barrier(4, timeout=5)  # all four clips must be in flight together or this deadlocks
+
+    def _render_mp4(frames, part, **_kw):
+        gate.wait()
+        part.write_bytes(b"part")
+
+    monkeypatch.setattr(montage, "render_mp4", _render_mp4)
+    _stub_concat(monkeypatch)
+    out = montage.render_montage(_clips(4), tmp_path / "reel.mp4", ffmpeg="ffmpeg", cfg=MontageSettings(_env_file=None))
+    assert out.read_text() == "".join(f"file 'p{i:03d}.mp4'\n" for i in range(4))
+
+
+def test_render_montage_serial_with_one_worker(tmp_path, monkeypatch):
+    from megamind.agent import montage
+
+    order = []
+
+    def _render_mp4(frames, part, **_kw):
+        order.append(part.name)
+        part.write_bytes(b"p")
+
+    monkeypatch.setattr(montage, "render_mp4", _render_mp4)
+    _stub_concat(monkeypatch)
+    cfg = MontageSettings(_env_file=None, clip_workers=1)
+    montage.render_montage(_clips(3), tmp_path / "reel.mp4", ffmpeg="ffmpeg", cfg=cfg)
+    assert order == ["p000.mp4", "p001.mp4", "p002.mp4"]
+
+
+def test_render_montage_clip_failure_propagates(tmp_path, monkeypatch):
+    from megamind.agent import montage
+
+    def _boom(frames, part, **_kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(montage, "render_mp4", _boom)
+    _stub_concat(monkeypatch)
+    with pytest.raises(OSError):
+        montage.render_montage(_clips(2), tmp_path / "reel.mp4", ffmpeg="ffmpeg", cfg=MontageSettings(_env_file=None))
