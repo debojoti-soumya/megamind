@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from megamind.store.bench import main, run, synth_tokens
 
 PRIMITIVES = {
@@ -35,3 +37,16 @@ def test_cli_json(tmp_path, capsys):
     assert main(["--n", "60", "--queries", "1", "--text-dim", "8", "--image-dim", "4", "--json", str(dest)]) == 0
     assert "vector_search text" in capsys.readouterr().out
     assert set(json.loads(dest.read_text())["results"]) == {"memory", "lancedb"}
+
+
+@pytest.mark.parametrize("flag", ["--n", "--queries", "--text-dim", "--image-dim"])
+def test_cli_rejects_non_positive(flag, capsys):
+    with pytest.raises(SystemExit) as e:
+        main([flag, "0"])
+    assert e.value.code == 2
+    assert "must be >= 1" in capsys.readouterr().err
+
+
+def test_cli_single_token(capsys):
+    assert main(["--n", "1", "--queries", "1", "--text-dim", "8", "--image-dim", "4"]) == 0
+    assert "get_many 12" in capsys.readouterr().out
