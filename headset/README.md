@@ -330,7 +330,9 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | `CaptureHud.cs` | 1 | capture status data source (`ShortStatus()` header strip, `FullReport()` Debug view) + A/X or middle-pinch pause; the old head-locked canvas only with `showOwnCanvas` |
 | `ChatClient.cs` | 3 | push-to-talk (trigger or index pinch) → 16 kHz WAV → `POST /v1/chat/stream` (answer text as it streams, sentence `audio` clips queued; `POST /v1/chat` fallback on older servers, `streamAnswers` off) → play audio; barge-in, latency; tells `AmbientAudioRecorder` to release the mic while recording |
 | `SseParser.cs`, `SseDownloadHandler.cs`, `SpeechClipCodec.cs` | 3 | incremental SSE parsing for `/v1/chat/stream` (pure C# parser + `DownloadHandlerScript`), inline sentence-clip decoding (WAV / PCM16) |
-| `ChatPanel.cs` | 3 | transcript bubbles, cited thumbnails, confidence/latency line, status HUD (`/v1/health` poll) |
+| `ChatPanel.cs` | 3 | transcript bubbles (`ChatBubble` rows, streaming draft bubble), system chips, cited thumbnails, confidence/latency line, status HUD (`/v1/health` poll) |
+| `MegamindTheme.cs` | 3 | design system: palette (dark glass, coral accent, teal secondary, REC/paused/error/success), type scale, 8-pt grid, radii, button `ColorBlock`s, generated rounded-rect/circle sprites |
+| `ChatBubble.cs` | 3 | one transcript row: `ChatBubble` (label + background, `Append` for streaming) and `ChatBubbleFit` (shrink-wraps the bubble to its text up to a max width) |
 | `PanelAnchor.cs` | 3 | tag-along panel: eye height, `panelDistance` m ahead, glides back when the head leaves a 25° / 0.5 m dead zone; Pin/Unpin (world-lock), hold B/Y 0.5 s to drag; A-/A+ UI scale (PlayerPrefs `megamind.uiScale`) |
 | `SettingsPanel.cs` | 3 | runtime server URL / device id, new session, purge memory |
 | `PanelMenu.cs` | 3 | header **Menu** dropdown (Settings, Debug, Pin/Unpin, Text size, New session, Purge) + voice-command execution |
@@ -339,12 +341,13 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | `HoldToTalkButton.cs` | 3 | footer Hold-to-talk: pointer down/up → `ChatClient.BeginRecording` / `EndRecordingAndSendNow` |
 | `PanelHover.cs` | 3 | pointer enter/exit on the panel root; `ChatClient` ignores trigger/pinch push-to-talk while the ray is over the panel |
 | `Editor/MegamindSceneBuilder.cs` | 1 | the `Megamind` menu: create scene, apply player settings, build, build & run, push config, check project |
-| `Editor/MegamindChatPanelBuilder.cs` | 3 | `Megamind > 1b. Add Chat Panel To Current Scene`: bubble/thumb prefabs + the chat panel, all references wired |
+| `Editor/MegamindChatPanelBuilder.cs` | 3 | `Megamind > 1b. Add Chat Panel To Current Scene`: generated sprites (`Assets/Megamind/Art`), bubble/chip/thumb prefabs + the chat panel styled from `MegamindTheme`, all references wired |
 
 ## Stream 3 chat panel
 
 After **Megamind > 1. Create Capture Scene**, run **Megamind > 1b. Add Chat Panel To Current Scene** before
-building. It creates `Assets/Megamind/Prefabs/{UserBubble,AssistantBubble,ThumbRow,Thumb}.prefab` and this
+building. It renders the UI sprites into `Assets/Megamind/Art/*.png` (rounded rectangles 10/16/20/24 px, a circle; imported
+as 9-sliced sprites), creates `Assets/Megamind/Prefabs/{UserBubble,AssistantBubble,SystemChip,MetaLine,ThumbRow,Thumb}.prefab` and this
 hierarchy (one World Space Canvas, 600x720 px, scaled by `PanelAnchor` to `panelWidthMeters` x the UI scale), wires every
 field on `ChatPanel`/`ChatClient`/`PanelAnchor`/`SettingsPanel`, finds `CenterEyeAnchor`, `OVRHand`s and the
 `FrameUploader`, and adds an `EventSystem` with Meta's `OVRInputModule` + `OVRRaycaster` (right-controller
@@ -361,6 +364,14 @@ MegamindPanel (Canvas + CanvasScaler)  + PanelAnchor + ChatPanel + ChatClient + 
   MenuBackdrop (inactive, click = close), MenuDropdown (inactive): Settings, Debug, Pin panel, Text size, Controls, New session, Purge
 ```
 Re-running the menu item replaces a previous `MegamindPanel`; tweak the result in the Inspector and save.
+
+**Look & feel** lives in `Scripts/MegamindTheme.cs` (one place for every colour, size and radius): dark glass panel,
+coral accent for the user's own bubbles and primary buttons, teal for Megamind's avatar glyph and the thinking state,
+red/grey/red/green for REC / paused / error / success. Type scale 28 / 24 / 20 / 17 / 16 px (title / body / button /
+caption / mono), 8-pt spacing grid, ≤ 3 controls per row. Bubbles are shrink-wrapped to their text up to 80 % of the
+width: user right-aligned on coral with dark text, assistant left with a small **M** avatar on a translucent bubble,
+voice-command feedback as a small centred chip. Buttons use a white Image + `ColorBlock` (ghost / accent / danger) so
+hover, pressed and disabled are real tints. Change the theme, re-run 1b.
 Push-to-talk: hold the controller trigger (or index pinch); hold B/Y 0.5 s to drag the panel to your gaze.
 
 ### Footer controls, Hide/Show, Controls cheat-sheet (verify on device)
@@ -430,8 +441,8 @@ pose: with the FloorLevel tracking origin `CenterEyeAnchor` reports y = 0 until 
 leave the panel at floor level ("near my legs") on launch.
 
 Text: the canvas has a `CanvasScaler` with `dynamicPixelsPerUnit` = 3 so uGUI glyphs are rasterised at 3x (a 1x atlas is
-upscaled ~1.4x on Quest 3 and looks soft); transcript bubbles are 26 px (≈1.5° per line at 1 m), status/buttons 17–20
-px, thumbnails 180x135 (3 per row). **A-** / **A+** step the whole panel through 1x / 1.25x / 1.5x / 2x
+upscaled ~1.4x on Quest 3 and looks soft); transcript text is 24 px (≈1.4° per line at 1 m), status/buttons 17–20
+px, thumbnails 176x132 with rounded corners (3 per row). **A-** / **A+** step the whole panel through 1x / 1.25x / 1.5x / 2x
 (`PanelAnchor.uiScale`, saved in PlayerPrefs `megamind.uiScale`, so it survives relaunches). The server has no thumbnail
 size parameter (`GET /v1/thumbs/{id}.jpg` returns the stored keyframe), so thumbnails are just drawn larger.
 

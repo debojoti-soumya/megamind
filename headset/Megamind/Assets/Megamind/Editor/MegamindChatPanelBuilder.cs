@@ -1,8 +1,12 @@
 // Editor-only. Stream 3: adds the voice-first chat panel to the capture scene made by MegamindSceneBuilder
-// (Megamind > 1), creates the bubble/thumbnail prefabs, and wires every public reference on
-// ChatPanel / ChatClient / PanelAnchor / SettingsPanel / PanelMenu (header status strip + REC dot fed by CaptureHud,
-// top-right Menu dropdown: Settings / Debug / Pin / Text size / Controls / New session / Purge; footer Record|Pause /
-// Hold to talk / Type / Hide controls, PanelControls + PanelHover). Run Megamind > 1, then 1b, then build.
+// (Megamind > 1), creates the bubble/thumbnail prefabs and the generated sprites (Assets/Megamind/Art), and wires every
+// public reference on ChatPanel / ChatClient / PanelAnchor / SettingsPanel / PanelMenu (header status strip + REC dot fed
+// by CaptureHud, top-right Menu dropdown: Settings / Debug / Pin / Text size / Controls / New session / Purge; footer
+// Record|Pause / Hold to talk / Type / Hide controls, PanelControls + PanelHover). Run Megamind > 1, then 1b, then build.
+//
+// Look & feel comes from Scripts/MegamindTheme.cs (palette, type scale, 8-pt grid, radii, button states): change it
+// there, re-run 1b. Sprites (rounded rectangles, circle) are rendered in code and imported as 9-sliced sprites, so the
+// project needs no hand-made art.
 //
 // Why a script instead of committed .unity/.prefab YAML: hand-written scene YAML with cross-file GUIDs is
 // brittle across Unity versions and nobody can open it here to verify. This is re-runnable (it deletes a
@@ -16,6 +20,7 @@ using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using static Megamind.MegamindTheme;
 
 namespace Megamind.EditorTools
 {
@@ -23,25 +28,21 @@ namespace Megamind.EditorTools
     {
         const string Root = "Assets/Megamind";
         const string PrefabDir = Root + "/Prefabs";
-        const float PanelW = 600f, PanelH = 720f, HeaderH = 56f, FooterH = 100f, FooterButtonsH = 60f;
+        const string ArtDir = Root + "/Art";
+        const float PanelW = 600f, PanelH = 720f, HeaderH = 64f, FooterH = 120f, FooterButtonsH = 72f;
         // uGUI Text rasterises glyphs at fontSize * dynamicPixelsPerUnit: at 1000 canvas px/m and ~25 px/deg on Quest 3 a
         // 1x glyph is upscaled ~1.4x and looks soft, so render the font atlas at 3x.
         const float DynamicPixelsPerUnit = 3f;
-        // 3 thumbnails per row: 3 * 180 + 2 * 8 spacing = 556 < 600 - 28 padding. 4:3 like the 1280x960 capture.
-        const float ThumbW = 180f, ThumbH = 135f;
-
-        static readonly Color PanelBg = new Color(0.07f, 0.08f, 0.11f, 0.86f);
-        static readonly Color HeaderBg = new Color(1f, 1f, 1f, 0.06f);
-        static readonly Color TextMain = new Color(0.93f, 0.95f, 0.98f);
-        static readonly Color TextDim = new Color(0.62f, 0.67f, 0.74f);
-        static readonly Color UserBubbleColor = new Color(0.55f, 0.75f, 1f);
-        static readonly Color ButtonBg = new Color(1f, 1f, 1f, 0.12f);
-        static readonly Color FieldBg = new Color(0f, 0f, 0f, 0.35f);
+        // 3 thumbnails per row: 3 * 176 + 2 * 8 spacing = 544 < 600 - 2 * 16 padding. 4:3 like the 1280x960 capture.
+        const float ThumbW = 176f, ThumbH = 132f;
+        const float ContentPad = Space2;
+        const float AvatarSize = 32f;
+        static readonly float BubbleMaxW = Mathf.Round((PanelW - 2f * ContentPad - AvatarSize - Space1) * BubbleMaxWidthFraction);
 
         static Font _font;
         static Font UIFont => _font ??= Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-        static Sprite Knob => AssetDatabase.GetBuiltinExtraResource<Sprite>("UI/Skin/Knob.psd");
-        static Sprite Rounded => AssetDatabase.GetBuiltinExtraResource<Sprite>("UI/Skin/UISprite.psd");
+        // Generated sprites (see LoadArt): panel / sheets, buttons, chips, bubbles, dots.
+        static Sprite RoundedL, RoundedM, RoundedS, Bubble, Circle;
 
         [MenuItem("Megamind/1b. Add Chat Panel To Current Scene", false, 1)]
         public static void Build()
@@ -56,10 +57,13 @@ namespace Megamind.EditorTools
                 scene = EditorSceneManager.OpenScene(MegamindSceneBuilder.ScenePath, OpenSceneMode.Single);
             }
 
-            EnsureFolder(Root); EnsureFolder(PrefabDir);
+            EnsureFolder(Root); EnsureFolder(PrefabDir); EnsureFolder(ArtDir);
+            LoadArt();
             var config = MegamindSceneBuilder.GetOrCreateConfig();
-            var userBubble = BubblePrefab("UserBubble", TextAnchor.UpperRight, UserBubbleColor);
-            var assistantBubble = BubblePrefab("AssistantBubble", TextAnchor.UpperLeft, TextMain);
+            var userBubble = BubblePrefab("UserBubble", user: true);
+            var assistantBubble = BubblePrefab("AssistantBubble", user: false);
+            var systemChip = SystemChipPrefab();
+            var metaLine = MetaLinePrefab();
             var thumbRow = ThumbRowPrefab();
             var thumb = ThumbPrefab();
 
@@ -67,7 +71,7 @@ namespace Megamind.EditorTools
             if (old) Undo.DestroyObjectImmediate(old);
 
             var head = FindHead();
-            var panel = BuildPanel(config, head, userBubble, assistantBubble, thumbRow, thumb);
+            var panel = BuildPanel(config, head, userBubble, assistantBubble, systemChip, metaLine, thumbRow, thumb);
             EnsureEventSystem(head);
 
             Undo.RegisterCreatedObjectUndo(panel, "Build Megamind panel");
@@ -80,7 +84,8 @@ namespace Megamind.EditorTools
 
         // ---------- scene ----------
 
-        static GameObject BuildPanel(MegamindConfig config, Transform head, Text userBubble, Text assistantBubble, RectTransform thumbRow, RawImage thumb)
+        static GameObject BuildPanel(MegamindConfig config, Transform head, ChatBubble userBubble, ChatBubble assistantBubble,
+                                     ChatBubble systemChip, RectTransform metaLine, RectTransform thumbRow, RectTransform thumb)
         {
             var go = new GameObject("MegamindPanel", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
             var rt = go.GetComponent<RectTransform>();
@@ -94,24 +99,27 @@ namespace Megamind.EditorTools
             rt.localScale = Vector3.one * (config.panelWidthMeters / PanelW);
             rt.position = new Vector3(0f, 1.3f, config.panelDistance);
 
-            var background = MakeImage(go.transform, "Background", PanelBg, Rounded);
+            var background = MakeImage(go.transform, "Background", PanelBg, RoundedL);
             background.rectTransform.Stretch();
             background.raycastTarget = true; // the whole panel counts as "ray over UI" (push-to-talk suppression)
 
-            // Header: REC dot (always visible, privacy), server dot, one-line status strip (CaptureHud.ShortStatus), Menu
-            var header = MakeImage(go.transform, "Header", HeaderBg, Rounded);
-            header.AnchorTop(HeaderH);
-            var recDot = MakeImage(header.transform, "RecDot", new Color(1f, 0.25f, 0.25f), Knob);
-            recDot.AnchorLeftCentre(12f, 18f, 18f);
-            var dot = MakeImage(header.transform, "ServerDot", new Color(1f, 0.36f, 0.42f), Knob);
-            dot.AnchorLeftCentre(36f, 10f, 10f);
-            var statusLine = MakeLabel(header.transform, "StatusLine", "connecting…", 18, TextDim, TextAnchor.MiddleLeft);
+            // Header: REC dot (always visible, privacy), server dot, one-line status strip (CaptureHud.ShortStatus), Hide, Menu.
+            // Transparent over the glass background, separated from the transcript by a hairline.
+            var header = new GameObject("Header", typeof(RectTransform));
+            header.transform.SetParent(go.transform, false);
+            header.GetComponent<RectTransform>().AnchorTop(HeaderH);
+            Hairline(header.transform, bottom: true);
+            var recDot = MakeImage(header.transform, "RecDot", Rec, Circle);
+            recDot.type = Image.Type.Simple; recDot.AnchorLeftCentre(Space2, 16f, 16f);
+            var dot = MakeImage(header.transform, "ServerDot", Error, Circle);
+            dot.type = Image.Type.Simple; dot.AnchorLeftCentre(Space2 + 24f, 10f, 10f);
+            var statusLine = MakeLabel(header.transform, "StatusLine", "connecting…", FontCaption, TextDim, TextAnchor.MiddleLeft);
             statusLine.horizontalOverflow = HorizontalWrapMode.Overflow; statusLine.verticalOverflow = VerticalWrapMode.Truncate;
-            statusLine.rectTransform.Fill(new Vector2(54f, 0f), new Vector2(-172f, 0f));
-            var menuButton = MakeButton(header.transform, "MenuButton", "Menu", 17);
-            menuButton.GetComponent<RectTransform>().AnchorRightCentre(10f, 80f, 40f);
-            var minimizeButton = MakeButton(header.transform, "MinimizeButton", "Hide", 17);
-            minimizeButton.GetComponent<RectTransform>().AnchorRightCentre(96f, 70f, 40f);
+            statusLine.rectTransform.Fill(new Vector2(Space2 + 44f, 0f), new Vector2(-(Space2 + 88f + Space1 + 80f + Space1), 0f));
+            var menuButton = MakeButton(header.transform, "MenuButton", "Menu", FontCaption, sprite: RoundedS);
+            menuButton.GetComponent<RectTransform>().AnchorRightCentre(Space2, 88f, 40f);
+            var minimizeButton = MakeButton(header.transform, "MinimizeButton", "Hide", FontCaption, sprite: RoundedS);
+            minimizeButton.GetComponent<RectTransform>().AnchorRightCentre(Space2 + 88f + Space1, 80f, 40f);
 
             // Scroll view with the transcript
             var scrollGo = new GameObject("Scroll", typeof(RectTransform), typeof(ScrollRect));
@@ -130,7 +138,7 @@ namespace Megamind.EditorTools
             crt.anchorMin = new Vector2(0f, 1f); crt.anchorMax = Vector2.one; crt.pivot = new Vector2(0.5f, 1f);
             crt.offsetMin = Vector2.zero; crt.offsetMax = Vector2.zero;
             var vlg = content.GetComponent<VerticalLayoutGroup>();
-            vlg.padding = new RectOffset(14, 14, 12, 12); vlg.spacing = 10f;
+            vlg.padding = new RectOffset((int)ContentPad, (int)ContentPad, (int)Space2, (int)Space2); vlg.spacing = Space2;
             vlg.childControlWidth = true; vlg.childControlHeight = true;
             vlg.childForceExpandWidth = true; vlg.childForceExpandHeight = false;
             content.GetComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
@@ -138,107 +146,99 @@ namespace Megamind.EditorTools
             scroll.content = crt;
 
             var emptyHint = MakeLabel(go.transform, "EmptyHint",
-                "Hold the trigger (or pinch) and ask about something you saw.\n\nSay a short command instead of a question: " + VoiceCommands.Hint + ".",
-                22, TextDim, TextAnchor.MiddleCenter);
-            emptyHint.rectTransform.Fill(new Vector2(40f, FooterH), new Vector2(-40f, -HeaderH));
+                "Ask Megamind about something you saw.\n\nHold the trigger (or pinch) and talk, or tap Type.\n\nShort commands work too: " + VoiceCommands.Hint + ".",
+                FontButton, TextDim, TextAnchor.MiddleCenter);
+            emptyHint.lineSpacing = 1.15f;
+            emptyHint.rectTransform.Fill(new Vector2(Space4 + Space1, FooterH), new Vector2(-(Space4 + Space1), -HeaderH));
 
             // Footer: state line ("Recording continuously" / "Paused") + listening/thinking indicators on top,
-            // big Record|Pause / Hold to talk / Type buttons below.
-            var footer = MakeImage(go.transform, "Footer", HeaderBg, Rounded);
-            footer.rectTransform.AnchorBottom(FooterH);
-            var stateLabel = MakeLabel(footer.transform, "StateLabel", "Paused", 18, TextDim, TextAnchor.MiddleLeft);
+            // big Record|Pause / Hold to talk / Type buttons below (3 controls: no crowding).
+            var footer = new GameObject("Footer", typeof(RectTransform));
+            footer.transform.SetParent(go.transform, false);
+            footer.GetComponent<RectTransform>().AnchorBottom(FooterH);
+            Hairline(footer.transform, bottom: false);
+            var stateLabel = MakeLabel(footer.transform, "StateLabel", "Paused", FontCaption, TextDim, TextAnchor.MiddleLeft);
             stateLabel.rectTransform.anchorMin = new Vector2(0f, 1f); stateLabel.rectTransform.anchorMax = Vector2.one; stateLabel.rectTransform.pivot = new Vector2(0.5f, 1f);
-            stateLabel.rectTransform.offsetMin = new Vector2(18f, -(FooterH - FooterButtonsH)); stateLabel.rectTransform.offsetMax = new Vector2(-280f, 0f);
+            stateLabel.rectTransform.offsetMin = new Vector2(Space3, -(FooterH - FooterButtonsH)); stateLabel.rectTransform.offsetMax = new Vector2(-280f, 0f);
             var indicators = new GameObject("Indicators", typeof(RectTransform));
             indicators.transform.SetParent(footer.transform, false);
             var irt = indicators.GetComponent<RectTransform>();
             irt.anchorMin = new Vector2(1f, 1f); irt.anchorMax = Vector2.one; irt.pivot = new Vector2(1f, 1f);
-            irt.anchoredPosition = new Vector2(-14f, 0f); irt.sizeDelta = new Vector2(260f, FooterH - FooterButtonsH);
-            var listening = MakeImage(indicators.transform, "ListeningIndicator", new Color(1f, 0.3f, 0.3f), Knob);
-            listening.AnchorLeftCentre(0f, 16f, 16f);
-            var listeningLabel = MakeLabel(listening.transform, "Label", "listening…", 18, TextMain, TextAnchor.MiddleLeft);
+            irt.anchoredPosition = new Vector2(-Space3, 0f); irt.sizeDelta = new Vector2(260f, FooterH - FooterButtonsH);
+            var listening = MakeImage(indicators.transform, "ListeningIndicator", Rec, Circle);
+            listening.type = Image.Type.Simple; listening.AnchorLeftCentre(0f, 14f, 14f);
+            var listeningLabel = MakeLabel(listening.transform, "Label", "listening…", FontCaption, TextMain, TextAnchor.MiddleLeft);
             listeningLabel.rectTransform.anchorMin = new Vector2(1f, 0.5f); listeningLabel.rectTransform.anchorMax = new Vector2(1f, 0.5f);
-            listeningLabel.rectTransform.pivot = new Vector2(0f, 0.5f); listeningLabel.rectTransform.anchoredPosition = new Vector2(8f, 0f);
+            listeningLabel.rectTransform.pivot = new Vector2(0f, 0.5f); listeningLabel.rectTransform.anchoredPosition = new Vector2(Space1, 0f);
             listeningLabel.rectTransform.sizeDelta = new Vector2(236f, 28f);
-            var thinking = MakeLabel(indicators.transform, "ThinkingIndicator", "thinking…", 18, TextDim, TextAnchor.MiddleRight);
+            var thinking = MakeLabel(indicators.transform, "ThinkingIndicator", "thinking…", FontCaption, Secondary, TextAnchor.MiddleRight);
             thinking.rectTransform.Stretch();
             var buttons = new GameObject("Buttons", typeof(RectTransform), typeof(HorizontalLayoutGroup));
             buttons.transform.SetParent(footer.transform, false);
             var brt = buttons.GetComponent<RectTransform>();
-            brt.AnchorBottom(FooterButtonsH); brt.offsetMin = new Vector2(10f, 6f); brt.offsetMax = new Vector2(-10f, FooterButtonsH - 2f);
+            brt.AnchorBottom(FooterButtonsH); brt.offsetMin = new Vector2(Space2, Space2); brt.offsetMax = new Vector2(-Space2, FooterButtonsH);
             var bhlg = buttons.GetComponent<HorizontalLayoutGroup>();
-            bhlg.spacing = 8f; bhlg.childControlWidth = true; bhlg.childControlHeight = true; bhlg.childForceExpandWidth = true;
-            var recordButton = MakeButton(buttons.transform, "RecordButton", "Record", 21);
+            bhlg.spacing = Space1; bhlg.childControlWidth = true; bhlg.childControlHeight = true; bhlg.childForceExpandWidth = true;
+            var recordButton = MakeButton(buttons.transform, "RecordButton", "Record", FontButton);
             var recordLabel = recordButton.GetComponentInChildren<Text>();
-            recordLabel.rectTransform.offsetMin = new Vector2(30f, 0f);
-            var recordKnob = MakeImage(recordButton.transform, "Knob", new Color(0.45f, 0.48f, 0.52f), Knob);
-            recordKnob.AnchorLeftCentre(14f, 16f, 16f);
-            var talkButton = MakeButton(buttons.transform, "HoldToTalkButton", "Hold to talk", 21);
-            var typeButton = MakeButton(buttons.transform, "TypeButton", "Type", 21);
+            recordLabel.rectTransform.offsetMin = new Vector2(Space3, 0f);
+            var recordKnob = MakeImage(recordButton.transform, "Knob", Paused, Circle);
+            recordKnob.type = Image.Type.Simple; recordKnob.AnchorLeftCentre(Space2, 14f, 14f);
+            var talkButton = MakeButton(buttons.transform, "HoldToTalkButton", "Hold to talk", FontButton);
+            var typeButton = MakeButton(buttons.transform, "TypeButton", "Type", FontButton);
             typeButton.gameObject.AddComponent<LayoutElement>().flexibleWidth = 0.6f;
 
-            // Settings sub-panel (inactive by default; SettingsPanel.Awake hides it)
-            var settingsRoot = MakeImage(go.transform, "Settings", new Color(0.05f, 0.06f, 0.08f, 0.97f), Rounded);
-            settingsRoot.GetComponent<RectTransform>().Fill(new Vector2(0f, 0f), new Vector2(0f, -HeaderH));
+            // Settings sheet (inactive by default; SettingsPanel.Awake hides it)
+            var settingsRoot = Sheet(go.transform, "Settings");
             var svlg = settingsRoot.gameObject.AddComponent<VerticalLayoutGroup>();
-            svlg.padding = new RectOffset(18, 18, 16, 16); svlg.spacing = 10f;
+            svlg.padding = new RectOffset((int)Space3, (int)Space3, (int)Space3, (int)Space3); svlg.spacing = Space1;
             svlg.childControlWidth = true; svlg.childControlHeight = true; svlg.childForceExpandHeight = false;
-            MakeLabel(settingsRoot.transform, "Title", "Settings", 26, TextMain, TextAnchor.MiddleLeft).PreferredHeight(36f);
-            MakeLabel(settingsRoot.transform, "ServerLabel", "Server base URL (laptop Tailscale IP)", 17, TextDim, TextAnchor.MiddleLeft).PreferredHeight(24f);
+            MakeLabel(settingsRoot.transform, "Title", "Settings", FontTitle, TextMain, TextAnchor.MiddleLeft).PreferredHeight(40f);
+            Spacer(settingsRoot.transform, Space1);
+            MakeLabel(settingsRoot.transform, "ServerLabel", "Server base URL (laptop Tailscale IP)", FontCaption, TextDim, TextAnchor.MiddleLeft).PreferredHeight(24f);
             var serverField = MakeInputField(settingsRoot.transform, "ServerUrl", "http://100.x.y.z:8000");
-            MakeLabel(settingsRoot.transform, "DeviceLabel", "Device id", 17, TextDim, TextAnchor.MiddleLeft).PreferredHeight(24f);
+            Spacer(settingsRoot.transform, Space1);
+            MakeLabel(settingsRoot.transform, "DeviceLabel", "Device id", FontCaption, TextDim, TextAnchor.MiddleLeft).PreferredHeight(24f);
             var deviceField = MakeInputField(settingsRoot.transform, "DeviceId", "quest3-1");
-            var row = new GameObject("Buttons", typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(LayoutElement));
-            row.transform.SetParent(settingsRoot.transform, false);
-            var hlg = row.GetComponent<HorizontalLayoutGroup>(); hlg.spacing = 8f; hlg.childControlWidth = true; hlg.childControlHeight = true;
-            row.GetComponent<LayoutElement>().preferredHeight = 52f;
-            var save = MakeButton(row.transform, "Save", "Save", 19);
-            var newSession = MakeButton(row.transform, "NewSession", "New session", 19);
-            var purge = MakeButton(row.transform, "Purge", "Purge memory", 19);
-            var row2 = new GameObject("Buttons2", typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(LayoutElement));
-            row2.transform.SetParent(settingsRoot.transform, false);
-            var hlg2 = row2.GetComponent<HorizontalLayoutGroup>(); hlg2.spacing = 8f; hlg2.childControlWidth = true; hlg2.childControlHeight = true;
-            row2.GetComponent<LayoutElement>().preferredHeight = 52f;
-            var reset = MakeButton(row2.transform, "Reset", "Reset overrides", 19);
-            var close = MakeButton(row2.transform, "Close", "Close", 19);
-            var feedback = MakeLabel(settingsRoot.transform, "Feedback", "", 17, TextDim, TextAnchor.UpperLeft);
+            Spacer(settingsRoot.transform, Space2);
+            var row = ButtonRow(settingsRoot.transform, "Buttons");
+            var save = MakeButton(row, "Save", "Save", FontButton, AccentButton);
+            var newSession = MakeButton(row, "NewSession", "New session", FontButton);
+            var purge = MakeButton(row, "Purge", "Purge memory", FontButton, DangerButton);
+            var row2 = ButtonRow(settingsRoot.transform, "Buttons2");
+            var reset = MakeButton(row2, "Reset", "Reset overrides", FontButton);
+            var close = MakeButton(row2, "Close", "Close", FontButton);
+            Spacer(settingsRoot.transform, Space1);
+            var feedback = MakeLabel(settingsRoot.transform, "Feedback", "", FontCaption, TextDim, TextAnchor.UpperLeft);
             feedback.PreferredHeight(72f);
 
-            // Debug sub-panel (CaptureHud.FullReport in a scroll view), same footprint as Settings
-            var debugRoot = MakeImage(go.transform, "Debug", new Color(0.05f, 0.06f, 0.08f, 0.97f), Rounded);
-            debugRoot.GetComponent<RectTransform>().Fill(new Vector2(0f, 0f), new Vector2(0f, -HeaderH));
-            var debugTitle = MakeLabel(debugRoot.transform, "Title", "Debug", 26, TextMain, TextAnchor.MiddleLeft);
-            debugTitle.rectTransform.AnchorTop(44f); debugTitle.rectTransform.offsetMin = new Vector2(18f, -44f); debugTitle.rectTransform.offsetMax = new Vector2(-120f, -4f);
-            var debugClose = MakeButton(debugRoot.transform, "Close", "Close", 19);
-            var dcRt = debugClose.GetComponent<RectTransform>();
-            dcRt.anchorMin = dcRt.anchorMax = new Vector2(1f, 1f); dcRt.pivot = new Vector2(1f, 1f);
-            dcRt.anchoredPosition = new Vector2(-14f, -8f); dcRt.sizeDelta = new Vector2(96f, 40f);
+            // Debug sheet (CaptureHud.FullReport in a scroll view), same footprint as Settings
+            var debugRoot = Sheet(go.transform, "Debug");
+            SheetTitle(debugRoot.transform, "Debug");
+            var debugClose = SheetClose(debugRoot.transform);
             var debugScrollGo = new GameObject("Scroll", typeof(RectTransform), typeof(ScrollRect));
             debugScrollGo.transform.SetParent(debugRoot.transform, false);
-            debugScrollGo.GetComponent<RectTransform>().Fill(new Vector2(14f, 12f), new Vector2(-14f, -56f));
+            debugScrollGo.GetComponent<RectTransform>().Fill(new Vector2(Space3, Space2), new Vector2(-Space3, -(Space3 + 40f + Space2)));
             var debugScroll = debugScrollGo.GetComponent<ScrollRect>();
             debugScroll.horizontal = false; debugScroll.movementType = ScrollRect.MovementType.Clamped; debugScroll.scrollSensitivity = 30f;
             var debugViewport = new GameObject("Viewport", typeof(RectTransform), typeof(RectMask2D));
             debugViewport.transform.SetParent(debugScrollGo.transform, false);
             debugViewport.GetComponent<RectTransform>().Stretch();
-            var debugText = MakeLabel(debugViewport.transform, "Text", "", 18, TextMain, TextAnchor.UpperLeft);
+            var debugText = MakeLabel(debugViewport.transform, "Text", "", FontMono, TextMain, TextAnchor.UpperLeft);
+            debugText.lineSpacing = 1.2f;
             var dtRt = debugText.rectTransform;
             dtRt.anchorMin = new Vector2(0f, 1f); dtRt.anchorMax = Vector2.one; dtRt.pivot = new Vector2(0.5f, 1f);
-            dtRt.offsetMin = new Vector2(4f, 0f); dtRt.offsetMax = new Vector2(-4f, 0f);
+            dtRt.offsetMin = new Vector2(0f, 0f); dtRt.offsetMax = new Vector2(0f, 0f);
             debugText.gameObject.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
             debugScroll.viewport = debugViewport.GetComponent<RectTransform>(); debugScroll.content = dtRt;
 
-            // Controls cheat-sheet sub-panel
-            var controlsRoot = MakeImage(go.transform, "Controls", new Color(0.05f, 0.06f, 0.08f, 0.97f), Rounded);
-            controlsRoot.GetComponent<RectTransform>().Fill(new Vector2(0f, 0f), new Vector2(0f, -HeaderH));
-            var controlsTitle = MakeLabel(controlsRoot.transform, "Title", "Controls", 26, TextMain, TextAnchor.MiddleLeft);
-            controlsTitle.rectTransform.AnchorTop(44f); controlsTitle.rectTransform.offsetMin = new Vector2(18f, -44f); controlsTitle.rectTransform.offsetMax = new Vector2(-120f, -4f);
-            var controlsClose = MakeButton(controlsRoot.transform, "Close", "Close", 19);
-            var ccRt = controlsClose.GetComponent<RectTransform>();
-            ccRt.anchorMin = ccRt.anchorMax = new Vector2(1f, 1f); ccRt.pivot = new Vector2(1f, 1f);
-            ccRt.anchoredPosition = new Vector2(-14f, -8f); ccRt.sizeDelta = new Vector2(96f, 40f);
-            var controlsText = MakeLabel(controlsRoot.transform, "Text", ControlsText, 20, TextMain, TextAnchor.UpperLeft);
-            controlsText.rectTransform.Fill(new Vector2(18f, 12f), new Vector2(-18f, -56f));
+            // Controls cheat-sheet
+            var controlsRoot = Sheet(go.transform, "Controls");
+            SheetTitle(controlsRoot.transform, "Controls");
+            var controlsClose = SheetClose(controlsRoot.transform);
+            var controlsText = MakeLabel(controlsRoot.transform, "Text", ControlsText, FontButton, TextMain, TextAnchor.UpperLeft);
+            controlsText.lineSpacing = 1.1f;
+            controlsText.rectTransform.Fill(new Vector2(Space3, Space2), new Vector2(-Space3, -(Space3 + 40f + Space2)));
             controlsText.verticalOverflow = VerticalWrapMode.Truncate;
 
             // Dropdown: transparent backdrop (click anywhere = close) + list under the Menu button. Built last so it draws on top.
@@ -247,12 +247,12 @@ namespace Megamind.EditorTools
             backdrop.rectTransform.Stretch();
             var backdropButton = backdrop.gameObject.AddComponent<Button>();
             backdropButton.transition = Selectable.Transition.None;
-            var menuRoot = MakeImage(go.transform, "MenuDropdown", new Color(0.05f, 0.06f, 0.08f, 0.98f), Rounded);
+            var menuRoot = MakeImage(go.transform, "MenuDropdown", SurfaceRaised, RoundedM);
             var mrt = menuRoot.rectTransform;
             mrt.anchorMin = mrt.anchorMax = new Vector2(1f, 1f); mrt.pivot = new Vector2(1f, 1f);
-            mrt.anchoredPosition = new Vector2(-8f, -HeaderH - 4f); mrt.sizeDelta = new Vector2(280f, 0f);
+            mrt.anchoredPosition = new Vector2(-Space1, -HeaderH); mrt.sizeDelta = new Vector2(296f, 0f);
             var mvlg = menuRoot.gameObject.AddComponent<VerticalLayoutGroup>();
-            mvlg.padding = new RectOffset(8, 8, 8, 8); mvlg.spacing = 6f;
+            mvlg.padding = new RectOffset((int)Space1, (int)Space1, (int)Space1, (int)Space1); mvlg.spacing = 4f;
             mvlg.childControlWidth = true; mvlg.childControlHeight = true; mvlg.childForceExpandHeight = false;
             menuRoot.gameObject.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
             var miSettings = MenuEntry(menuRoot.transform, "Settings", "Settings");
@@ -261,7 +261,7 @@ namespace Megamind.EditorTools
             var miTextSize = MenuEntry(menuRoot.transform, "TextSize", "Text size 1x");
             var miControls = MenuEntry(menuRoot.transform, "Controls", "Controls");
             var miNewSession = MenuEntry(menuRoot.transform, "NewSession", "New session");
-            var miPurge = MenuEntry(menuRoot.transform, "Purge", "Purge memory");
+            var miPurge = MenuEntry(menuRoot.transform, "Purge", "Purge memory", DangerButton);
 
             // Components
             var speaker = go.AddComponent<AudioSource>();
@@ -274,6 +274,7 @@ namespace Megamind.EditorTools
             chatPanel.config = config;
             chatPanel.content = crt; chatPanel.scroll = scroll;
             chatPanel.userBubblePrefab = userBubble; chatPanel.assistantBubblePrefab = assistantBubble;
+            chatPanel.systemChipPrefab = systemChip; chatPanel.metaLinePrefab = metaLine;
             chatPanel.thumbnailRowPrefab = thumbRow; chatPanel.thumbnailPrefab = thumb;
             chatPanel.listeningIndicator = listening.gameObject; chatPanel.thinkingIndicator = thinking.gameObject;
             chatPanel.emptyHint = emptyHint.gameObject;
@@ -315,10 +316,13 @@ namespace Megamind.EditorTools
             var controls = go.AddComponent<PanelControls>();
             controls.hud = hud; controls.client = client; controls.menu = menu; controls.chatPanel = chatPanel;
             controls.recordLabel = recordLabel; controls.recordKnob = recordKnob; controls.stateLabel = stateLabel;
+            controls.recColor = Rec; controls.pausedColor = Paused;
             controls.minimizeLabel = minimizeButton.GetComponentInChildren<Text>();
             controls.hiddenWhenMinimized = new[] { background.gameObject, scrollGo, emptyHint.gameObject, footer.gameObject };
             var holdToTalk = talkButton.gameObject.AddComponent<HoldToTalkButton>();
             holdToTalk.client = client; holdToTalk.background = talkButton.GetComponent<Image>();
+            holdToTalk.idleColor = GhostButton.normalColor; holdToTalk.activeColor = Rec;
+            holdToTalk.background.color = holdToTalk.idleColor;
             talkButton.transition = Selectable.Transition.None; // HoldToTalkButton colours it (red while recording)
 
             UnityEventTools.AddPersistentListener(menuButton.onClick, new UnityAction(menu.Toggle));
@@ -425,42 +429,125 @@ namespace Megamind.EditorTools
             return null;
         }
 
-        // ---------- assets ----------
+        // ---------- art (generated sprites) ----------
 
-
-        static Text BubblePrefab(string name, TextAnchor align, Color color)
+        static void LoadArt()
         {
-            var go = new GameObject(name, typeof(RectTransform), typeof(Text), typeof(LayoutElement), typeof(Shadow));
-            var t = go.GetComponent<Text>();
-            t.font = UIFont; t.fontSize = 26; t.color = color; t.alignment = align;
-            t.horizontalOverflow = HorizontalWrapMode.Wrap; t.verticalOverflow = VerticalWrapMode.Overflow;
-            t.supportRichText = false;
-            go.GetComponent<Shadow>().effectColor = new Color(0f, 0f, 0f, 0.6f);
-            go.GetComponent<LayoutElement>().minHeight = 32f;
-            return SavePrefab(go).GetComponent<Text>();
+            RoundedL = Art("rounded-24", RoundedRectTexture(24), 24);
+            RoundedM = Art("rounded-16", RoundedRectTexture(16), 16);
+            RoundedS = Art("rounded-10", RoundedRectTexture(10), 10);
+            Bubble = Art("bubble-20", RoundedRectTexture(20), 20);
+            Circle = Art("circle-64", CircleTexture(64), 0);
+        }
+
+        // Writes the texture as a PNG under Assets/Megamind/Art and imports it as a (9-sliced) UI sprite. Re-run safe.
+        static Sprite Art(string name, Texture2D tex, int border)
+        {
+            string path = ArtDir + "/" + name + ".png";
+            File.WriteAllBytes(path, tex.EncodeToPNG());
+            UnityEngine.Object.DestroyImmediate(tex);
+            AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+            var ti = (TextureImporter)AssetImporter.GetAtPath(path);
+            ti.textureType = TextureImporterType.Sprite; ti.spriteImportMode = SpriteImportMode.Single;
+            ti.spriteBorder = new Vector4(border, border, border, border); ti.spritePixelsPerUnit = 100f;
+            ti.mipmapEnabled = false; ti.alphaIsTransparency = true; ti.sRGBTexture = true;
+            ti.filterMode = FilterMode.Bilinear; ti.textureCompression = TextureImporterCompression.Uncompressed;
+            ti.SaveAndReimport();
+            var sprite = AssetDatabase.LoadAssetAtPath<Sprite>(path);
+            if (sprite == null) throw new InvalidOperationException("[Megamind] sprite import failed: " + path);
+            return sprite;
+        }
+
+        // ---------- prefabs ----------
+
+        // Row (full width) -> [Avatar] + Bubble (Image + padding + ChatBubbleFit) -> Label. See ChatBubble.cs.
+        static ChatBubble BubblePrefab(string name, bool user)
+        {
+            var row = new GameObject(name, typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(ChatBubble));
+            var h = row.GetComponent<HorizontalLayoutGroup>();
+            h.childAlignment = user ? TextAnchor.UpperRight : TextAnchor.UpperLeft; h.spacing = Space1;
+            h.childControlWidth = true; h.childControlHeight = true; h.childForceExpandWidth = false; h.childForceExpandHeight = false;
+            if (!user)
+            {
+                var avatar = MakeImage(row.transform, "Avatar", Secondary, Circle);
+                avatar.type = Image.Type.Simple;
+                var ale = avatar.gameObject.AddComponent<LayoutElement>();
+                ale.minWidth = ale.preferredWidth = AvatarSize; ale.minHeight = ale.preferredHeight = AvatarSize;
+                var glyph = MakeLabel(avatar.transform, "Glyph", "M", 18, PanelBgSolid, TextAnchor.MiddleCenter);
+                glyph.fontStyle = FontStyle.Bold; glyph.rectTransform.Stretch();
+            }
+            var bubble = MakeImage(row.transform, "Bubble", user ? UserBubble : AssistantBubble, Bubble);
+            var pad = bubble.gameObject.AddComponent<VerticalLayoutGroup>();
+            pad.padding = new RectOffset((int)Space2, (int)Space2, 12, 12);
+            pad.childControlWidth = true; pad.childControlHeight = true; pad.childForceExpandWidth = true; pad.childForceExpandHeight = false;
+            var label = MakeLabel(bubble.transform, "Label", "", FontBody, user ? TextOnAccent : TextMain, TextAnchor.UpperLeft);
+            label.supportRichText = false; label.lineSpacing = 1.1f;
+            var fit = bubble.gameObject.AddComponent<ChatBubbleFit>();
+            fit.label = label; fit.maxWidth = BubbleMaxW; fit.horizontalPadding = 2f * Space2;
+            var cb = row.GetComponent<ChatBubble>();
+            cb.label = label; cb.background = bubble;
+            return SavePrefab(row).GetComponent<ChatBubble>();
+        }
+
+        // Small centred chip: "open menu -> menu opened", session switches, etc.
+        static ChatBubble SystemChipPrefab()
+        {
+            var row = new GameObject("SystemChip", typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(ChatBubble));
+            var h = row.GetComponent<HorizontalLayoutGroup>();
+            h.childAlignment = TextAnchor.UpperCenter;
+            h.childControlWidth = true; h.childControlHeight = true; h.childForceExpandWidth = false; h.childForceExpandHeight = false;
+            var chip = MakeImage(row.transform, "Chip", SystemChip, RoundedS);
+            var pad = chip.gameObject.AddComponent<VerticalLayoutGroup>();
+            pad.padding = new RectOffset(12, 12, 6, 6);
+            pad.childControlWidth = true; pad.childControlHeight = true; pad.childForceExpandWidth = true; pad.childForceExpandHeight = false;
+            var label = MakeLabel(chip.transform, "Label", "", FontCaption, TextDim, TextAnchor.MiddleCenter);
+            label.supportRichText = false;
+            var fit = chip.gameObject.AddComponent<ChatBubbleFit>();
+            fit.label = label; fit.maxWidth = PanelW - 2f * ContentPad - Space4; fit.horizontalPadding = 24f;
+            var cb = row.GetComponent<ChatBubble>();
+            cb.label = label; cb.background = chip;
+            return SavePrefab(row).GetComponent<ChatBubble>();
+        }
+
+        // Caption under an answer ("1.8 s · high confidence"), indented to line up with the bubble text.
+        static RectTransform MetaLinePrefab()
+        {
+            var go = new GameObject("MetaLine", typeof(RectTransform), typeof(HorizontalLayoutGroup));
+            var h = go.GetComponent<HorizontalLayoutGroup>();
+            h.padding = new RectOffset((int)(AvatarSize + Space1 + Space2), 0, 0, 0);
+            h.childControlWidth = true; h.childControlHeight = true; h.childForceExpandWidth = true; h.childForceExpandHeight = false;
+            var label = MakeLabel(go.transform, "Label", "", FontMono, TextMuted, TextAnchor.MiddleLeft);
+            label.gameObject.AddComponent<LayoutElement>().minHeight = 20f;
+            return SavePrefab(go).GetComponent<RectTransform>();
         }
 
         static RectTransform ThumbRowPrefab()
         {
             var go = new GameObject("ThumbRow", typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(LayoutElement));
             var h = go.GetComponent<HorizontalLayoutGroup>();
-            h.spacing = 8f; h.childAlignment = TextAnchor.MiddleLeft;
+            h.spacing = Space1; h.childAlignment = TextAnchor.MiddleLeft;
             h.childControlWidth = false; h.childControlHeight = false; h.childForceExpandWidth = false; h.childForceExpandHeight = false;
             go.GetComponent<LayoutElement>().preferredHeight = ThumbH;
             return SavePrefab(go).GetComponent<RectTransform>();
         }
 
-        static RawImage ThumbPrefab()
+        // Rounded frame (Image + Mask clips the RawImage to the corners) with the photo and an age caption.
+        static RectTransform ThumbPrefab()
         {
-            var go = new GameObject("Thumb", typeof(RectTransform), typeof(RawImage), typeof(LayoutElement));
-            go.GetComponent<RectTransform>().sizeDelta = new Vector2(ThumbW, ThumbH);
-            var le = go.GetComponent<LayoutElement>(); le.preferredWidth = ThumbW; le.preferredHeight = ThumbH;
+            var frame = MakeImage(null, "Thumb", Color.white, RoundedS);
+            frame.gameObject.AddComponent<Mask>().showMaskGraphic = false;
+            frame.rectTransform.sizeDelta = new Vector2(ThumbW, ThumbH);
+            var le = frame.gameObject.AddComponent<LayoutElement>(); le.preferredWidth = ThumbW; le.preferredHeight = ThumbH;
+            var img = new GameObject("Image", typeof(RectTransform), typeof(RawImage));
+            img.transform.SetParent(frame.transform, false);
+            img.GetComponent<RectTransform>().Stretch();
             // Placeholder tint while the JPEG downloads; ChatPanel.LoadThumb resets it to white (RawImage.color multiplies the texture).
-            go.GetComponent<RawImage>().color = new Color(0.2f, 0.22f, 0.26f);
-            var label = MakeLabel(go.transform, "Age", "n min ago", 15, TextMain, TextAnchor.LowerRight);
-            label.rectTransform.Stretch(); label.rectTransform.offsetMin = new Vector2(4f, 3f); label.rectTransform.offsetMax = new Vector2(-4f, -3f);
+            img.GetComponent<RawImage>().color = ThumbPlaceholder;
+            img.GetComponent<RawImage>().raycastTarget = false;
+            var label = MakeLabel(frame.transform, "Age", "n min ago", 15, TextMain, TextAnchor.LowerRight);
+            label.rectTransform.Stretch(); label.rectTransform.offsetMin = new Vector2(Space1, 6f); label.rectTransform.offsetMax = new Vector2(-Space1, -6f);
             label.gameObject.AddComponent<Shadow>().effectColor = Color.black;
-            return SavePrefab(go).GetComponent<RawImage>();
+            return SavePrefab(frame.gameObject).GetComponent<RectTransform>();
         }
 
         static GameObject SavePrefab(GameObject go)
@@ -479,10 +566,12 @@ namespace Megamind.EditorTools
 
         // ---------- uGUI helpers ----------
 
+        static readonly Color PanelBgSolid = new Color(PanelBg.r, PanelBg.g, PanelBg.b, 1f);
+
         static Image MakeImage(Transform parent, string name, Color color, Sprite sprite)
         {
             var go = new GameObject(name, typeof(RectTransform), typeof(Image));
-            go.transform.SetParent(parent, false);
+            if (parent) go.transform.SetParent(parent, false);
             var img = go.GetComponent<Image>();
             img.color = color; img.sprite = sprite; img.type = Image.Type.Sliced; img.raycastTarget = false;
             return img;
@@ -498,16 +587,73 @@ namespace Megamind.EditorTools
             return t;
         }
 
-        static Button MakeButton(Transform parent, string name, string caption, int size)
+        // Button whose Image is white and whose colour (incl. hover / pressed / disabled) comes from the ColorBlock,
+        // so the states are real tints rather than alpha-on-alpha. Default: MegamindTheme.GhostButton on RoundedM.
+        static Button MakeButton(Transform parent, string name, string caption, int size, ColorBlock? colors = null, Sprite sprite = null)
         {
-            var img = MakeImage(parent, name, ButtonBg, Rounded);
+            var img = MakeImage(parent, name, Color.white, sprite != null ? sprite : RoundedM);
             img.raycastTarget = true;
             var b = img.gameObject.AddComponent<Button>();
             b.targetGraphic = img;
-            var colors = b.colors; colors.highlightedColor = new Color(1f, 1f, 1f, 0.25f); colors.pressedColor = new Color(0.55f, 0.75f, 1f, 0.6f); b.colors = colors;
-            var label = MakeLabel(img.transform, "Label", caption, size, TextMain, TextAnchor.MiddleCenter);
+            var block = colors ?? GhostButton;
+            b.colors = block;
+            img.color = Color.white;
+            bool accent = block.normalColor.a > 0.9f;
+            var label = MakeLabel(img.transform, "Label", caption, size, accent ? TextOnAccent : TextMain, TextAnchor.MiddleCenter);
             label.rectTransform.Stretch();
             return b;
+        }
+
+        // 1-px separator line hugging the top or bottom edge of `parent`.
+        static void Hairline(Transform parent, bool bottom)
+        {
+            var line = MakeImage(parent, "Hairline", Divider, null);
+            var lrt = line.rectTransform;
+            lrt.anchorMin = new Vector2(0f, bottom ? 0f : 1f); lrt.anchorMax = new Vector2(1f, bottom ? 0f : 1f);
+            lrt.pivot = new Vector2(0.5f, bottom ? 0f : 1f);
+            lrt.offsetMin = new Vector2(Space2, bottom ? 0f : -1f); lrt.offsetMax = new Vector2(-Space2, bottom ? 1f : 0f);
+        }
+
+        // Full-height sheet below the header (Settings / Debug / Controls): raised glass, same footprint for all.
+        static Image Sheet(Transform parent, string name)
+        {
+            var sheet = MakeImage(parent, name, SurfaceRaised, RoundedL);
+            sheet.raycastTarget = true; // swallow rays so the transcript underneath is not clickable
+            sheet.rectTransform.Fill(new Vector2(0f, 0f), new Vector2(0f, -HeaderH));
+            return sheet;
+        }
+
+        static Text SheetTitle(Transform sheet, string title)
+        {
+            var t = MakeLabel(sheet, "Title", title, FontTitle, TextMain, TextAnchor.MiddleLeft);
+            t.rectTransform.AnchorTop(40f);
+            t.rectTransform.offsetMin = new Vector2(Space3, -(Space3 + 40f)); t.rectTransform.offsetMax = new Vector2(-(Space3 + 96f + Space1), -Space3);
+            return t;
+        }
+
+        static Button SheetClose(Transform sheet)
+        {
+            var b = MakeButton(sheet, "Close", "Close", FontCaption, sprite: RoundedS);
+            var rt = b.GetComponent<RectTransform>();
+            rt.anchorMin = rt.anchorMax = new Vector2(1f, 1f); rt.pivot = new Vector2(1f, 1f);
+            rt.anchoredPosition = new Vector2(-Space3, -Space3); rt.sizeDelta = new Vector2(96f, 40f);
+            return b;
+        }
+
+        static Transform ButtonRow(Transform parent, string name)
+        {
+            var row = new GameObject(name, typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(LayoutElement));
+            row.transform.SetParent(parent, false);
+            var hlg = row.GetComponent<HorizontalLayoutGroup>(); hlg.spacing = Space1; hlg.childControlWidth = true; hlg.childControlHeight = true;
+            row.GetComponent<LayoutElement>().preferredHeight = ControlH;
+            return row.transform;
+        }
+
+        static void Spacer(Transform parent, float height)
+        {
+            var go = new GameObject("Spacer", typeof(RectTransform), typeof(LayoutElement));
+            go.transform.SetParent(parent, false);
+            go.GetComponent<LayoutElement>().preferredHeight = height;
         }
 
         const string ControlsText =
@@ -528,27 +674,27 @@ namespace Megamind.EditorTools
             "  Menu  Settings, Debug, Pin, Text size, Controls, New session, Purge\n\n" +
             "Voice (hold trigger, say):\n  " + VoiceCommands.Hint;
 
-        static Button MenuEntry(Transform parent, string name, string caption)
+        static Button MenuEntry(Transform parent, string name, string caption, ColorBlock? colors = null)
         {
-            var b = MakeButton(parent, name, caption, 20);
+            var b = MakeButton(parent, name, caption, FontButton, colors, RoundedS);
             b.GetComponentInChildren<Text>().alignment = TextAnchor.MiddleLeft;
-            var lrt = b.GetComponentInChildren<Text>().rectTransform; lrt.offsetMin = new Vector2(14f, 0f);
-            b.gameObject.AddComponent<LayoutElement>().preferredHeight = 48f;
+            var lrt = b.GetComponentInChildren<Text>().rectTransform; lrt.offsetMin = new Vector2(Space2, 0f);
+            b.gameObject.AddComponent<LayoutElement>().preferredHeight = ControlH;
             return b;
         }
 
         static InputField MakeInputField(Transform parent, string name, string placeholder)
         {
-            var img = MakeImage(parent, name, FieldBg, Rounded);
+            var img = MakeImage(parent, name, FieldBg, RoundedS);
             img.raycastTarget = true;
-            img.gameObject.AddComponent<LayoutElement>().preferredHeight = 48f;
+            img.gameObject.AddComponent<LayoutElement>().preferredHeight = ControlH;
             var f = img.gameObject.AddComponent<InputField>();
-            var text = MakeLabel(img.transform, "Text", "", 20, TextMain, TextAnchor.MiddleLeft);
+            var text = MakeLabel(img.transform, "Text", "", FontButton, TextMain, TextAnchor.MiddleLeft);
             text.supportRichText = false;
-            text.rectTransform.Stretch(); text.rectTransform.offsetMin = new Vector2(10f, 4f); text.rectTransform.offsetMax = new Vector2(-10f, -4f);
-            var ph = MakeLabel(img.transform, "Placeholder", placeholder, 20, new Color(1f, 1f, 1f, 0.3f), TextAnchor.MiddleLeft);
+            text.rectTransform.Stretch(); text.rectTransform.offsetMin = new Vector2(Space2, 4f); text.rectTransform.offsetMax = new Vector2(-Space2, -4f);
+            var ph = MakeLabel(img.transform, "Placeholder", placeholder, FontButton, TextMuted, TextAnchor.MiddleLeft);
             ph.fontStyle = FontStyle.Italic;
-            ph.rectTransform.Stretch(); ph.rectTransform.offsetMin = new Vector2(10f, 4f); ph.rectTransform.offsetMax = new Vector2(-10f, -4f);
+            ph.rectTransform.Stretch(); ph.rectTransform.offsetMin = new Vector2(Space2, 4f); ph.rectTransform.offsetMax = new Vector2(-Space2, -4f);
             f.targetGraphic = img; f.textComponent = text; f.placeholder = ph; f.lineType = InputField.LineType.SingleLine;
             return f;
         }
