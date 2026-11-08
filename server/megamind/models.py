@@ -293,3 +293,6 @@ class HealthResponse(BaseModel):
     status: str
     store_count: int
     models: dict[str, str]
+    # startup warmup (megamind/warmup.py): "off" | "running" | "done" | "done (failed: <steps>)". Informational: the
+    # server answers either way, "running" only means the first question may still pay some first-use cost.
+    warmup: str = "off"

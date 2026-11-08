@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     api_token: str = ""  # shared secret for a public deployment; empty = no auth (megamind/auth.py)
+    # startup warmup (megamind/warmup.py): one background pass over the question path (free Claude count_tokens, one
+    # tiny embedding, a LanceDB retrieval, SigLIP, reader image encode, STT/TTS clients) so the first question after a
+    # cold start doesn't pay first-use costs. Never blocks startup or requests; failures are only logged.
+    warmup: bool = True
+    warmup_timeout_s: float = 20.0  # per warmup step
 
     anthropic_api_key: str = ""
     claude_model: str = "claude-sonnet-5-5"  # 1.6 s p50 / 2.1 s p95 live (deploy/bench_modal.py); CLAUDE_MODEL

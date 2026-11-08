@@ -22,8 +22,15 @@ Response bodies are unchanged: `thumb_url`/`replay_url`/`audio_url` stay token-f
 { "status": "ok", "store_count": 1234,
   "models": { "claude": "claude-sonnet-5-5", "reader": "google/gemma-4-31B-it",
               "embed": "mock (openai configured, no key)", "enrich": "vlm:google/gemma-4-31B-it",
-              "stt": "mock", "tts": "mock", "store": "lancedb" } }
+              "stt": "mock", "tts": "mock", "store": "lancedb" },
+  "warmup": "done" }
 ```
+`warmup` (additive; older servers omit it): the startup warmup's state, `"off"` (`WARMUP=false`), `"running"`, `"done"`
+or `"done (failed: <steps>)"`. At startup the server runs one background pass over the question path (free Claude
+`count_tokens`, one tiny embedding, a LanceDB retrieval, SigLIP, reader image encoding, the STT/TTS clients), so the
+first question after a cold start doesn't pay first-use costs. It never delays startup or any request and a failed
+step is only logged; `"running"` means the first question may still be a little slower. `/health` itself is cheap
+(a row count, no provider calls), so clients can poll it every few seconds to keep a container warm.
 `models` names what is actually serving each role. When the configured provider has no key, or isn't wired up yet,
 the value is `mock (<provider> configured, no key | not installed | not implemented)`. Claude without a key reports
 `fallback (<model> configured, no key)`, meaning the no-LLM caption path. `enrich` is the keyframe captioner
