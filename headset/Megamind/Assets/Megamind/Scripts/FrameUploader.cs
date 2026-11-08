@@ -5,7 +5,9 @@
 // the component used by Meta's Unity-PassthroughCameraApiSamples. Its texture is a RenderTexture,
 // so we Blit -> ReadPixels -> EncodeToJPG (the same path QuestCameraKit uses on device).
 //
-// Pipeline per tick:  motion gate (head deg/s)  ->  backlog gate (pending uploads)  ->  encode  ->  upload.
+// Pipeline per tick:  backlog gate (pending uploads)  ->  backoff gate (server unreachable)  ->  motion gate (head deg/s)
+//                     ->  readback  ->  encode (next frame)  ->  upload.
+// Paused (A/X) or app backgrounded / unfocused: no capture and the camera stream is stopped (CaptureSettings.stopCameraWhenPaused).
 // Everything else (dedupe, blur, scene change, budget) is the server's job (server/megamind/ingest/filter.py).
 using System;
 using System.Collections;
@@ -37,6 +39,7 @@ namespace Megamind
         public int Failed { get; private set; }        // network / HTTP errors
         public int SkippedMotion { get; private set; } // dropped by the client-side motion gate
         public int SkippedBacklog { get; private set; }
+        public int SkippedBackoff { get; private set; } // dropped while backing off after upload failures
         public int Pending => _pending;
         public string LastReason { get; private set; } = "-";
         public string LastError { get; private set; } = "";
@@ -58,6 +61,8 @@ namespace Megamind
         private float _nextCaptureTime;
         private float _nextCameraRetry;
         private bool _loggedPlaying;
+        private bool _appActive = true; // false while the app is paused (headset off) or unfocused (system menu)
+        private float _backoffUntil;
 
         private void Awake()
         {
@@ -116,9 +121,10 @@ namespace Megamind
             var poll = new WaitForSeconds(0.25f);
             while (true)
             {
-                if (!Capturing)
+                if (!Capturing || !_appActive)
                 {
                     CurrentState = State.Paused;
+                    StopCameraWhilePaused();
                     yield return poll;
                     continue;
                 }
@@ -174,6 +180,35 @@ namespace Megamind
         {
             Capturing = on;
             if (on) _nextCaptureTime = 0f;
+            else StopCameraWhilePaused();
+        }
+
+        private void OnApplicationPause(bool paused) => SetAppActive(!paused);
+
+        private void OnApplicationFocus(bool focused)
+        {
+#if !UNITY_EDITOR
+            SetAppActive(focused); // in the Editor, clicking another window must not pause capture
+#endif
+        }
+
+        private void SetAppActive(bool active)
+        {
+            if (active == _appActive) return;
+            _appActive = active;
+            Debug.Log($"[Megamind] app {(active ? "active: resuming capture" : "backgrounded: pausing capture")}");
+            if (active) _nextCaptureTime = 0f;
+            else StopCameraWhilePaused();
+        }
+
+        /// <summary>The camera keeps streaming at cameraMaxFramerate even when we don't sample it; stop it while paused.
+        /// The capture loop's WaitingForCamera branch re-enables it on resume.</summary>
+        private void StopCameraWhilePaused()
+        {
+            if (settings == null || !settings.stopCameraWhenPaused || cameraAccess == null || !cameraAccess.enabled) return;
+            cameraAccess.enabled = false;
+            _nextCameraRetry = 0f;
+            _loggedPlaying = false;
         }
 
         public void ToggleCapturing() => SetCapturing(!Capturing);
@@ -188,6 +223,12 @@ namespace Megamind
             {
                 SkippedBacklog++;
                 LastReason = "client:backlog";
+                return;
+            }
+            if (!force && Time.unscaledTime < _backoffUntil)
+            {
+                SkippedBackoff++;
+                LastReason = "client:backoff";
                 return;
             }
             if (!force && settings.maxHeadDegPerSec > 0f && HeadDegPerSec > settings.maxHeadDegPerSec)
@@ -302,6 +343,7 @@ namespace Megamind
                 {
                     Sent++;
                     _consecutiveFailures = 0;
+                    _backoffUntil = 0f;
                     LastError = "";
                     FrameAccepted resp = null;
                     try { resp = JsonUtility.FromJson<FrameAccepted>(req.downloadHandler.text); }
@@ -320,6 +362,13 @@ namespace Megamind
                     var body = req.downloadHandler != null ? req.downloadHandler.text : "";
                     LastError = $"{req.responseCode} {req.error} {Truncate(body, 120)}".Trim();
                     LastReason = "net";
+                    long code = req.responseCode;
+                    if (code == 0 || code == 429 || code >= 500) // unreachable / overloaded; a 4xx is a client bug, retrying faster won't help either way
+                    {
+                        float delay = settings.backoffBaseSeconds * Mathf.Pow(2f, Mathf.Min(_consecutiveFailures - 1, 10));
+                        delay = Mathf.Min(settings.backoffMaxSeconds, delay) * UnityEngine.Random.Range(0.8f, 1.2f);
+                        _backoffUntil = Mathf.Max(_backoffUntil, Time.unscaledTime + delay);
+                    }
                     if (_consecutiveFailures == 1 || _consecutiveFailures % 20 == 0)
                         Debug.LogWarning($"[Megamind] frame upload failed ({_consecutiveFailures}x): {LastError} url={settings.Url(config, "/v1/frames")}");
                 }

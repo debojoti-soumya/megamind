@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+import time
 
 import httpx
 import pytest
@@ -236,3 +237,28 @@ async def test_indexer_backs_off_exponentially_while_unreachable(monkeypatch):
         await idx._loop()
     assert delays == [60, 120, 240, 300, 300, 30, 30]
     assert idx.failures == 0 and len(fake.docs) == 4
+
+
+async def test_hybrid_races_ucc_so_a_timeout_costs_only_the_timeout():
+    fake = FakeUCC(delay=0.5)
+    store, client, hybrid, retr = await setup(fake, UCCConfig(timeout_s=0.2, cooldown_s=60))
+    fake.created = True
+    slow_retrieve = hybrid.retrieve
+
+    async def slow(*a, **kw):
+        await asyncio.sleep(0.15)
+        return await slow_retrieve(*a, **kw)
+
+    hybrid.retrieve = slow
+    t = time.perf_counter()
+    res = await retr.retrieve("where are my car keys", k=3)
+    assert time.perf_counter() - t < 0.3  # sequential fallback would be 0.2 + 0.15
+    assert res.tokens and retr.stats == {"ucc": 0, "fallback": 1, "errors": 1}
+
+
+async def test_ucc_answer_wins_the_race():
+    fake = FakeUCC()
+    store, client, _, retr = await setup(fake)
+    await UCCIndexer(client, store).sync_once()
+    res = await retr.retrieve("where are my car keys", k=3)
+    assert "ucc" in res.ranked[0].reasons and retr.stats == {"ucc": 1, "fallback": 0, "errors": 0}

@@ -398,6 +398,43 @@ async def test_contentless_explicit_window_near_now_falls_back_to_latest_frames(
     assert r.widened and [x.token.id for x in r.tokens] == ["r3"]
 
 
+async def test_ocr_search_cache_sees_new_late_enriched_and_purged_tokens():
+    store = InMemoryStore()
+    base = NOW.timestamp() - 3600
+    await store.add(_tok("a", base, "a wall sign", ocr_text="EXIT ROUTE B"))
+    await store.add(_tok("b", base + 60, "a poster"))
+    ad = StoreAdapter(store)
+    assert [i for i, _ in await ad.ocr_search("exit", 5)] == ["a"]
+    assert await ad.ocr_search("wifi", 5) == []
+    await store.add(_tok("c", base + 120, "a router label", ocr_text="WIFI PASSWORD hunter2"))  # new token
+    assert [i for i, _ in await ad.ocr_search("wifi", 5)] == ["c"]
+    await store.add(_tok("b", base + 60, "a poster", ocr_text="WIFI GUEST"))  # OCR filled in late
+    assert {i for i, _ in await ad.ocr_search("wifi", 5)} == {"b", "c"}
+    assert [i for i, _ in await ad.ocr_search("wifi", 5, time_to=base + 90)] == ["b"]
+    await store.purge("dev", since_ts=base + 100)  # count drops -> full re-read
+    assert [i for i, _ in await ad.ocr_search("wifi", 5)] == ["b"]
+
+
+async def test_query_embedding_is_cached_across_retrieves():
+    class CountingEmbedder(MockTextEmbedder):
+        calls = 0
+
+        async def embed(self, text: str) -> list[float]:
+            CountingEmbedder.calls += 1
+            return await super().embed(text)
+
+    store, _ = await _store()
+    r = HybridRetriever(store, CountingEmbedder(), tz="UTC")
+    first = await r.retrieve("where are my keys", k=4, now=NOW)
+    again = await r.retrieve("where are my keys", k=4, now=NOW)
+    assert CountingEmbedder.calls == 1
+    assert [t.token.id for t in again.tokens] == [t.token.id for t in first.tokens]
+    r.qvec_cache_size = 1
+    await r.retrieve("oat milk price", k=4, now=NOW)
+    await r.retrieve("where are my keys", k=4, now=NOW)  # evicted by the LRU bound
+    assert CountingEmbedder.calls == 3
+
+
 # ---------------------------------------------------------------- calibrated image fusion (port of PR #54)
 
 SIGLIP_CAL = (117.3, -12.9)  # exp(logit_scale), logit_bias of ViT-B-16-SigLIP/webli

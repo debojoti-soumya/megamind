@@ -19,9 +19,9 @@ class Settings(BaseSettings):
     reader_model: str = "google/gemma-4-31B-it"  # Qwen3.6-35B-A3B is flex-only on Sail (research/reports/04)
     reader_fallback_model: str = "nvidia/Gemma-4-31B-IT-NVFP4"  # retry model on 429/503/timeout; "" disables
     reader_provider: str = "auto"  # auto (vlm iff READER_API_KEY set) | vlm | mock
-    reader_timeout_s: float = 6.5  # per attempt, capped by the deadline; Sail Gemma asap calls take ~3.1 s
-    reader_hedge_s: float = 3.3  # start the fallback model if the primary hasn't answered by then; 0 = only on failure
-    reader_deadline_s: float = 6.5  # wall budget for all attempts of one call (hedge + ~3.1 s fits), then captions-only
+    reader_timeout_s: float = 7.0  # per attempt, capped by the deadline; Sail Gemma asap calls take ~3.1 s
+    reader_hedge_s: float = 3.25  # start the fallback model if the primary hasn't answered by then; 0 = only on failure
+    reader_deadline_s: float = 7.0  # wall budget for all attempts of one call (hedge + healthy p95 3.25 s + 0.5 s)
     reader_max_retries: int = 1
     reader_max_images: int = 12  # per call (Sail cap 20; report 04 says <=12 for latency); more -> chunk + merge
     reader_thumb_max_px: int = 512
@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     reader_completion_window: str = ""  # Sail: asap | balanced; sent as X-Sail-Completion-Window when set
     reader_skip_on_ocr: bool = True  # Claude path: skip the VLM when every query keyword is in a top hit's OCR
     recall_prefetch: bool = True  # run recall_memory on the raw question while Claude picks its tool call
+    recall_first: bool = (
+        True  # standalone recall questions: the prefetch is Claude's first tool result (no picking call)
+    )
     reader_extra_body: str = ""  # JSON merged into the request, e.g. {"chat_template_kwargs":{"enable_thinking":false}}
     enrich_provider: str = "auto"  # auto (vlm iff an enrich/reader key is set, else local if installed, else mock)
     enrich_base_url: str = ""  # "" -> reader_base_url (and the reader's extra body / completion window)
@@ -61,7 +64,7 @@ class Settings(BaseSettings):
     ucc_api_key: str = ""
     ucc_base_url: str = "https://api.universalconstructor.co/v1"
     ucc_corpus: str = "megamind"
-    ucc_timeout_s: float = 4.0  # per recall; past it the hybrid answers
+    ucc_timeout_s: float = 2.0  # per recall; the hybrid races UCC and answers past it
     ucc_candidates: int = 0  # >0: UCC reranks the hybrid's top-N instead of the whole time window
     ucc_sync_interval_s: float = 30.0
     ucc_keep_alive_s: int | None = None  # corpus retention; None keeps it until deleted
