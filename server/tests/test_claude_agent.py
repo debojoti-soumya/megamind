@@ -16,6 +16,7 @@ from megamind.agent.claude_agent import (
     NOT_FOUND_ANSWER,
     ClaudeAgent,
     prefetch_reusable,
+    recall_first,
 )
 from megamind.agent.reader import CaptionOnlyReader
 from megamind.agent.tools import RecallMemory
@@ -105,6 +106,7 @@ def _settings(**cfg) -> Settings:
     # Pin the latency flags so RECALL_PREFETCH / READER_SKIP_ON_OCR in the shell env can't change these tests.
     cfg.setdefault("recall_prefetch", True)
     cfg.setdefault("reader_skip_on_ocr", True)
+    cfg.setdefault("recall_first", False)  # the scripted tests below drive Claude's first (tool-picking) call
     return Settings(_env_file=None, **cfg)
 
 
@@ -455,3 +457,57 @@ async def test_follow_up_answered_from_history_keeps_its_citations(recall):
     assert not (await agent.chat("other-session", "what was next to them?", "dev1")).cited  # no cross-session leak
     agent.reset("s")
     assert "s" not in agent.cite_histories
+
+
+def test_recall_first_only_for_standalone_recall_questions():
+    for q in ("where did I leave my keys this morning?", "what was the wifi password", "Who did I meet at lunch?"):
+        assert recall_first(q, _plan(q)), q
+    for q in (
+        "and where did I put my keys after that?",  # follow-up: Claude reads the history first
+        "what about the receipt",
+        "how much was it?",
+        "thanks!",
+        "tell me a joke",
+        "what did I just see?",  # nothing left to search after planning
+        "",
+    ):
+        assert not recall_first(q, _plan(q)), q
+
+
+async def test_recall_first_skips_the_tool_picking_call(recall):
+    spy = SpyRecall(recall)
+    script = ScriptedAnthropic([_message([text("On the kitchen counter. <cites>t_keys</cites>")])])
+    agent = _spy_agent(spy, script, recall_first=True)
+    resp, stats = await agent.chat_with_stats("s", "where did I leave my keys?", "dev1", now=NOW)
+    assert len(script.requests) == 1 and stats.extra["prefetch"] == "first" and stats.tool_calls == 1
+    assert [c["query"] for c in spy.calls] == ["where did I leave my keys?"]
+    msgs = script.requests[0]["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+    use, result = msgs[1]["content"][0], msgs[2]["content"][0]
+    assert use["type"] == "tool_use" and use["name"] == "recall_memory" and result["tool_use_id"] == use["id"]
+    assert "t_keys" in json.dumps(result["content"])
+    assert [c.id for c in resp.cited] == ["t_keys"] and resp.tool_calls[0].args == {
+        "query": "where did I leave my keys?"
+    }
+
+    # the synthetic pair is valid history for the next turn, and a follow-up goes through Claude's own pick
+    script.responses = [_message([text("Still the counter. <cites>t_keys</cites>")])]
+    resp, stats = await agent.chat_with_stats("s", "and after that?", "dev1", now=NOW)
+    assert stats.extra.get("prefetch") != "first" and [c.id for c in resp.cited] == ["t_keys"]
+    assert [m["role"] for m in script.requests[1]["messages"]] == ["user", "assistant", "user", "assistant", "user"]
+
+
+async def test_recall_first_lets_claude_re_query(recall):
+    spy = SpyRecall(recall)
+    script = ScriptedAnthropic(
+        [
+            _message([tool_use({"query": "mug", "mode": "visual"})], stop_reason="tool_use"),
+            _message([text("Blue, on the desk. <cites>t_mug</cites>")]),
+        ]
+    )
+    resp, stats = await _spy_agent(spy, script, recall_first=True).chat_with_stats(
+        "s", "what colour was my mug?", "dev1", now=NOW
+    )
+    assert len(script.requests) == 2 and stats.tool_calls == 2
+    assert [c["query"] for c in spy.calls] == ["what colour was my mug?", "mug"]
+    assert [c.id for c in resp.cited] == ["t_mug"]

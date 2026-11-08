@@ -10,7 +10,9 @@ Latency: with ``RECALL_PREFETCH`` the turn starts ``recall_memory`` on the raw q
 concurrently with the first model call; Claude's first tool call reuses it when its keywords
 mostly come from what the prefetch searched (the question plus the planner's rewrite) and any
 time bounds it adds match the planner's window (:func:`prefetch_reusable`), otherwise the
-prefetch is cancelled and the tool runs with Claude's arguments.
+prefetch is cancelled and the tool runs with Claude's arguments. With ``RECALL_FIRST`` a
+standalone recall question (:func:`recall_first`) skips that tool-picking call: the prefetch
+goes to Claude as its first tool result, and Claude can still re-query.
 
 Without ``ANTHROPIC_API_KEY`` (or when the API fails) the deterministic
 ``_no_llm_fallback`` path answers straight from the reader's evidence so the
@@ -195,6 +197,27 @@ def prefetch_reusable(args: dict, question: str, plan: QueryPlan | None = None) 
     return bool(q) and len(q & searched) / len(q) >= PREFETCH_MIN_OVERLAP
 
 
+_WORD_RE = re.compile(r"[a-z0-9]+")
+_QUESTION_STARTS = frozenset(
+    "where what when who whom whose which how did do does is are was were have has had can could remind".split()
+)
+# pronouns / sequencing words that point at an earlier turn: let Claude read the history first
+_FOLLOW_UP_CUES = frozenset(
+    "it its that them those they there he she him her after before then also else again".split()
+)
+
+
+def recall_first(question: str, plan: QueryPlan | None) -> bool:
+    """True when the question plainly asks about something seen and stands on its own: starts like a question,
+    has search terms after planning, and has no follow-up cue ("and ...", "what about ...", "it", "after that")."""
+    words = _WORD_RE.findall(question.lower())
+    if not words or plan is None or not plan.search_text.strip():
+        return False
+    if words[0] not in _QUESTION_STARTS or words[:2] in (["what", "about"], ["how", "about"]):
+        return False
+    return not set(words) & _FOLLOW_UP_CUES
+
+
 async def _cancel(task: asyncio.Task | None) -> None:
     if task is not None and not task.done():
         task.cancel()
@@ -294,7 +317,46 @@ class ClaudeAgent:
                 plan = plan_query(text, now=datetime.fromtimestamp(now, UTC), tz=self.settings.wearer_tz)
             except Exception as e:  # noqa: BLE001 - the plan only widens reuse; never fail the turn on it
                 log.warning("req=%s prefetch plan failed: %r", stats.request_id, e)
+
+        def record(use_id: str, name: str, args: dict, r: RecallResult, t_tool: float) -> dict:
+            if r.evidence.startswith(OCR_MATCH_PREFIX):
+                stats.extra["reader_skipped"] = stats.extra.get("reader_skipped", 0) + 1
+            stats.tool_ms += (time.perf_counter() - t_tool) * 1000
+            stats.tool_calls += 1
+            tool_calls.append(ToolCallRecord(name=name, args=args, confidence=r.confidence))
+            for c in [*r.all_retrieved, *r.cited]:
+                retrieved.setdefault(c.id, c)
+                turn_cites.append(c)
+            for c in r.cited:
+                if c.id not in {x.id for x in reader_cited}:
+                    reader_cited.append(c)
+            log.info(
+                "req=%s tool=%s args=%s -> %s (%d cited / %d retrieved)",
+                stats.request_id,
+                name,
+                json.dumps(args, ensure_ascii=False),
+                r.confidence,
+                len(r.cited),
+                len(r.all_retrieved),
+            )
+            payload = _tool_result_payload(r, now, _zone(self.settings.wearer_tz))
+            return {"type": "tool_result", "tool_use_id": use_id, "content": payload}
+
         try:
+            if prefetch is not None and self.settings.recall_first and recall_first(text, plan):
+                # the question plainly needs recall: hand Claude the prefetch as its first tool result instead of
+                # paying a Claude round-trip to pick (almost always) the same call; it can still re-query
+                t_tool = time.perf_counter()
+                args = {"query": text}
+                r, prefetch, stats.extra["prefetch"] = await prefetch, None, "first"
+                use_id = f"toolu_recall_{stats.request_id}"
+                turn.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "tool_use", "id": use_id, "name": "recall_memory", "input": args}],
+                    }
+                )
+                turn.append({"role": "user", "content": [record(use_id, "recall_memory", args, r, t_tool)]})
             for _round in range(MAX_TOOL_ROUNDS + 1):
                 t_llm = time.perf_counter()
                 msg = await self._client.messages.create(
@@ -330,28 +392,7 @@ class ClaudeAgent:
                             await _cancel(prefetch)
                         r = await self._run_tool(use.name, args, device_id, now)
                     prefetch = None
-                    if r.evidence.startswith(OCR_MATCH_PREFIX):
-                        stats.extra["reader_skipped"] = stats.extra.get("reader_skipped", 0) + 1
-                    stats.tool_ms += (time.perf_counter() - t_tool) * 1000
-                    stats.tool_calls += 1
-                    tool_calls.append(ToolCallRecord(name=use.name, args=args, confidence=r.confidence))
-                    for c in [*r.all_retrieved, *r.cited]:
-                        retrieved.setdefault(c.id, c)
-                        turn_cites.append(c)
-                    for c in r.cited:
-                        if c.id not in {x.id for x in reader_cited}:
-                            reader_cited.append(c)
-                    log.info(
-                        "req=%s tool=%s args=%s -> %s (%d cited / %d retrieved)",
-                        stats.request_id,
-                        use.name,
-                        json.dumps(args, ensure_ascii=False),
-                        r.confidence,
-                        len(r.cited),
-                        len(r.all_retrieved),
-                    )
-                    payload = _tool_result_payload(r, now, _zone(self.settings.wearer_tz))
-                    results.append({"type": "tool_result", "tool_use_id": use.id, "content": payload})
+                    results.append(record(use.id, use.name, args, r, t_tool))
                 turn.append({"role": "user", "content": results})
 
         finally:
