@@ -208,6 +208,8 @@ def token_document(t: MemoryToken, tz: ZoneInfo | None = None) -> Json:
 class UCCIndexer:
     """Store -> corpus sync. `sync_once()` pushes enriched tokens not yet in the corpus; `start()` runs it every
     `interval_s`. Re-scans `lookback_s` before the newest pushed token so late enrichments are not missed.
+    Episode summaries are stamped with the episode's *start* (often behind that cursor) when the consolidator writes
+    them, so whenever the store has grown, the `kind="episode"` tokens (a few per hour) are diffed against `pushed`.
     While UCC is unreachable the wait doubles per consecutive failure, capped at `max_backoff_s`."""
 
     def __init__(
@@ -231,23 +233,26 @@ class UCCIndexer:
         self.failures = 0
         self.pushed: set[str] | None = None
         self.cursor: float | None = None
+        self._count: int | None = None
         self._task: asyncio.Task | None = None
 
     async def sync_once(self) -> int:
         if self.pushed is None:
             self.pushed = await self.client.token_ids()
         since = None if self.cursor is None else self.cursor - self.lookback_s
-        toks = [
-            t
-            for t in await self.store.range(since, None, self.scan_limit)
-            if t.caption.strip() and t.id not in self.pushed
-        ]
+        found = await self.store.range(since, None, self.scan_limit)
+        count = await self.store.count()
+        if since is not None and count != self._count:
+            found += await self.store.range(None, since, self.scan_limit, kinds=("episode",))
+        new = {t.id: t for t in found if t.caption.strip() and t.id not in self.pushed}
+        toks = list(new.values())
         if toks:
             await self.client.ensure_corpus()
             await self.client.add_documents([token_document(t, self.tz) for t in toks])
             self.pushed.update(t.id for t in toks)
             self.cursor = max([self.cursor or 0.0, *(t.ts for t in toks)])
             log.info("ucc sync: pushed %d tokens to corpus %s", len(toks), self.client.corpus)
+        self._count = count
         return len(toks)
 
     async def _loop(self) -> None:
