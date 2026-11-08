@@ -11,7 +11,7 @@ namespace Megamind
 
     [Serializable] public class FrameAccepted { public string frame_id; public bool accepted; public string reason; }
 
-    [Serializable] public class Citation { public string id; public double ts; public string caption; public string thumb_url; }
+    [Serializable] public class Citation { public string id; public double ts; public string caption; public string thumb_url; public string replay_url; }
 
     [Serializable] public class ToolCallRecord { public string name; public string confidence; }
 

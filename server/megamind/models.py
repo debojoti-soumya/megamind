@@ -85,6 +85,7 @@ class Citation(BaseModel):
     ts: float
     caption: str
     thumb_url: str
+    replay_url: str | None = None  # /v1/replay.mp4 clip around ts; null when no frames are buffered
 
 
 class RecallResult(BaseModel):

@@ -9,6 +9,10 @@ project: open it in Unity Hub, let the packages resolve, run one menu item, buil
 > 85 / MRUK 85 API surface, but **not yet built or run on a headset**. Expect to
 > iterate on device; the troubleshooting list below covers the likely failures.
 
+New to Quest? Start with the **[Quest 3 guide](../docs/quest3-guide.md)**: headset basics, every physical
+connection (USB/adb, wireless adb, Wi-Fi/Tailscale to the server, casting, power), a test runbook, and a
+demo-day quick card.
+
 ## Exact versions
 | Thing | Version | Where it is pinned |
 |---|---|---|
@@ -60,7 +64,7 @@ component (the current official path; the older `WebCamTextureManager` sample is
    `Builds/megamind.apk` and installs + launches it), or **Megamind → 3. Build APK** then
    ```sh
    adb install -r Builds/megamind.apk
-   adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerActivity
+   adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerGameActivity
    ```
    First IL2CPP build is ~10 min; incremental builds ~2 min.
 10. **On the headset**, the app appears under *Library → Unknown Sources → Megamind*.
@@ -71,8 +75,8 @@ component (the current official path; the older `WebCamTextureManager` sample is
     ```sh
     adb logcat -s Unity:I | grep -i megamind
     ```
-    Expected lines: `[Megamind] permissions: camera=True`, `[Megamind] config: server=…`,
-    `[Megamind] camera playing 1280x960`, and on the server `POST /v1/frames … 200`.
+    Expected lines: `[Megamind] permissions: camera=True`, `[Megamind] capture: server=…`,
+    `[Megamind] camera playing: 1280x960 maxFps=30`, and on the server `POST /v1/frames … 200`.
 
 ### Headless build (CI / a box without a display)
 Each `Megamind` menu item is a static method, so the whole flow runs from a shell (`U=~/Unity/Hub/Editor/6000.0.66f2/Editor/Unity`):
@@ -93,7 +97,7 @@ settings panel) → `megamind.json` pushed over adb → `MegamindConfig.asset`. 
 ```sh
 adb shell mkdir -p /sdcard/Android/data/com.megamind.quest/files
 adb shell 'echo "{\"serverBaseUrl\":\"http://100.101.102.103:8000\",\"deviceId\":\"quest3-1\"}" > /sdcard/Android/data/com.megamind.quest/files/megamind.json'
-adb shell am force-stop com.megamind.quest && adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerActivity
+adb shell am force-stop com.megamind.quest && adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerGameActivity
 ```
 Optional keys: `captureFps` (default 1).
 
@@ -179,7 +183,7 @@ A browser prototype of the same panel (same API calls, same states) is served by
 
 Nothing in this project has run on a headset yet. Hour-0, in this order:
 
-1. Build Meta's `CameraViewer` sample **unchanged** ([Unity-PassthroughCameraApiSamples](https://github.com/oculus-samples/Unity-PassthroughCameraApiSamples), Unity 6000.0.66f2) on each headset. If it shows camera frames, the OS/dev-mode side is fine. Note the Horizon OS version (Settings → System → Software update).
+1. Build Meta's `CameraViewer` sample **unchanged** ([Unity-PassthroughCameraApiSamples](https://github.com/oculus-samples/Unity-PassthroughCameraApiSamples), Unity 6000.0.66f2) on each headset. If it shows camera frames, the OS/dev-mode side is fine. Note the Horizon OS version (Quick controls → Settings → General → Software update).
 2. Build Megamind (steps above), launch, grab logcat: `adb logcat -s Unity | grep Megamind`. Paste the lines
    `[Megamind] camera: os=... supported=[...]` (resolutions the OS offers) and
    `[Megamind] camera playing: 1280x960 maxFps=30`.
@@ -203,7 +207,7 @@ Nothing in this project has run on a headset yet. Hour-0, in this order:
 | Package Manager errors resolving `com.meta.xr.*` | Check internet / proxy; Window → Package Manager → refresh. Meta packages come from the Unity registry, no scoped registry needed. |
 | Compile errors mentioning `PassthroughCameraAccess` | MRUK must be 81+ (we pin 85). Project Settings → Meta XR → make sure "Passthrough Camera Access" is enabled (it is in `OculusProjectConfig.asset`). |
 | HUD stuck at `waiting for camera permission` | The permission dialog was dismissed. Settings → Apps → Megamind → Permissions → Camera → Allow, or `adb shell pm grant com.megamind.quest horizonos.permission.HEADSET_CAMERA` (and `android.permission.CAMERA`). |
-| HUD `camera starting…` forever / `camera not supported` | Headset must be Quest 3/3S on Horizon OS v74+ (Settings → System → Software update). Passthrough Camera API does **not** work in the XR Simulator or on Quest 2/Pro; only on device (or Horizon Link 2.1+). |
+| HUD `camera starting…` forever / `camera not supported` | Headset must be Quest 3/3S on Horizon OS v74+ (Quick controls → Settings → General → Software update). Passthrough Camera API does **not** work in the XR Simulator or on Quest 2/Pro; only on device (or Horizon Link 2.1+). |
 | Black image / 0×0 resolution in HUD | Passthrough disabled: `OVRManager.isInsightPassthroughEnabled` must be on (scene builder sets it); re-run *Megamind → Check Project*. |
 | `sent N` grows but `accepted 0`, reason `net:…` | Server unreachable: check `adb shell curl <url>/v1/health`, Tailscale connected on both ends, server bound to `0.0.0.0`, URL has no trailing path. |
 | Reason `http:422` | `meta` JSON rejected — `Dto.cs` and `server/megamind/models.py` out of sync; check the server log. |

@@ -40,6 +40,8 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
         img.load()
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, "image is not a decodable JPEG") from exc
+    for tap in getattr(app, "frame_taps", ()):  # every decodable frame, before the filter (e.g. replay buffer)
+        tap(fm, jpeg)
 
     frame_id = str(ULID())
     kf = app.keyframe_filter
