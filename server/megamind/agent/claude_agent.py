@@ -93,6 +93,9 @@ people; describe them neutrally. If the evidence is marked "reader unavailable",
 the captions but add that you could not check the images. When a tool result includes the
 snapshots themselves, look at them: they override the captions when they disagree, and read
 any text (signs, screens, labels, receipts) from the image.
+For where/find/point-out/highlight questions ("where is my X right now?", "highlight my keys"),
+cite the most recent frame that shows the object and say where it is relative to the room; the
+headset draws an arrow at it, so never say you cannot point to or highlight things.
 
 After your spoken answer, on the same message, append the token ids of the evidence your
 answer relies on inside a trailer like <cites>id1,id2</cites>, including ids from tool results
