@@ -662,3 +662,29 @@ async def test_degraded_query_vectors_are_not_cached():
     await r.retrieve("where are my keys", k=4, now=NOW)
     await r.retrieve("where are my keys", k=4, now=NOW)
     assert FlakyEmbedder.calls == 2 and len(r._qvecs) == 1
+
+
+async def test_anchor_window_is_one_sided_and_focused():
+    st, _ = await _store()
+    r = await _retr(st).retrieve("what did I see before I went to the conference table", k=3, now=NOW)
+    assert r.anchor_ts == pytest.approx(T0 + 1800)
+    assert {x.token.id for x in r.tokens} == {"t3", "t4", "t5"}  # the anchor moment and what led up to it
+    after = await _retr(st).retrieve("what did I see after I went to the conference table", k=3, now=NOW)
+    assert {x.token.id for x in after.tokens} == {"t5", "t6", "t7"}
+
+
+async def test_anchor_resolves_inside_the_parsed_window():
+    st, _ = await _store()
+    now = datetime(2026, 11, 8, 20, 0, tzinfo=UTC)  # the stream (11:00-12:00 UTC) is "this morning" in UTC
+    r = await _retr(st).retrieve("what did I see before I went to the conference table today", k=3, now=now)
+    assert r.anchor_ts == pytest.approx(T0 + 1800)
+    assert {x.token.id for x in r.tokens} == {"t3", "t4", "t5"}
+
+
+async def test_focus_prior_pulls_towards_the_window_edge():
+    st, _ = await _store()
+    rt = _retr(st)
+    ref = T0 + 900
+    near_edge = await rt._fuse("keys", "hybrid", Weights(recency=1.0), None, None, None, ref, around=True)
+    towards_now = await rt._fuse("keys", "hybrid", Weights(recency=1.0), None, None, None, ref)
+    assert near_edge[0][0] == "t1" and towards_now[0][0] == "t6"

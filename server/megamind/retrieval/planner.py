@@ -120,6 +120,13 @@ _RE_ANCHOR = re.compile(
     r"(?P<event>i\s+(?:\w+\s*){1,6}?)(?=[?.,!]|$|\s+(?:and|but|or)\b)",
     re.I,
 )
+# "after the dentist", "before standup": a named event rather than a clause about the wearer. Phrases that are
+# really times ("after 3", "before lunch") start with a digit or sit inside the parsed time hint and are dropped.
+_RE_ANCHOR_NOUN = re.compile(
+    r"\b(?P<rel>before|after|since|until)\s+(?:the\s+)?"
+    r"(?P<event>[a-z][\w'-]*(?:\s+[\w'-]+){0,4}?)(?=[?.,!]|$|\s+(?:and|but|or|this|that|today|yesterday)\b)",
+    re.I,
+)
 
 # Named day parts as (start_hour, end_hour) in local time. `end` may exceed 24 (next day).
 _DAY_PARTS: dict[str, tuple[float, float]] = {
@@ -316,7 +323,7 @@ def _parse_time(q: str, now: datetime) -> TimeWindow | None:  # noqa: C901 - a l
 def parse_anchor(query: str) -> str | None:
     """'before I left the office' -> 'left the office'. Unresolved here: the retriever may
     run a second search for the anchor event and use its timestamp as a bound."""
-    m = _RE_ANCHOR.search(query)
+    m = _RE_ANCHOR.search(query) or _RE_ANCHOR_NOUN.search(query)
     if not m:
         return None
     event = re.sub(r"^i\s+", "", m.group("event").strip(), flags=re.I)
@@ -413,7 +420,10 @@ def rewrite(query: str, time_span: tuple[int, int] | None = None, anchor: str | 
         q = _RE_TIME_FILLER.sub("", q)
     if anchor:
         q = re.sub(
-            r"\b(?:right |just )?(?:before|after|when|while|since|until)\s+i\s+" + re.escape(anchor), " ", q, flags=re.I
+            r"\b(?:right |just )?(?:before|after|when|while|since|until)\s+(?:i\s+)?(?:the\s+)?" + re.escape(anchor),
+            " ",
+            q,
+            flags=re.I,
         )
     q = _POSSESSIVE.sub(r"\1", q)
     q = _PUNCT.sub(" ", q)
@@ -497,10 +507,14 @@ def plan_query(
     now_local = (now or datetime.now(UTC)).astimezone(zone)
 
     win = parse_time(query, now_local)
+    qtype = detect_type(query)
     anchor = parse_anchor(query)
     if anchor and win:
         anchor = re.sub(re.escape(win.hint), " ", anchor, flags=re.I).strip() or None
-    qtype = detect_type(query)
+        if anchor and anchor.lower() in win.hint.lower():  # "before lunch": the meal is the window, not an event
+            anchor = None
+    if anchor and qtype == "locate_object" and not _RE_ANCHOR.search(query):
+        anchor = None  # "where are my keys after work": keep the last sighting, don't window on a vague noun
     text = rewrite(query, win.span if win else None, anchor)
     if qtype == "people" and not any(w in text.split() for w in ("person", "people")):
         text = f"{text} person".strip()

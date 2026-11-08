@@ -204,3 +204,17 @@ def test_subject_free_speech_questions_are_transcript_recency(q):
 @pytest.mark.parametrize("q", ["what did Sam say about the budget", "who did I talk to at the cafe", "what did I see?"])
 def test_speech_with_a_subject_or_no_speech_word_is_unchanged(q):
     assert plan_query(q, now=NOW).kinds is None
+
+
+def test_named_event_anchor_after_the_dentist():
+    p = plan_query("what did I buy after the dentist", now=NOW)
+    assert (p.anchor_event, p.search_text, p.time_focus) == ("dentist", "buy", "start")
+    assert plan_query("what was on the slides before the cookies came out", now=NOW).anchor_event == "cookies came out"
+    assert plan_query("what was I doing before standup", now=NOW).search_text == ""
+
+
+def test_named_event_anchor_is_not_a_time_or_a_locate_hint():
+    assert plan_query("what was I reading before lunch", now=NOW).anchor_event is None  # the meal is the window
+    assert plan_query("what did I eat after 3 pm", now=NOW).anchor_event is None
+    assert plan_query("where are my keys after work", now=NOW).anchor_event is None  # last sighting, not a window
+    assert plan_query("where were my keys after I got home", now=NOW).anchor_event == "got home"
