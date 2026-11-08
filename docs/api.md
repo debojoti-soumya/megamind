@@ -211,6 +211,16 @@ Clients can swap it in for `POST /chat` and fall back to `POST /chat` on 404/405
 requests are identical to `POST /chat` apart from streaming, so answers are the same. With `RECALL_FIRST` a
 standalone question's `retrieval` arrives before Claude is called at all.
 
+Headset client (Unity `ChatClient`, `headset/`): asks every question (typed JSON and voice multipart) on
+`POST /chat/stream` and falls back to `POST /chat` with the same body on 404/405, or when the stream fails before its
+first event. It reads two more events when the server sends them, and ignores unknown events:
+`transcript` `{ "text": "..." }` (what STT heard, before retrieval; voice commands are matched on it and the turn is
+cancelled by closing the stream) and `audio` `{ "seq": 0, "url": "/v1/audio/....wav" | "b64": "...", "text": "...",
+"format": "wav" | "mp3" | "pcm16", "sample_rate": 24000 }` (one spoken sentence; clips play in `seq` order as they
+arrive, `b64` = inline WAV or raw little-endian mono PCM16 at `sample_rate`). A `reset` drops clips not yet played.
+`final.audio_url` is played only when the turn sent no `audio` event (or none of its clips could be played).
+Without a `transcript` event a voice turn shows its text only at `final` (commands still work, as on `POST /chat`).
+
 ## `GET /devices`
 Every device that has stored memory tokens, most recently active first (by `last_ts`). Use it to pick the
 `device_id` for `POST /chat` (the browser panel and `tools/ask.py` do).
