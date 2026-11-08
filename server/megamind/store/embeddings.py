@@ -5,9 +5,9 @@ Image: `OpenCLIPImageEmbedder` (open_clip SigLIP ViT-B/16 768-d default, or ViT-
 tower for visual queries)
 | `MockImageEmbedder` | None.
 
-Integration note (coordinator / Soumya): `ingest/enrich.py`'s `build_text_embedder` / `build_image_embedder`
-should become one-line delegations to the functions of the same name here. Until then `main.py` keeps the
-mock text embedder and no image embedder; the store is dimension-agnostic (infers dims from the first token).
+`main.py` builds both via the factories here. `OpenAITextEmbedder` never raises on API errors (bad key, 5xx/429
+after retries, timeouts): it falls back to a same-dim `MockTextEmbedder` vector for that call and sets
+`degraded` (e.g. "last error 401") for /v1/health, so frames are still stored and BM25/UCC search still work.
 
 Env: EMBED_PROVIDER=mock|openai  EMBED_MODEL=text-embedding-3-small  EMBED_DIM=1024  OPENAI_API_KEY
      IMAGE_EMBED_PROVIDER=none|mock|openclip  IMAGE_EMBED_MODEL=ViT-B-16-SigLIP  IMAGE_EMBED_PRETRAINED=webli
@@ -88,11 +88,28 @@ class OpenAITextEmbedder(TextEmbedder):
             timeout=timeout_s,
             transport=transport,
         )
+        self.degraded: str | None = None  # e.g. "last error 401"; None while the API is answering
+        self._fallback = MockTextEmbedder()
+        self._fallback.dim = dim  # same width as the real vectors, so the LanceDB table accepts them
 
     async def embed(self, text: str) -> list[float]:
         return (await self.embed_many([text]))[0]
 
     async def embed_many(self, texts: list[str]) -> list[list[float]]:
+        try:
+            vecs = await self._embed_remote(texts)
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as e:
+            reason = f"last error {_error_label(e)}"
+            if self.degraded is None:
+                log.warning("OpenAI embeddings failed (%s); using mock vectors until it recovers", reason)
+            self.degraded = reason
+            return [await self._fallback.embed(t) for t in texts]
+        if self.degraded is not None:
+            log.info("OpenAI embeddings recovered after %s", self.degraded)
+            self.degraded = None
+        return vecs
+
+    async def _embed_remote(self, texts: list[str]) -> list[list[float]]:
         inputs = [(t or " ")[:OPENAI_MAX_CHARS] for t in texts]
         body: dict[str, Any] = {"model": self.model, "input": inputs}
         if self.model.startswith("text-embedding-3"):
@@ -106,6 +123,16 @@ class OpenAITextEmbedder(TextEmbedder):
             break
         data = sorted(r.json()["data"], key=lambda d: d["index"])
         return [normalize(d["embedding"][: self.dim]) for d in data]
+
+
+def _error_label(e: Exception) -> str:
+    if isinstance(e, httpx.HTTPStatusError):
+        return str(e.response.status_code)
+    if isinstance(e, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(e, httpx.HTTPError):
+        return type(e).__name__
+    return "bad response"
 
 
 # ---------------------------------------------------------------------- image
