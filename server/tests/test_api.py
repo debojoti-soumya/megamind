@@ -173,6 +173,7 @@ async def test_health_reports_mocks_when_keys_are_missing(tmp_path):
         "stt": "mock (deepgram configured, no key)",
         "tts": "mock",
         "store": "memory",
+        "image": "none",
     }
 
 
@@ -251,3 +252,8 @@ async def test_health_reports_enricher(tmp_path):
     assert (await _health(tmp_path, enrich_provider="local", reader_api_key="none"))["enrich"].startswith(
         "local (degraded: no image embedder"
     )
+
+
+async def test_health_reports_image_vectors(tmp_path):
+    assert (await _health(tmp_path, image_embed_provider="none"))["image"] == "none"
+    assert (await _health(tmp_path, image_embed_provider="mock"))["image"] == "mock"
