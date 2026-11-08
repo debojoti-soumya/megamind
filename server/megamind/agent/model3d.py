@@ -673,9 +673,12 @@ async def start_multiview(st, found, phrase: str, prompt: str, views: list[Memor
             log.info("model3d %s: %r -> points (%s)", key, phrase, info)
         except Exception as e:  # noqa: BLE001 - reported to the viewer instead of a lost task
             log.warning("model3d %s: multi-view failed: %s", key, e)
-            cache.meta[key] = meta.model_copy(
-                update={"status": "failed", "detail": f"I couldn't model {said} in 3D: {e}"}
-            )
+            if cache.generation != gen:
+                cache.meta.pop(key, None)  # purged meanwhile: keep nothing about the deleted memories
+            else:
+                cache.meta[key] = meta.model_copy(
+                    update={"status": "failed", "detail": f"I couldn't model {said} in 3D: {e}"}
+                )
         finally:
             st.model3d_jobs.pop(key, None)
 

@@ -375,3 +375,44 @@ def test_model3d_multiview_failure_is_reported(app3d, tmp_path):
                 break
             time.sleep(0.05)
         assert r.status_code == 422 and "photos clearly show it" in r.json()["detail"]
+
+
+def test_model3d_multiview_purged_while_building_keeps_nothing(app3d, tmp_path):
+    import io
+    import time
+
+    from PIL import Image
+
+    from megamind.models import MemoryToken
+
+    near = []
+    for i in range(6):
+        p = tmp_path / f"pg{i}.jpg"
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 48), (30 * i, 60, 30)).save(buf, format="JPEG")
+        p.write_bytes(buf.getvalue())
+        near.append(
+            MemoryToken(
+                id=f"pg{i}", device_id="d", ts=1731000000.0 + i, caption="", thumb_path=str(p), frame_hash=f"{i:016x}"
+            )
+        )
+
+    class Store:
+        async def range(self, t0, t1, limit=100, *, device_id=None, kinds=None):
+            return near
+
+    class PurgingRunner(FakeRunner):
+        def run(self, images):
+            app3d.state.model3d_cache.clear()  # DELETE /v1/memories mid-build
+            return super().run(images)
+
+    app3d.state.store = Store()
+    app3d.state.model3d_mv = PurgingRunner()
+    with TestClient(app3d) as c:
+        body = c.post("/v1/model3d", json={"query": "make a 3D model of my mug"}).json()
+        for _ in range(100):
+            r = c.get(body["url"])
+            if r.status_code != 202:
+                break
+            time.sleep(0.05)
+        assert r.status_code == 404 and "mug" not in r.text
