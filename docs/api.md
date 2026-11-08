@@ -153,6 +153,40 @@ Debug / companion-app route: the headset does not call it, so it has no `Dto.cs`
 Keyframe thumbnail (JPEG) on every media tier: hot frames are served from their JPEG, cold frames are decoded
 from their AV1 chunk (recent decodes are cached). 404 for tokens without an image (`tier="text"`, transcripts).
 
+## `POST /stt`  (headset -> server; voice turns, step 1)
+Transcript only: no agent turn, no TTS, so a spoken **voice command** ("open menu", "pause recording") costs one
+STT call (~0.4 s live) instead of a full `POST /chat` (Claude + TTS, several seconds and a paid call).
+`multipart/form-data`
+- `audio`: the same clip `POST /chat` accepts (16 kHz mono WAV from the headset / browser panel; whatever the
+  configured STT provider decodes, e.g. m4a with OpenAI). Max 25 MB.
+- `command_hints` (optional): the client's command phrases, as a JSON array of strings (`["open menu","close menu",
+  ...]`) or one list separated by `|` / newlines; at most 200. When sent, the server matches the transcript against
+  them (below) so every client shares one matcher.
+Response `200 OK`:
+```json
+{ "transcript": "pause recording", "duration_s": 1.9, "model": "openai:gpt-transcribe",
+  "command": { "phrase": "pause recording", "score": 1.0 } }
+```
+- `transcript`: trimmed text; `""` for silence (then the client should do nothing). `duration_s`: clip length when
+  the upload is a parseable WAV, else `null`. `model`: what transcribed it (`"mock"` without keys).
+- `command`: `null` when no `command_hints` were sent or none matched. Matching normalizes both sides like the
+  headset's `VoiceCommands.Normalize` (lower-case, letters/digits only, filler words `please hey ok okay megamind
+  can you could would the a my now up` dropped), then an exact match scores `1.0`, else the closest hint by
+  `difflib` ratio with `score >= 0.8` ("paws recording" -> `pause recording`, 0.89) among hints with the same
+  number of words, each word a likely mishearing of the hint's (same first letter or one clipped leading letter,
+  similar spelling), so `start recording` never matches `stop recording` and `unmute` never matches `mute`. A transcript longer than 6
+  words after normalization is a question, never a command. `phrase` is the hint as the client sent it.
+- Errors: not multipart → 415; missing/empty `audio` or bad `command_hints` → 400; > 25 MB → 413; STT provider
+  failure → 502 `{"detail": "STT failed: ..."}`.
+
+Recommended voice flow (the headset, `ChatClient.cs`):
+1. `POST /stt` with the clip (+ `command_hints`). Show `transcript` as the user's bubble immediately.
+2. `command` set (or a local match on `transcript`) → run the command; done (no chat request).
+3. Otherwise `POST /chat/stream` as **JSON** `{"text": transcript, ...}` (same session) and consume the SSE events.
+Net effect: commands react in ~0.5 s; questions show their transcript before retrieval starts and never pay for
+STT twice. Sending the clip straight to `POST /chat` (multipart) still works and is the fallback on a 404/405
+from an older server.
+
 ## `POST /chat`
 Either `application/json` with `text`, or `multipart/form-data` with `audio` (16 kHz mono WAV).
 ```json
