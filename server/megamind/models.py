@@ -32,7 +32,7 @@ class FrameAccepted(BaseModel):
 
 class AudioMeta(BaseModel):
     device_id: str
-    ts_start: float  # unix seconds of the clip's first sample
+    ts_start: float = Field(allow_inf_nan=False)  # unix seconds of the clip's first sample
     pose: Pose | None = None
 
 

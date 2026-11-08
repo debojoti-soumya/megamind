@@ -16,7 +16,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from ulid import ULID
 
 from megamind.agent.stt import Segment, wav_duration
-from megamind.ingest.transcribe import ensure_wav
+from megamind.ingest import transcribe
 from megamind.models import AudioAccepted, AudioMeta, MemoryToken
 
 log = logging.getLogger(__name__)
@@ -48,15 +48,21 @@ async def post_audio(request: Request, audio: UploadFile = File(...), meta: str 
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"bad meta: {exc}") from exc
 
-    data = await audio.read()
+    too_big = f"audio chunk larger than {MAX_AUDIO_BYTES} bytes; send shorter chunks"
+    if audio.size is not None and audio.size > MAX_AUDIO_BYTES:
+        raise HTTPException(413, too_big)
+    data = await audio.read(MAX_AUDIO_BYTES + 1)  # never pull more than the cap into memory
     if not data:
         raise HTTPException(400, "empty audio")
     if len(data) > MAX_AUDIO_BYTES:
-        raise HTTPException(413, f"audio chunk larger than {MAX_AUDIO_BYTES} bytes; send shorter chunks")
+        raise HTTPException(413, too_big)
     # WAV passes through; providers needing 16 kHz (faster-whisper) resample + band-pass themselves
-    wav = await asyncio.to_thread(ensure_wav, data)
+    wav = await asyncio.to_thread(transcribe.ensure_wav, data)
     if wav is None:
         raise HTTPException(415, "audio is not a WAV and ffmpeg is unavailable or could not decode it")
+    duration = await asyncio.to_thread(wav_duration, wav) or 0.0
+    if duration > transcribe.MAX_AUDIO_S:
+        raise HTTPException(413, f"audio chunk longer than {transcribe.MAX_AUDIO_S:g} s; send shorter chunks")
 
     audio_id = str(ULID())
     try:
@@ -87,7 +93,7 @@ async def post_audio(request: Request, audio: UploadFile = File(...), meta: str 
         await app.store.add_many(tokens)
     return AudioAccepted(
         audio_id=audio_id,
-        duration_s=wav_duration(wav) or 0.0,
+        duration_s=duration,
         transcript=" ".join(w.text.strip() for w in windows),
         token_ids=[t.id for t in tokens],
     )

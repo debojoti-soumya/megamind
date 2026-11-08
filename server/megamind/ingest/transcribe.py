@@ -29,6 +29,9 @@ log = logging.getLogger(__name__)
 
 ENHANCE_FILTER = "highpass=f=80,lowpass=f=3800,loudnorm"
 NO_SPEECH_MAX = 0.6  # whisper segments more likely silence than speech are dropped (silence hallucinations)
+# Longest clip accepted (POST /v1/audio answers 413 above it). Bounds decoded size: a few MB of low-bitrate
+# opus can decode to hours of PCM, so ffmpeg stops just past this; 600 s at 16 kHz s16 is ~19 MB (< OpenAI's 25 MB).
+MAX_AUDIO_S = 600.0
 
 
 def have_ffmpeg() -> bool:
@@ -36,14 +39,18 @@ def have_ffmpeg() -> bool:
 
 
 def to_wav16k(data: bytes, *, enhance: bool = False, timeout_s: float = 120.0) -> bytes | None:
-    """Decode any ffmpeg-readable audio/video bytes to 16 kHz mono s16 WAV; None if ffmpeg is missing or fails."""
+    """Decode any ffmpeg-readable audio/video bytes to 16 kHz mono s16 WAV; None if ffmpeg is missing or fails.
+
+    Output stops at MAX_AUDIO_S + 1 s (so callers can tell "too long" from "exactly the cap"). Only local files
+    are readable (`-protocol_whitelist file`): an uploaded HLS/playlist cannot make the server fetch URLs."""
     if not have_ffmpeg():
         return None
     af = ["-af", ENHANCE_FILTER] if enhance else []
     with tempfile.TemporaryDirectory() as td:
         src, out = Path(td) / "in", Path(td) / "out.wav"
         src.write_bytes(data)  # a file, not stdin: mp4/m4a with the moov atom at the end need seeking
-        cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(src), "-vn", "-ac", "1", "-ar", "16000", *af]
+        cmd = ["ffmpeg", "-y", "-v", "error", "-protocol_whitelist", "file", "-i", str(src)]
+        cmd += ["-vn", "-ac", "1", "-ar", "16000", "-t", f"{MAX_AUDIO_S + 1:g}", *af]
         try:
             subprocess.run([*cmd, "-c:a", "pcm_s16le", str(out)], check=True, capture_output=True, timeout=timeout_s)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:

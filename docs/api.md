@@ -34,7 +34,7 @@ in search a few seconds later.
 Ambient speech around the wearer, so "who did I talk to?" and "what did she say about Tuesday?" work.
 `multipart/form-data`
 - `audio`: a chunk of 16-bit PCM WAV (any rate, mono preferred; 8–16 kHz headset mics are fine) or any
-  ffmpeg-decodable audio (needs ffmpeg on the server). Send chunks of ~15–30 s, max 25 MB.
+  ffmpeg-decodable audio (needs ffmpeg on the server). Send chunks of ~15–30 s; max 25 MB and 600 s.
 - `meta`: JSON string; `ts_start` is the Unix time (seconds, float) of the chunk's first sample
   ```json
   { "device_id": "quest3-abc", "ts_start": 1731000000.0,
@@ -46,7 +46,8 @@ no thumbnail). Response `200 OK`:
 ```json
 { "audio_id": "01J...", "duration_s": 15.0, "transcript": "hi I'm Priya ...", "token_ids": ["01J..."] }
 ```
-Silence → `token_ids: []`. Bad `meta` / empty body → 400; undecodable audio → 415; STT provider error → 502.
+Silence → `token_ids: []`. Bad `meta` (incl. non-finite `ts_start`) / empty body → 400; > 25 MB or > 600 s → 413;
+undecodable audio → 415; STT provider error → 502.
 
 ## `GET /memories`  (debug search)
 Query: `q` (str), `from`/`to` (ISO-8601, optional; unparseable → 400), `k` (int, default 12),

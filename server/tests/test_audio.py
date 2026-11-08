@@ -135,6 +135,37 @@ async def test_audio_bad_requests(client):
     assert r.status_code == 400
     r = await _post_audio(c, b"definitely not audio" * 10, filename="a.bin", ctype="application/octet-stream")
     assert r.status_code == 415  # ffmpeg missing or unable to decode -> same answer
+    r = await c.post(
+        "/v1/audio",
+        files={"audio": ("a.wav", _wav(1.0), "audio/wav")},
+        data={"meta": '{"device_id": "d", "ts_start": NaN}'},  # json.loads accepts NaN; the contract does not
+    )
+    assert r.status_code == 400
+
+
+def _lying_wav(n_frames: int = 100) -> bytes:
+    """A tiny WAV whose header claims ~2^31 frames at 1 Hz (68 years) but carries only `n_frames`."""
+    fmt = struct.pack("<IHHIIHH", 16, 1, 1, 1, 2, 2, 16)
+    data = b"\x00\x00" * n_frames
+    return b"RIFF" + struct.pack("<I", 0x7FFFFFFF) + b"WAVEfmt " + fmt + b"data" + struct.pack("<I", 0x7FFFFFF0) + data
+
+
+async def test_audio_limits(client, monkeypatch):
+    c, app = client
+    from megamind.ingest import audio as audio_mod
+    from megamind.ingest import transcribe
+
+    # duration comes from the samples present, not the header: 100 frames at 1 Hz -> 100 s, 20 mock segments
+    r = await _post_audio(c, _lying_wav())
+    assert r.status_code == 200, r.text
+    assert r.json()["duration_s"] == pytest.approx(100.0)
+
+    monkeypatch.setattr(transcribe, "MAX_AUDIO_S", 5.0)
+    assert (await _post_audio(c, _wav(6.0))).status_code == 413  # too long
+    assert (await _post_audio(c, _wav(4.0))).status_code == 200
+
+    monkeypatch.setattr(audio_mod, "MAX_AUDIO_BYTES", 1000)
+    assert (await _post_audio(c, _wav(1.0))).status_code == 413  # too many bytes
 
 
 async def test_default_stt_segments_fallback():
@@ -163,6 +194,8 @@ def test_merge_segments_windows():
 def test_wav_duration():
     assert wav_duration(_wav(1.5, rate=8000)) == pytest.approx(1.5)
     assert wav_duration(b"RIFF....garbage") is None
+    assert wav_duration(_lying_wav(100)) == pytest.approx(100.0)  # header claims 2^31 frames
+    assert wav_duration(_wav(1.0)[:-1000]) == pytest.approx(1.0 - 500 / 16000)  # truncated upload
 
 
 class _FakeTranscriptions:
@@ -256,6 +289,22 @@ def test_ensure_wav_decodes_non_wav(tmp_path):
     assert wav is not None and wav_duration(wav) == pytest.approx(1.0, abs=0.05)
     same = _wav(0.5)
     assert ensure_wav(same) is same
+
+
+@needs_ffmpeg
+def test_ffmpeg_decode_is_capped(tmp_path, monkeypatch):
+    """Compressed audio can decode to hours of PCM; ffmpeg stops just past MAX_AUDIO_S."""
+    import subprocess
+
+    from megamind.ingest import transcribe
+
+    src = tmp_path / "a.wav"
+    src.write_bytes(_wav(5.0))
+    flac = tmp_path / "a.flac"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(src), str(flac)], check=True)
+    monkeypatch.setattr(transcribe, "MAX_AUDIO_S", 2.0)
+    wav = to_wav16k(flac.read_bytes())
+    assert wav is not None and wav_duration(wav) == pytest.approx(3.0, abs=0.05)
 
 
 def test_faster_whisper_provider_builds_lazily():

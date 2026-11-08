@@ -17,15 +17,20 @@ class Segment(NamedTuple):
 
 
 def wav_duration(wav: bytes) -> float | None:
-    """Duration of a RIFF/WAV clip in seconds, or None if it is not a WAV the stdlib can parse."""
+    """Duration of a RIFF/WAV clip in seconds, or None if it is not a WAV the stdlib can parse.
+
+    Counts the sample data actually present, not the header's claimed frame count (a 244-byte upload can
+    claim 2^31 frames at 1 Hz)."""
     import io  # local: keeps this module's import block identical to main's for low-conflict merges
     import wave
 
     try:
         with wave.open(io.BytesIO(wav)) as w:
-            rate = w.getframerate()
-            return w.getnframes() / rate if rate else None
-    except (wave.Error, EOFError):
+            rate, frame_bytes = w.getframerate(), w.getsampwidth() * w.getnchannels()
+            if not rate or not frame_bytes:
+                return None
+            return len(w.readframes(w.getnframes())) // frame_bytes / rate
+    except (wave.Error, EOFError, ValueError):
         return None
 
 
