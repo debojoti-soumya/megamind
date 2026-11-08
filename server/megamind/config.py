@@ -71,7 +71,12 @@ class Settings(BaseSettings):
     store_backend: str = "memory"
     retriever_backend: str = "hybrid"  # "hybrid" (ours) | "ucc" (Universal Constructor; falls back to hybrid on error)
     # | "hier": LLM day/hour/block notes searched coarse-to-fine over the hybrid's candidates (retrieval/hier.py)
-    hier_model: str = "gpt-4.1"  # ranks blocks and frame tokens at recall time
+    # recall-time models (bake-off #152): a cheap block pick (stage 1), a stronger token rank (stage 2)
+    hier_model: str = "gpt-4.1-mini"  # stage 1 block pick; also stage 2 when hier_rank_model is ""
+    hier_rank_model: str = "gpt-4.1"  # stage 2 token rank
+    hier_reasoning_effort: str = "low"  # reasoning models only (gpt-5*/o*): minimal|none|low|medium, per model
+    hier_base_pool: int = 30  # hybrid candidates handed to the LLM stages
+    hier_hint_windows: int = 10  # stage 2 always shows the windows around this many top hybrid hits
     hier_note_model: str = "gpt-4.1-mini"  # writes the block/hour/day notes
     hier_base_url: str = "https://api.openai.com/v1"
     hier_api_key: str = ""  # "" -> openai_api_key

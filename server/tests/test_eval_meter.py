@@ -51,3 +51,24 @@ async def test_budget_blocks_live_calls_and_ucc_counts_only_facet_selects(tmp_pa
         with pytest.raises(BudgetExceeded):
             await c.post("https://u/v1/corpora/x/queries/select", json={"columns": {"b": 1}})
     assert m.live.ucc_queries == 1 and len(calls) == 1
+
+
+def test_hier_spec_parses_into_settings_overrides():
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from eval_retrieval import parse_hier_spec
+
+    assert parse_hier_spec("x:pick=gpt-5-mini,rank=gpt-4.1,effort=minimal,pool=60,gate=0.2") == (
+        "hier[x]",
+        {
+            "hier_model": "gpt-5-mini",
+            "hier_rank_model": "gpt-4.1",
+            "hier_reasoning_effort": "minimal",
+            "hier_base_pool": 60,
+            "hier_gate_margin": 0.2,
+        },
+    )
+    with pytest.raises(SystemExit):
+        parse_hier_spec("x:temperature=1")

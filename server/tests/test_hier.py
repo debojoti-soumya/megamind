@@ -235,3 +235,35 @@ async def test_llm_failure_is_counted():
     r = HierRetriever(store, base, HierMemory(store, FakeLLM(fail=True), tz="UTC"))
     await r.retrieve("keys", k=1, now=datetime.fromtimestamp(T0 + 1250, UTC))
     assert r.stats["errors"] == 1
+
+
+def test_build_hier_splits_pick_and_rank_models_and_passes_reasoning_effort():
+    from megamind.retrieval.hier import build_hier
+
+    s = SimpleNamespace(
+        hier_model="gpt-5.4-nano",
+        hier_rank_model="gpt-4.1",
+        hier_reasoning_effort="none",
+        hier_base_pool=60,
+        hier_cache_path="",
+        wearer_tz="UTC",
+    )
+    r = build_hier(s, InMemoryStore(), FixedRetriever([]), "k")
+    assert (r.llm.model, r.rank_llm.model, r.cfg.base_pool) == ("gpt-5.4-nano", "gpt-4.1", 60)
+    assert r.llm._body("s", "u", 10)["reasoning_effort"] == "none"
+    assert "reasoning_effort" not in r.rank_llm._body("s", "u", 10)
+    same = build_hier(
+        SimpleNamespace(hier_model="gpt-4.1", hier_cache_path=""), InMemoryStore(), FixedRetriever([]), "k"
+    )
+    assert same.rank_llm is same.llm and same.llm._body("s", "u", 10)["temperature"] == 0
+
+
+async def test_stage2_uses_the_rank_model():
+    store = await _store()
+    base = FixedRetriever([await store.get("a1"), await store.get("b1")])
+    pick, rank = FakeLLM(stage1={"blocks": ["B1"]}), FakeLLM(stage2={"ids": ["b1"]})
+    r = HierRetriever(store, base, HierMemory(store, pick, tz="UTC"), pick, rank_llm=rank)
+    res = await r.retrieve("keys", k=1, now=datetime.fromtimestamp(T0 + 1250, UTC))
+    assert [x.token.id for x in res.ranked] == ["b1"]
+    assert any("Pick up to" in c for c in pick.calls) and not any("Rank the token ids" in c for c in pick.calls)
+    assert any("Rank the token ids" in c for c in rank.calls)

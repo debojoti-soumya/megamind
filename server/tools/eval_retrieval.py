@@ -70,6 +70,13 @@ async def main() -> int:
     ap.add_argument("--corpus", help="UCC corpus (default: megamind-eval-<tokens hash>, kept 3 days)")
     ap.add_argument("--candidates", type=int, default=30, help="ucc-rerank: hybrid top-N UCC reranks")
     ap.add_argument("--gate-margin", type=float, default=0.25, help="hier-gated: skip the LLM at this top-1 lead")
+    ap.add_argument(
+        "--hier",
+        action="append",
+        default=[],
+        metavar="LABEL:k=v,...",
+        help="extra hier row; keys note/pick/rank (models), effort, pool, hints, gate; e.g. m:pick=gpt-5-mini",
+    )
     ap.add_argument("--max-usd", type=float, default=3.0, help="OpenAI budget across all runs (ledger)")
     ap.add_argument("--max-ucc", type=int, default=300, help="UCC facet-query budget across all runs (ledger)")
     ap.add_argument("--cache-dir", type=Path, default=CACHE)
@@ -120,15 +127,19 @@ async def main() -> int:
     names = list(BACKENDS) if args.backend == "all" else [args.backend]
     if args.only:
         names = [n for n in args.only.split(",") if n in BACKENDS]
+    if args.backend == "hybrid" and args.hier and not args.only:
+        names = []
+    specs = dict(parse_hier_spec(x) for x in args.hier)
+    names += list(specs)
     have = {"": True, "ucc": bool(s.ucc_api_key), "openai": bool(getattr(s, "hier_api_key", "") or s.openai_api_key)}
     reports, notes = {}, {}
     for name in names:
-        need = BACKENDS[name][0]
+        need = BACKENDS[name][0] if name in BACKENDS else "openai"
         if not have[need]:
             print(f"skip {name}: no {need.upper()} key", file=sys.stderr)
             continue
         hybrid = make_retriever(store, ds, text_embedder=text_emb, image_embedder=image_emb)
-        retriever, notes[name] = await build_backend(name, args, s, store, ds, hybrid, meter)
+        retriever, notes[name] = await build_backend(name, args, s, store, ds, hybrid, meter, specs.get(name))
         reports[name] = await evaluate(retriever, ds, k=args.k, meter=meter)
         stats = getattr(retriever, "stats", None)
         if stats:
@@ -197,7 +208,29 @@ def as_json(reports, notes, meter, setup, ds) -> dict:
     return out
 
 
-async def build_backend(name, args, s, store, ds, hybrid, meter):
+HIER_KEYS = {
+    "note": "hier_note_model",
+    "pick": "hier_model",
+    "rank": "hier_rank_model",
+    "effort": "hier_reasoning_effort",
+    "pool": "hier_base_pool",
+    "hints": "hier_hint_windows",
+    "gate": "hier_gate_margin",
+}
+
+
+def parse_hier_spec(spec: str) -> tuple[str, dict]:
+    label, _, kv = spec.partition(":")
+    over = {}
+    for part in filter(None, kv.split(",")):
+        k, _, v = part.partition("=")
+        if k not in HIER_KEYS:
+            raise SystemExit(f"--hier {spec!r}: unknown key {k!r} (one of {', '.join(HIER_KEYS)})")
+        over[HIER_KEYS[k]] = int(v) if k in ("pool", "hints") else float(v) if k == "gate" else v
+    return f"hier[{label}]", over
+
+
+async def build_backend(name, args, s, store, ds, hybrid, meter, overrides=None):
     """(retriever, one-time setup note) for one bake-off row."""
     if name == "hybrid":
         return hybrid, None
@@ -212,9 +245,12 @@ async def build_backend(name, args, s, store, ds, hybrid, meter):
 
     key = getattr(s, "hier_api_key", "") or s.openai_api_key
     gate = args.gate_margin if name == "hier-gated" else 0.0
-    settings = s.model_copy(update={"hier_gate_margin": gate, "wearer_tz": ds.tz})
+    settings = s.model_copy(update={"hier_gate_margin": gate, "wearer_tz": ds.tz, **(overrides or {})})
     digest = tokens_digest(ds.tokens)
-    cache = args.cache_dir / "hier" / f"notes-{digest}-{s.hier_note_model}.json"
+    note = settings.hier_note_model
+    if note.startswith(("gpt-5", "o1", "o3", "o4")):
+        note += f"-{settings.hier_reasoning_effort}"
+    cache = args.cache_dir / "hier" / f"notes-{digest}-{note}.json"
     hier = build_hier(settings, store, hybrid, key, cache_path=cache, transport=meter.transport("openai"))
     before = meter.all.copy()
     written = await hier.memory.build(ds.now.timestamp())

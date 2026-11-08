@@ -74,9 +74,11 @@ class ChatJSON:
         concurrency: int = 8,
         retries: int = 6,
         transport: httpx.AsyncBaseTransport | None = None,
+        reasoning_effort: str = "low",
     ) -> None:
         self.model = model
         self.retries = retries
+        self.reasoning_effort = reasoning_effort
         self._sem = asyncio.Semaphore(concurrency)
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -93,7 +95,7 @@ class ChatJSON:
             "max_completion_tokens": max_tokens,
         }
         if self.model.startswith(("gpt-5", "o1", "o3", "o4")):
-            body["reasoning_effort"] = "low"
+            body["reasoning_effort"] = self.reasoning_effort
             body["max_completion_tokens"] = max_tokens + 4000
         else:
             body["temperature"] = 0
@@ -383,11 +385,13 @@ class HierRetriever(Retriever):
         *,
         config: HierConfig | None = None,
         auto_build: bool = True,
+        rank_llm: ChatJSON | None = None,
     ) -> None:
         self.store = store
         self.base = base
         self.memory = memory
-        self.llm = llm or memory.llm
+        self.llm = llm or memory.llm  # stage 1 (block pick); also stage 2 unless `rank_llm` is set
+        self.rank_llm = rank_llm or self.llm
         self.cfg = config or memory.cfg
         self.auto_build = auto_build
         self.last_trace: dict[str, Any] = {}
@@ -511,7 +515,7 @@ class HierRetriever(Retriever):
             return []
         lines = window_lines(sorted(toks.values(), key=lambda t: t.ts), self.memory.tz, self.cfg)
         shown = {ln[1 : ln.index("]")] for ln in lines}
-        out2 = await self.llm(
+        out2 = await self.rank_llm(
             SEARCH_SYSTEM,
             STAGE2_PROMPT.format(now=now_s, question=query, lines="\n".join(lines), k=k),
             max_tokens=400,
@@ -623,10 +627,18 @@ def build_hier(
 ) -> HierRetriever:
     """`cache_path` / `transport` override the settings (the eval harness keeps its notes out of data/)."""
     url = getattr(settings, "hier_base_url", "https://api.openai.com/v1")
-    model = getattr(settings, "hier_note_model", "gpt-4.1-mini")
-    note_llm = ChatJSON(api_key, model, base_url=url, concurrency=16, transport=transport)
-    rank_llm = ChatJSON(api_key, getattr(settings, "hier_model", "gpt-4.1"), base_url=url, transport=transport)
-    cfg = HierConfig(gate_margin=float(getattr(settings, "hier_gate_margin", 0.0) or 0.0))
+    effort = getattr(settings, "hier_reasoning_effort", "low") or "low"
+    kw = dict(base_url=url, transport=transport, reasoning_effort=effort)
+    note_llm = ChatJSON(api_key, getattr(settings, "hier_note_model", "gpt-4.1-mini"), concurrency=16, **kw)
+    pick_model = getattr(settings, "hier_model", "gpt-4.1-mini")
+    rank_model = getattr(settings, "hier_rank_model", "gpt-4.1") or pick_model
+    pick_llm = ChatJSON(api_key, pick_model, **kw)
+    rank_llm = pick_llm if rank_model == pick_model else ChatJSON(api_key, rank_model, **kw)
+    cfg = HierConfig(
+        gate_margin=float(getattr(settings, "hier_gate_margin", 0.0) or 0.0),
+        base_pool=int(getattr(settings, "hier_base_pool", 30) or 30),
+        hint_windows=int(getattr(settings, "hier_hint_windows", 10) or 10),
+    )
     memory = HierMemory(
         store,
         note_llm,
@@ -634,4 +646,4 @@ def build_hier(
         tz=getattr(settings, "wearer_tz", None),
         config=cfg,
     )
-    return HierRetriever(store, base, memory, rank_llm)
+    return HierRetriever(store, base, memory, pick_llm, rank_llm=rank_llm)
