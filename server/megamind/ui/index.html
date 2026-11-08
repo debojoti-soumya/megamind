@@ -175,7 +175,7 @@
     <div class="row"><h2>Settings</h2><button class="iconbtn" id="closesettings" style="margin-left:auto" aria-label="close">&times;</button></div>
     <label>Server base URL <input type="text" id="s_server" placeholder="http://100.x.y.z:8000"></label>
     <div class="row">
-      <label>Device id <input type="text" id="s_device"></label>
+      <label>Device id <input type="text" id="s_device" list="s_devices" autocomplete="off"><datalist id="s_devices"></datalist></label>
       <label>Session id <input type="text" id="s_session"></label>
     </div>
     <label class="toggle"><input type="checkbox" id="s_capture"> Capture webcam frames → <code>/v1/frames</code></label>
@@ -219,7 +219,19 @@
     $('s_capture').checked = cfg.capture; $('s_fps').value = cfg.fps; $('s_width').value = cfg.width;
     $('s_autoplay').checked = cfg.autoplay; $('s_showtools').checked = cfg.showtools;
   };
-  $('opensettings').onclick = () => { fillSettings(); $('settings').classList.add('show'); };
+  $('opensettings').onclick = () => { fillSettings(); syncDevices(); $('settings').classList.add('show'); };
+  // GET /v1/devices feeds the Device id autocomplete; when the stored device has no memories (e.g. a fresh
+  // browser-xxxxx) and we are not capturing as it, switch to the most recently active device (e.g. the headset).
+  async function syncDevices(pick) {
+    try {
+      const r = await fetch(url('/v1/devices')); if (!r.ok) return;
+      const devs = (await r.json()).devices || [];
+      $('s_devices').replaceChildren(...devs.map(d => Object.assign(document.createElement('option'), { value: d.device_id, label: `${d.count} memories · ${ago(d.last_ts)}` })));
+      if (pick && devs.length && !cfg.capture && !devs.some(d => d.device_id === cfg.device)) {
+        cfg.device = devs[0].device_id; saveCfg(); $('s_device').value = cfg.device;
+      }
+    } catch { /* older server without /v1/devices */ }
+  }
   $('closesettings').onclick = () => $('settings').classList.remove('show');
   $('s_save').onclick = () => {
     cfg.server = $('s_server').value.trim() || defaults.server;
@@ -382,6 +394,7 @@
     if (!r.ok) { addAssistant(`(server error ${r.status}: ${(await r.text()).slice(0, 200)})`, [], null, true); return; }
     const j = await r.json();
     if (echoTranscript && j.transcript) addUser(j.transcript);
+    if (j.warning) addAssistant('Note: ' + j.warning, [], null, true);
     addAssistant(j.answer, j.cited, j.tool_calls, false, ms);
     $('latency').textContent = (ms / 1000).toFixed(1) + 's';
     if (j.audio_url && cfg.autoplay) {
@@ -487,7 +500,7 @@
   dragHandle.addEventListener('pointerup', endDrag); dragHandle.addEventListener('pointercancel', endDrag);
 
   // ---------- boot ----------
-  startCamera(); pollHealth(); applyCapture();
+  startCamera(); pollHealth(); applyCapture(); syncDevices(true);
 })();
 </script>
 </body>
