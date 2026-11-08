@@ -17,6 +17,7 @@ from megamind.config import Settings, get_settings
 from megamind.ingest.audio import router as audio_router
 from megamind.ingest.enrich import build_enricher, build_image_embedder, build_text_embedder
 from megamind.ingest.filter import KeyframeFilter
+from megamind.ingest.privacy import build_face_blur
 from megamind.ingest.router import router as ingest_router
 from megamind.ingest.transcribe import build_audio_stt
 from megamind.ingest.worker import EnrichmentWorker
@@ -55,7 +56,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.pending_hashes = {}
         st.text_embedder = build_text_embedder(settings)
         st.image_embedder = build_image_embedder(settings)
-        st.worker = EnrichmentWorker(st.store, build_enricher(settings), st.text_embedder, st.image_embedder)
+        st.worker = EnrichmentWorker(
+            st.store,
+            build_enricher(settings),
+            st.text_embedder,
+            st.image_embedder,
+            face_blur=build_face_blur(settings),
+        )
         st.reader = build_reader(settings)
         st.retriever, st.ucc_indexer = build_retriever(settings, st.store, st.text_embedder, st.image_embedder)
         st.recall = RecallMemory(

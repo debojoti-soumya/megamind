@@ -156,6 +156,18 @@ Capture is visible (status HUD), storage is local to the server you run, nothing
 people (prompts forbid identity claims), and `DELETE /v1/memories` purges everything.
 This is a hackathon prototype; do not wear it where recording isn't welcome.
 
+- **Bystander face blur** (off by default): `PRIVACY_BLUR_FACES=true` blurs every detected face
+  in the stored thumbnail, which is also what the headset displays and what the reader VLM
+  receives. `PRIVACY_BLUR_FACES_VLM=true` additionally blurs the frame before it goes to the
+  caption VLM / image embedder, so raw face pixels never leave the server (captions may then
+  say less about people). Detection is OpenCV's Haar cascade: `pip install -e ".[privacy]"`;
+  without OpenCV the server logs a warning and stores frames unblurred. The raw upload sits on
+  disk for the second or so before the worker blurs it.
+- **Purge** (`DELETE /v1/memories?device_id=&since=`) also drops frames that were accepted but
+  not yet stored (queued or mid-enrichment) and the dedupe state for the purged window, so
+  those frames do not reappear afterwards. (An episode summary the background consolidator is
+  writing at that moment can still land; purge again if it does.)
+
 ## License
 
 MIT (to be added).

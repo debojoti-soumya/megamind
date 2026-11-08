@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from PIL import Image
 from ulid import ULID
 
+from megamind.ingest.worker import purge_all
 from megamind.models import FrameAccepted, FrameMeta, MemoryToken, PurgeResponse, SearchMode, SearchResponse
 
 log = logging.getLogger(__name__)
@@ -115,7 +116,7 @@ def _since_to_ts(s: str | None) -> float | None:
 
 @router.delete("/memories", response_model=PurgeResponse)
 async def purge_memories(request: Request, device_id: str | None = None, since: str | None = None):
-    n = await request.app.state.store.purge(device_id, since_ts=_since_to_ts(since))
+    n = await purge_all(request.app.state, device_id, since_ts=_since_to_ts(since))
     return PurgeResponse(deleted=n)
 
 

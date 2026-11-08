@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     lancedb_path: Path = Path("./data/lancedb")
     thumb_dir: Path = Path("./data/thumbs")
     audio_dir: Path = Path("./data/audio")
+    privacy_blur_faces: bool = False  # blur bystander faces in stored thumbnails (needs the privacy extra)
+    privacy_blur_faces_vlm: bool = False  # also blur before the caption VLM / image embedder; implies the above
 
     filter_min_gap_s: float = 2.0
     filter_dhash_max_distance: int = 6

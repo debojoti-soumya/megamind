@@ -23,6 +23,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "httpx>=0.27"]
 tools = ["opencv-python-headless>=4.9", "httpx>=0.27"]
 # moment replay: bundled ffmpeg binary, only needed when ffmpeg is not on PATH
 replay = ["imageio-ffmpeg>=0.5"]
+privacy = ["opencv-python-headless>=4.9,<5"]  # PRIVACY_BLUR_FACES face detection (Haar cascade)
 # CPU torch: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu (PyPI torchvision is CUDA)
 # ambient audio with local Whisper (AUDIO_STT_PROVIDER=faster-whisper); also needs ffmpeg on PATH
 local-stt = ["faster-whisper>=1.0"]
