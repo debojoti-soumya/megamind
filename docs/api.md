@@ -70,7 +70,8 @@ Query: `q` (str), `from`/`to` (ISO-8601, optional; unparseable → 400), `k` (in
                  "entities": ["keys","kitchen counter"], "thumb_url": "/v1/thumbs/....jpg",
                  "score": 0.83, "kind": "frame" } ] }
 ```
-`kind` is the token kind (see *Memory token*); `thumb_url` is `""` for tokens without an image (`kind="transcript"`).
+`kind` is the token kind (see *Memory token*); `thumb_url` is `""` for tokens without an image (`kind="transcript"`,
+or a frame whose pixels aged out, `tier="text"`).
 
 ## `GET /memories/recent`  (newest memories, no query)
 Query: `k` (int, 1–200, default 24), `device_id` (optional), `kind` (repeatable, default `frame`; e.g.
@@ -79,7 +80,8 @@ Query: `k` (int, 1–200, default 24), `device_id` (optional), `kind` (repeatabl
 its cards. `GET /memories` stays a ranked search that drops hits unrelated to `q`, so it can't list "recent".
 
 ## `GET /thumbs/{id}.jpg`
-Keyframe thumbnail (JPEG).
+Keyframe thumbnail (JPEG) on every media tier: hot frames are served from their JPEG, cold frames are decoded
+from their AV1 chunk (recent decodes are cached). 404 for tokens without an image (`tier="text"`, transcripts).
 
 ## `POST /chat`
 Either `application/json` with `text`, or `multipart/form-data` with `audio` (16 kHz mono WAV).
@@ -95,8 +97,8 @@ Response:
                "replay_url": "/v1/replay.mp4?device_id=quest3-abc&from=1731000000.100&to=1731000010.100" } ],
   "tool_calls": [ { "name": "recall_memory", "args": { "query": "keys", "k": 12 }, "confidence": "high" } ] }
 ```
-`replay_url` is optional and `null` when the server holds no buffered frames around the citation
-(older than the replay window, replay disabled, or a different device). It covers `ts - 5 s .. ts + 5 s`.
+`replay_url` is optional and `null` when the server holds neither buffered frames nor kept keyframes with pixels
+around the citation (pixels aged out, replay disabled, or a different device). It covers `ts - 5 s .. ts + 5 s`.
 `cited[].thumb_url` is `""` when the cited token has no image (heard speech): show the caption, skip the thumbnail.
 For questions about the present ("what am I looking at right now", "what did I just see") the evidence also
 includes live short-term memory (see `GET /live/{id}.jpg`): a cited raw frame has an id starting `now_`, a
@@ -112,7 +114,10 @@ The server keeps raw frames for a sliding window per device (default 15 min, bou
 - `device_id`: optional; without it the device with the most frames in the window is used.
 - `GET` or `HEAD`. Supports `Range: bytes=...` (206 / 416) for seeking; `Accept-Ranges: bytes` on every 200.
 - Headers: `X-Replay-Start` (unix ts at offset 0), `X-Replay-Device`, `X-Replay-Frames`.
-- 404 when no frames are buffered in the window; 503 when ffmpeg is not available on the server.
+- Older than the buffer: the clip is rendered from the keyframes the filter kept in the window (hot or cold tier),
+  so it is keyframe-rate (one frame every few seconds, each held until the next). `X-Replay-Source` says which:
+  `buffer` (every received frame) or `keyframes`.
+- 404 when neither buffered nor kept frames exist in the window; 503 when ffmpeg is not available on the server.
 Rendered clips are cached; `DELETE /memories` also purges the matching buffered frames and the clip cache.
 
 ## `GET /live/{id}.jpg`
@@ -160,18 +165,50 @@ Not a Claude tool: chat answers do not include a montage (call this endpoint fro
 TTS output for a chat response.
 
 ## `DELETE /memories?device_id=...&since=...`
-Purge memory tokens (rows **and** thumbnails). Both params are optional: `device_id` limits the purge to one
+Purge memory tokens (rows **and** thumbnails; frames already aged into an AV1 chunk are cut out of it by
+re-encoding the chunk without them, so the chunk's other frames survive). Both params are optional: `device_id` limits the purge to one
 device (default: all devices); `since` deletes only tokens with `ts >= since` ("forget the last 2 hours"),
 given as ISO-8601 (`2026-11-07T09:00:00Z`; naive = server local time) or unix seconds (`1731000000.0`).
 Episode summaries whose `ts` (episode start) falls in the window are deleted too. Invalid, empty/whitespace (`since=`) or non-finite `since` → 400 (omit the param to purge all time).
 Returns `{ "deleted": 1234 }`. Offline equivalent: `python -m megamind.store.purge --device --since`.
 
+## `POST /admin/age?hot_older_than_s=...&cold_older_than_s=...`  (ops / demo)
+Run one media-aging pass now (the server also runs one every `MEDIA_AGE_INTERVAL_S`, default 3600 s). Frames older
+than `cold_older_than_s` (default `COLD_RETENTION_DAYS`, 100 d) drop their pixels (`tier="text"`); hot frames older
+than `hot_older_than_s` (default `HOT_RETENTION_H`, 72 h) are re-encoded into one AV1 mp4 per (device, episode)
+run (`tier="cold"`) and their JPEGs deleted once the chunk's frame count is verified. Negative / non-finite → 400.
+```json
+{ "to_cold": 120, "chunks": 1, "jpeg_bytes": 7800000, "chunk_bytes": 820000, "to_text": 0, "aborted": 0,
+  "skipped": null }
+```
+`skipped` explains why nothing went cold (e.g. no ffmpeg with an AV1 encoder: frames then stay hot JPEG).
+
+## `GET /stats`
+Storage and ingest counters.
+```json
+{ "tokens": 1500, "frames": 1400, "tiers": { "hot": 400, "cold": 900, "text": 100 },
+  "filter": { "seen": 15000, "kept": 1400, "keep_rate": 0.093, "by_reason": { "novel": 900, "duplicate": 8000 } },
+  "worker_queue": 0,
+  "disk_bytes": { "hot_jpeg": 26000000, "cold_chunks": 6300000, "index": 9000000 },
+  "bytes_per_frame": { "hot": 65000, "cold": 7000, "index": 6000 },
+  "projected_100d_gb_at_budget": 8.4,
+  "media": { "encoder": "libsvtav1", "hot_retention_h": 72, "cold_retention_days": 100, "cold_decodes": 12 } }
+```
+`tiers` counts `kind="frame"` tokens. `bytes_per_frame` values are `null` until a tier has frames. The projection
+assumes the frame budget (`FILTER_MAX_PER_MIN`) for 16 h/day, `HOT_RETENTION_H` as JPEG and the rest as AV1
+(8x smaller than JPEG until cold frames exist to measure); `null` before any frame is stored.
+
 ## Memory token (stored record)
 ```
 id, device_id, ts, caption, ocr_text, entities[], pose{x,y,z,yaw}|null,
 text_vec[1024], image_vec[768], thumb_path, frame_hash, episode_id|null,
-kind: "frame" | "episode" | "transcript"
+kind: "frame" | "episode" | "transcript",
+tier: "hot" | "cold" | "text", chunk_id|null, chunk_offset|null
 ```
+`tier` is where a frame's pixels live: `"hot"` = the JPEG at `thumb_path` (default), `"cold"` = frame `chunk_offset`
+of the AV1 chunk `chunk_id` (`thumb_path` is `""`), `"text"` = no pixels; caption, OCR, entities and vectors are
+kept, so the token stays searchable. Only `kind="frame"` tokens are aged; episode tokens keep their own JPEG copy
+of a representative frame. `thumb_url` keeps its shape on hot and cold tokens and is `""` on text ones.
 `kind` is `"frame"` for captured keyframes (default). The store groups consecutive frames into
 `episode_id`s (time gap, visual change against the last few frames, pose movement, and a 30 min length cap) and a consolidation job writes one `kind="episode"` token
 per closed episode whose `caption` is a summary of that episode and whose `ts` is the episode start,

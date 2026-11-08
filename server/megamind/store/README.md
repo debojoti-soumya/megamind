@@ -19,14 +19,32 @@ server/data/
 │       ├── _indices/             # FTS (BM25) index on `search_text`; IVF_FLAT cosine index on
 │       │                         #   text_vec / image_vec once ≥ 4096 non-null rows (flat scan below that)
 │       └── _transactions/
-├── thumbs/                       # THUMB_DIR — one JPEG per token: <token_id>.jpg (frames: ≤960 px,
+├── thumbs/                       # THUMB_DIR — one JPEG per hot token: <token_id>.jpg (frames: ≤960 px,
 │                                 #   written by ingest; episodes: copy of a representative frame)
+├── chunks/                       # CHUNK_DIR (default <thumb_dir>/../chunks) — cold tier: ck_<ulid>.mp4,
+│                                 #   AV1 @ 1 fps, ≤120 frames of one (device, episode) run
 └── audio/                        # AUDIO_DIR — stream-3 voice, not managed by the store
 ```
 
 Thumbnails are referenced by `MemoryToken.thumb_path` and served at `GET /v1/thumbs/<id>.jpg`.
 The store never stores raw frames or VLM visual tokens — only JPEG thumbnail + text + two vectors
 (see `research/digest/storage.md`).
+
+### Media tiers (`media.py`, ported from PR #54)
+
+| tier | pixels | when | `thumb_url` |
+|---|---|---|---|
+| `hot` | JPEG at `thumb_path` | first `HOT_RETENTION_H` (72 h) | `/v1/thumbs/<id>.jpg` |
+| `cold` | frame `chunk_offset` of `chunks/<chunk_id>.mp4` (AV1, CRF `COLD_CRF`=50, ≤ `COLD_WIDTH`=960 px) | until `COLD_RETENTION_DAYS` (100 d) | same URL, decoded on demand (LRU 256) |
+| `text` | none | after that | `""` |
+
+Only `kind="frame"` tokens are aged (episode tokens keep their JPEG copy, transcripts have no pixels). Text, OCR
+and vectors are never aged. `MediaStore.read(token)` is the one way to get a frame's pixels: `/v1/thumbs`, the
+reader VLM (`image_loader`), the Consolidator and the replay keyframe fallback all go through it. Chunks are encoded
+from the stored thumbnail (face-blurred when `PRIVACY_BLUR_FACES` is on) and the JPEGs are deleted only after the
+chunk's frame count is verified. Aging runs every `MEDIA_AGE_INTERVAL_S` (3600 s; 0 = off) or on
+`POST /v1/admin/age`; it needs ffmpeg with `libsvtav1` or `libaom-av1`, and without one frames simply stay hot
+(`GET /v1/stats` shows `media.encoder: null`). Measured in PR #54: about 65 KB/frame as JPEG vs 6–8 KB as AV1.
 
 ## Table schema (`memory_tokens`)
 
@@ -45,6 +63,8 @@ Mirrors `MemoryToken` in `docs/api.md` plus one derived column:
 | `thumb_path` | string | relative path as given by ingest |
 | `frame_hash` | string | dHash hex, used by `recent_hashes` for dedupe |
 | `episode_id` | string \| null | assigned by `EpisodeTracker` on insert |
+| `tier` | string | `"hot"` \| `"cold"` \| `"text"` (media tier, see above); added to older tables on open |
+| `chunk_id`, `chunk_offset` | string / int64 \| null | cold tier: AV1 chunk and frame index; added to older tables on open |
 | `text_vec` | fixed_size_list\<float16\>[D_t] \| null | D_t inferred from the first token that carries one (1024 for OpenAI via `EMBED_DIM`, 256 for the mock) |
 | `image_vec` | fixed_size_list\<float16\>[D_i] \| null | likewise (768 for SigLIP) |
 
@@ -66,6 +86,7 @@ requires a purge or a fresh `LANCEDB_PATH`.
 | `episodes.py` | `EpisodeTracker`: online `episode_id` assignment (gap > 120 s or image cosine < 0.80 → new episode; detours may rejoin one of the last 4) |
 | `consolidate.py` | `Consolidator`: writes one `kind="episode"` summary token per closed episode; `python -m megamind.store.consolidate [--loop]` |
 | `embeddings.py` | `build_text_embedder` / `build_image_embedder`: OpenAI text-embedding-3-small, local bge-small (sentence-transformers, CPU, query instruction via `embed_query`), open_clip SigLIP (CPU), mocks |
+| `media.py` | `MediaStore`: hot/cold/text media tiers, aging, chunk-rewriting purge, `disk_bytes()` |
 | `purge.py` | retention CLI, see below |
 | `bench.py` (planned) | 10k-token latency benchmark of every primitive |
 
@@ -84,6 +105,9 @@ All memories are wearer data; deletion is total (rows **and** thumbnails) and sy
   `--since` takes ISO-8601 or a relative age (`30m`, `2h`, `1d`); `--keep-thumbs` leaves JPEGs on disk.
 * `since` deletes tokens with `ts >= since`, including `kind="episode"` summaries whose episode started
   in that window. A summary whose frames were partially deleted is left as-is (it is already a summary).
+* Frames already in an AV1 chunk are removed by re-encoding the chunk without them (the chunk's other frames
+  survive; without an encoder they drop to `tier="text"`). This runs under the enrichment worker's add/purge lock,
+  which aging also takes, so an aging pass can never re-insert a purged token or keep its pixels.
 * The in-memory backend forgets on restart (the CLI is a no-op for it). Delete `server/data/` for a factory reset.
 
 ## Concurrency / durability notes

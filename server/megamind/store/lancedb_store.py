@@ -54,7 +54,16 @@ _SCALAR_COLUMNS = [
     "thumb_path",
     "frame_hash",
     "episode_id",
+    "tier",
+    "chunk_id",
+    "chunk_offset",
 ]
+# media-tier columns added after the first release: (name, SQL fill for existing rows)
+_MIGRATIONS = (
+    ("tier", "CAST('hot' AS STRING)"),
+    ("chunk_id", "CAST(NULL AS STRING)"),
+    ("chunk_offset", "CAST(NULL AS BIGINT)"),
+)
 _INDEXED_COLUMNS = [*_SCALAR_COLUMNS, "text_vec", "image_vec"]
 
 
@@ -96,6 +105,7 @@ class LanceDBStore(MemoryStore):
         self._writes_since_optimize = 0
         if TABLE_NAME in self._db.list_tables():
             self._table = self._db.open_table(TABLE_NAME)
+            self._migrate(self._table)
             schema = self._table.schema
             self._text_dim = schema.field("text_vec").type.list_size
             self._image_dim = schema.field("image_vec").type.list_size
@@ -103,6 +113,15 @@ class LanceDBStore(MemoryStore):
             self.vector_dtype = next((n for n, t in VECTOR_DTYPES.items() if t == value_type), str(value_type))
 
     # ------------------------------------------------------------------ schema
+
+    @staticmethod
+    def _migrate(table: lancedb.table.Table) -> None:
+        """Add columns introduced after a table was created (existing rows get the fill value)."""
+        names = set(table.schema.names)
+        missing = {col: fill for col, fill in _MIGRATIONS if col not in names}
+        if missing:
+            log.info("migrating %s: adding columns %s", TABLE_NAME, sorted(missing))
+            table.add_columns(missing)
 
     def _schema(self) -> pa.Schema:
         vec_type = VECTOR_DTYPES[self.vector_dtype]
@@ -128,6 +147,9 @@ class LanceDBStore(MemoryStore):
                 pa.field("thumb_path", pa.string(), nullable=False),
                 pa.field("frame_hash", pa.string(), nullable=False),
                 pa.field("episode_id", pa.string(), nullable=True),
+                pa.field("tier", pa.string(), nullable=True),
+                pa.field("chunk_id", pa.string(), nullable=True),
+                pa.field("chunk_offset", pa.int64(), nullable=True),
                 pa.field("text_vec", pa.list_(vec_type, self._text_dim or DEFAULT_TEXT_DIM), nullable=True),
                 pa.field("image_vec", pa.list_(vec_type, self._image_dim or DEFAULT_IMAGE_DIM), nullable=True),
             ]
@@ -169,6 +191,9 @@ class LanceDBStore(MemoryStore):
             "thumb_path": token.thumb_path,
             "frame_hash": token.frame_hash,
             "episode_id": token.episode_id,
+            "tier": token.tier,
+            "chunk_id": token.chunk_id,
+            "chunk_offset": token.chunk_offset,
             "text_vec": token.text_vec,
             "image_vec": token.image_vec,
         }
@@ -188,6 +213,9 @@ class LanceDBStore(MemoryStore):
             "thumb_path": row["thumb_path"],
             "frame_hash": row["frame_hash"],
             "episode_id": row.get("episode_id"),
+            "tier": row.get("tier") or "hot",
+            "chunk_id": row.get("chunk_id"),
+            "chunk_offset": row.get("chunk_offset"),
         }
         data["kind"] = row.get("kind") or "frame"
         return MemoryToken(**data)
@@ -238,6 +266,9 @@ class LanceDBStore(MemoryStore):
         tokens = list(tokens)
         await self._episodize(tokens)
         await asyncio.to_thread(self._add_sync, tokens)
+
+    async def rewrite_many(self, tokens: Sequence[MemoryToken]) -> None:
+        await asyncio.to_thread(self._add_sync, list(tokens))
 
     async def optimize(self) -> None:
         if self._table is not None:
@@ -319,6 +350,36 @@ class LanceDBStore(MemoryStore):
         rows = await asyncio.to_thread(self._scan, where, ["id", "ts"], None)
         rows.sort(key=lambda r: (r["ts"], r["id"]))
         return await self.get_many([r["id"] for r in rows[:limit]])
+
+    async def list_tokens(
+        self,
+        *,
+        time_from: float | None = None,
+        time_to: float | None = None,
+        device_id: str | None = None,
+        kinds: Sequence[str] | None = None,
+        tier: str | None = None,
+        chunk_id: str | None = None,
+    ) -> list[MemoryToken]:
+        extra = []
+        if tier is not None:
+            extra.append(f"tier = {_sql_str(tier)}")
+        if chunk_id is not None:
+            extra.append(f"chunk_id = {_sql_str(chunk_id)}")
+        where = self._where(time_from=time_from, time_to=time_to, device_id=device_id, kinds=kinds, extra=extra)
+        rows = await asyncio.to_thread(self._scan, where, _INDEXED_COLUMNS, None)
+        toks = [self._token(r) for r in rows]
+        toks.sort(key=lambda t: (t.ts, t.id))
+        return toks
+
+    async def tier_counts(self, kinds: Sequence[str] | None = ("frame",)) -> dict[str, int]:
+        if self._table is None:
+            return {"hot": 0, "cold": 0, "text": 0}
+        out = {}
+        for tier in ("hot", "cold", "text"):
+            where = self._where(kinds=kinds, extra=(f"tier = {_sql_str(tier)}",))
+            out[tier] = await asyncio.to_thread(self._table.count_rows, where)
+        return out
 
     async def neighbors(self, token_id: str, *, before: int = 2, after: int = 2) -> list[MemoryToken]:
         anchor = await self.get(token_id)

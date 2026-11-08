@@ -472,3 +472,49 @@ async def test_degraded_evidence_lists_every_hit_with_its_ocr(tmp_path):
 async def test_caption_only_reader_default_stays_top_3(tmp_path):
     out = await CaptionOnlyReader().read("q", _tokens(tmp_path, 6, thumbs=False))
     assert len(out.evidence.splitlines()) == 3 and out.evidence.startswith("[t00] caption 0")
+
+
+async def test_image_loader_supplies_cold_tier_frames(tmp_path):
+    """Cold frames have no thumb_path; the reader gets their pixels through `image_loader` (MediaStore.read)."""
+    toks = [
+        t.model_copy(update={"thumb_path": "", "tier": "cold", "chunk_id": "ck_1", "chunk_offset": i})
+        for i, t in enumerate(_tokens(tmp_path, 2))
+    ]
+    jpeg = open(_thumb(tmp_path, "decoded"), "rb").read()
+    asked: list[str] = []
+
+    async def loader(t: MemoryToken) -> bytes | None:
+        asked.append(t.id)
+        return jpeg if t.chunk_offset == 0 else None
+
+    s = Scripted([_completion({"answer": "x", "evidence": [{"id": "t00", "why": ""}], "confidence": "high"})])
+    r = s.reader()
+    r.image_loader = loader
+    await r.read("q", toks, now=NOW)
+    parts = s.body()["messages"][1]["content"]
+    images = [p for p in parts if p["type"] == "image_url"]
+    assert sorted(asked) == ["t00", "t01"] and len(images) == 1
+    assert sum("(image unavailable)" in p.get("text", "") for p in parts) == 1
+
+
+async def test_slow_image_loader_is_bounded_by_the_deadline(tmp_path):
+    toks = _tokens(tmp_path, 1)
+
+    async def hung(_t: MemoryToken) -> bytes | None:
+        await asyncio.sleep(30)
+        return None
+
+    s = Scripted([_completion({"answer": "x", "evidence": [{"id": "t00", "why": ""}], "confidence": "high"})])
+    r = s.reader(_settings(reader_deadline_s=2.0, reader_timeout_s=2.0))
+    r.image_loader = hung
+    out = await asyncio.wait_for(r.read("q", toks, now=NOW), timeout=5)
+    assert out.confidence == "high"
+    assert "(image unavailable)" in json.dumps(s.body()["messages"][1]["content"])
+
+
+def test_build_reader_passes_the_image_loader():
+    async def loader(_t):
+        return None
+
+    r = build_reader(_settings(reader_provider="vlm"), image_loader=loader)
+    assert isinstance(r, VLMReader) and r.image_loader is loader

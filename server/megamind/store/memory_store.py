@@ -48,6 +48,10 @@ class InMemoryStore(MemoryStore):
         for t in tokens:
             self._tokens[t.id] = t
 
+    async def rewrite_many(self, tokens: Sequence[MemoryToken]) -> None:
+        for t in tokens:
+            self._tokens[t.id] = t
+
     async def get(self, token_id: str) -> MemoryToken | None:
         return self._tokens.get(token_id)
 
