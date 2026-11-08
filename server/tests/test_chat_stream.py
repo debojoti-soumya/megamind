@@ -506,3 +506,20 @@ def test_ui_and_xr_stream_with_post_chat_fallback():
         assert all(ev in src for ev in ("'delta'", "'reset'", "'final'", "'error'")) or all(
             ev in src for ev in ('"delta"', '"reset"', '"final"', '"error"')
         )
+
+
+async def test_stream_never_shows_a_tool_call_written_as_text(app_client):
+    # the model imitates the text-flattened history and writes `recall_memory({...})` instead of a tool_use block:
+    # nothing of it is streamed (so TTS never speaks it), the call runs as a tool round, the answer follows
+    c, app = app_client
+    script = ScriptedAnthropic([_message([text('recall_memory({"query": "keys kitchen"})')]), _message([text(ANSWER)])])
+    _use_script(app, script)
+    events = await _stream(c, {"session_id": "s1", "device_id": "dev1", "text": "where did I leave my keys?"})
+
+    deltas = "".join(d["text"] for e, d in events if e == "delta")
+    assert "recall_memory" not in deltas and deltas.startswith("Your keys are on the kitchen counter")
+    assert not [e for e, _ in events if e == "reset"]  # nothing wrong was shown, so nothing to retract
+    final = next(d for e, d in events if e == "final")
+    assert final["answer"].startswith("Your keys are on the kitchen counter")
+    assert [x["id"] for x in final["cited"]] == ["t_keys"] and len(final["tool_calls"]) == 1
+    assert len(script.requests) == 2

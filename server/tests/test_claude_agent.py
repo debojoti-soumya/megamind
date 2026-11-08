@@ -15,6 +15,8 @@ from megamind.agent.claude_agent import (
     MAX_TURNS,
     NOT_FOUND_ANSWER,
     ClaudeAgent,
+    _TrailerFilter,
+    parse_textual_tool_call,
     prefetch_reusable,
     recall_first,
 )
@@ -546,3 +548,73 @@ async def test_vision_reader_sends_images_to_claude_and_strips_them_from_history
     await agent.chat("s", "and what was next to them?", "dev1")
     history = json.dumps(script.requests[1]["messages"])
     assert '"type": "image"' not in history and "(image omitted)" in history
+
+
+async def test_tool_call_written_as_text_runs_as_a_tool_round(recall):
+    # CLAUDE_TOOL_RESULTS_AS_TEXT shows the model its earlier calls as `recall_memory({...})` text; when it imitates
+    # that instead of emitting a tool_use block (seen live), the call runs as a tool round and is never the answer
+    script = ScriptedAnthropic(
+        [
+            _message([text('recall_memory({"query": "keys", "k": 6})')]),
+            _message([text("Counter. <cites>t_keys</cites>")]),
+        ]
+    )
+    agent = _agent(recall, script)
+    resp, stats = await agent.chat_with_stats("s1", "where did I leave my keys?", "dev1")
+
+    assert resp.answer == "Counter." and [c.id for c in resp.cited] == ["t_keys"]
+    assert stats.model_calls == 2 and stats.tool_calls == 1 and stats.extra["textual_tool_calls"] == 1
+    assert resp.tool_calls[0].args == {"query": "keys", "k": 6}
+    second = script.requests[1]  # the recovered round goes back like a real one (text-flattened by default)
+    assert second["messages"][1] == {
+        "role": "assistant",
+        "content": [{"type": "text", "text": 'recall_memory({"query": "keys", "k": 6})'}],
+    }
+    assert second["messages"][2]["content"][0] == {"type": "text", "text": "tool result:"}
+    assert json.loads(second["messages"][2]["content"][1]["text"])["cited"][0]["id"] == "t_keys"
+
+
+async def test_tool_call_written_as_text_at_the_round_cap_is_not_the_answer(recall):
+    script = ScriptedAnthropic(
+        [
+            *[
+                _message([tool_use({"query": "x"}, f"toolu_{i}")], stop_reason="tool_use")
+                for i in range(MAX_TOOL_ROUNDS)
+            ],
+            _message([text('recall_memory({"query": "x"})')]),
+        ]
+    )
+    agent = _agent(recall, script)
+    resp, stats = await agent.chat_with_stats("s1", "where did I leave my keys?", "dev1")
+
+    assert resp.answer == NOT_FOUND_ANSWER
+    assert stats.model_calls == MAX_TOOL_ROUNDS + 1 and stats.extra["textual_tool_calls"] == 1
+    # the history keeps the model's text (no dangling tool_use without a result)
+    assert agent.histories["s1"][0][-1]["content"] == [{"type": "text", "text": 'recall_memory({"query": "x"})'}]
+
+
+def test_parse_textual_tool_call():
+    names = ["recall_memory", "make_collage"]
+    assert parse_textual_tool_call('recall_memory({"query": "keys", "k": 6})', names) == (
+        "recall_memory",
+        {"query": "keys", "k": 6},
+    )
+    assert parse_textual_tool_call('\n make_collage({"query": "sunset"}) ', names) == (
+        "make_collage",
+        {"query": "sunset"},
+    )
+    assert parse_textual_tool_call('search({"query": "a"})', names) is None  # unknown tool
+    assert parse_textual_tool_call("I recall memory of the keys on the counter.", names) is None
+    assert parse_textual_tool_call("recall_memory(query)", names) is None  # not JSON args
+    assert parse_textual_tool_call('recall_memory({"query": "a"}) and more', names) is None  # not the whole text
+
+
+def test_trailer_filter_holds_back_a_tool_call_written_as_text():
+    f = _TrailerFilter(hold=["recall_memory("])
+    assert f.feed("recall_") == "" and f.feed('memory({"query": "keys"})') == "" and f.flush() == ""
+    f = _TrailerFilter(hold=["recall_memory("])  # a real answer that merely starts like the tool name
+    assert f.feed("recall") == "" and f.feed(" the keys: counter.") == "recall the keys: counter." and f.flush() == ""
+    f = _TrailerFilter(hold=["recall_memory("])  # ordinary answers and the cites trailer behave as before
+    assert f.feed("Your keys") == "Your keys" and f.feed(" <cites>t</cites>") == " " and f.flush() == ""
+    f = _TrailerFilter()  # no hold list (non-agent callers): unchanged behaviour
+    assert f.feed('recall_memory({"q": 1})') == 'recall_memory({"q": 1})'
