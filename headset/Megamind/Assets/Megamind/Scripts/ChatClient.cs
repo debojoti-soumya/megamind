@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.Networking;
 
 namespace Megamind
@@ -28,6 +29,9 @@ namespace Megamind
         [Tooltip("Optional: OVRHand components for pinch-to-talk (stretch).")]
         public OVRHand leftHand, rightHand;
         public float minRecordSeconds = 0.3f;
+        [Tooltip("Trigger/pinch while the UI ray is over the panel is a click, not push-to-talk (#146 quirk).")]
+        public bool ignorePushToTalkOverUi = true;
+        public PanelHover panelHover;
 
         public event Action<ChatResponse> OnResponse;
         public float LastLatencySeconds { get; private set; }
@@ -48,8 +52,22 @@ namespace Megamind
             bool pinchDown = pinch && !_pinchHeld, pinchUp = !pinch && _pinchHeld;
             _pinchHeld = pinch;
 
-            if (OVRInput.GetDown(pushToTalk, controllers) || pinchDown) BeginRecording();
+            if ((OVRInput.GetDown(pushToTalk, controllers) || pinchDown) && !RayOverUi()) BeginRecording();
             if ((OVRInput.GetUp(pushToTalk, controllers) || pinchUp) && _recordingActive) StartCoroutine(EndRecordingAndSend());
+        }
+
+        private bool RayOverUi()
+        {
+            if (!ignorePushToTalkOverUi) return false;
+            if (panelHover != null && panelHover.IsHovered) return true;
+            var es = EventSystem.current;
+            return es != null && es.IsPointerOverGameObject();
+        }
+
+        /// <summary>Footer "Hold to talk" release: same send path as the trigger release; no-op when not recording.</summary>
+        public void EndRecordingAndSendNow()
+        {
+            if (_recordingActive) StartCoroutine(EndRecordingAndSend());
         }
 
         private static bool IsPinching(OVRHand hand)
