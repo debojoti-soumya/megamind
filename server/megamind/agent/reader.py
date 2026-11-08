@@ -23,14 +23,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import logging
 import math
 import re
+import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -211,16 +214,40 @@ def token_header(t: MemoryToken, first_ts: float, now: float, zone: ZoneInfo | N
     return line
 
 
+_ENC_CACHE: OrderedDict[tuple[bytes, int], str] = OrderedDict()
+_ENC_CACHE_MAX = 256  # ~12 images/turn; 256 x ~30 KB of base64
+_ENC_LOCK = threading.Lock()  # encode_jpeg runs in worker threads
+
+
 def encode_jpeg(data: bytes, max_px: int) -> str:
-    """Base64 JPEG data URI, downscaled so the longest side is <= max_px. Raises OSError/ValueError."""
+    """Base64 JPEG data URI, downscaled so the longest side is <= max_px. Raises OSError/ValueError.
+
+    Cached by content digest: the prefetch, Claude's re-queries, follow-ups and the hedge mostly re-send the
+    same hits. Keyed on the bytes, so a privacy-blurred rewrite is a miss and a purged frame is never served."""
+    key = (hashlib.blake2b(data, digest_size=16).digest(), max_px)
+    with _ENC_LOCK:
+        if (hit := _ENC_CACHE.get(key)) is not None:
+            _ENC_CACHE.move_to_end(key)
+            return hit
     with Image.open(io.BytesIO(data)) as im:
         if max(im.size) > max_px:
+            im.draft("RGB", (max_px, max_px))  # JPEG: decode at 1/2, 1/4, 1/8 scale (>= max_px) instead of full
             im = im.convert("RGB")
             im.thumbnail((max_px, max_px))
             buf = io.BytesIO()
             im.save(buf, format="JPEG", quality=85)
             data = buf.getvalue()
-    return "data:image/jpeg;base64," + base64.b64encode(data).decode()
+    uri = "data:image/jpeg;base64," + base64.b64encode(data).decode()
+    with _ENC_LOCK:
+        _ENC_CACHE[key] = uri
+        while len(_ENC_CACHE) > _ENC_CACHE_MAX:
+            _ENC_CACHE.popitem(last=False)
+    return uri
+
+
+def clear_encode_cache() -> None:
+    with _ENC_LOCK:
+        _ENC_CACHE.clear()
 
 
 def encode_thumb(path: str, max_px: int) -> str | None:
@@ -423,14 +450,13 @@ class VLMReader(Reader):
         """Primary model first; if it hasn't answered after `hedge_s` (healthy calls take ~3.1 s, hung ones
         never do) or fails fast, the fallback model runs too and the first good JSON wins. Everything
         shares one wall-clock deadline, after which the chunk degrades to captions-only."""
+        # JPEG decode/resize/base64 is ~5-10 ms per image: keep it off the event loop (concurrent turns, Claude I/O)
+        content = await asyncio.to_thread(build_user_content, query, tokens, now, self.thumb_max_px, self.zone, images)
         body: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": READER_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": build_user_content(query, tokens, now, self.thumb_max_px, self.zone, images),
-                },
+                {"role": "user", "content": content},
             ],
             "max_tokens": self.settings.reader_max_tokens,
             "temperature": 0,

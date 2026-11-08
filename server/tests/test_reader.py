@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 from zoneinfo import ZoneInfo
@@ -70,13 +71,21 @@ def _completion(obj: dict | str, usage: dict | None = None) -> dict:
 
 
 class Scripted:
-    def __init__(self, responses):
+    """Replays `responses` in request order, or (`by_chunk`) answers each chunk by its oldest token id: chunks
+    build their payloads in worker threads, so their request order is not fixed."""
+
+    def __init__(self, responses=(), by_chunk: dict | None = None):
         self.responses = list(responses)
+        self.by_chunk = by_chunk
         self.requests: list[httpx.Request] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
-        nxt = self.responses.pop(0)
+        if self.by_chunk is not None:
+            first = json.loads(request.content)["messages"][1]["content"][1]["text"][1:4]
+            nxt = self.by_chunk[first]
+        else:
+            nxt = self.responses.pop(0)
         if isinstance(nxt, Exception):
             raise nxt
         if isinstance(nxt, int):
@@ -158,37 +167,40 @@ async def test_chunking_over_image_limit_merges(tmp_path):
     toks = _tokens(tmp_path, 24)
     assert [len(c) for c in chunk_chronological(toks, 20)] == [12, 12]
     s = Scripted(
-        [
-            _completion({"answer": "No matching memory.", "evidence": [], "confidence": "not_found"}),
-            _completion(
+        by_chunk={
+            "t00": _completion({"answer": "No matching memory.", "evidence": [], "confidence": "not_found"}),
+            "t12": _completion(
                 {
                     "answer": "Keys on the counter.",
                     "evidence": [{"id": "t15", "why": "keys visible"}, {"id": "zzz", "why": "hallucinated id"}],
                     "confidence": "high",
                 }
             ),
-        ]
+        }
     )
     out = await s.reader().read("keys?", toks)
     assert len(s.requests) == 2
     assert out.confidence == "high" and out.cited_ids == ["t15"] and out.calls == 2
     assert out.evidence == "Keys on the counter."
     assert out.usage["prompt_tokens"] == 2400
-    ids_req0 = [
-        p["text"][1:4] for p in s.body(0)["messages"][1]["content"] if p["type"] == "text" and p["text"][:2] == "[t"
+    ids_by_req = [
+        [p["text"][1:4] for p in s.body(i)["messages"][1]["content"] if p["type"] == "text" and p["text"][:2] == "[t"]
+        for i in range(2)
     ]
-    assert ids_req0 == [f"t{i:02d}" for i in range(12)]
+    assert sorted(ids_by_req) == [[f"t{i:02d}" for i in range(12)], [f"t{i:02d}" for i in range(12, 24)]]
 
 
 async def test_two_found_chunks_concatenate_best_first(tmp_path):
     toks = _tokens(tmp_path, 22)
     s = Scripted(
-        [
-            _completion({"answer": "Early: mug on desk.", "evidence": [{"id": "t02", "why": ""}], "confidence": "low"}),
-            _completion(
+        by_chunk={
+            "t00": _completion(
+                {"answer": "Early: mug on desk.", "evidence": [{"id": "t02", "why": ""}], "confidence": "low"}
+            ),
+            "t11": _completion(
                 {"answer": "Later: mug in sink.", "evidence": [{"id": "t20", "why": ""}], "confidence": "high"}
             ),
-        ]
+        }
     )
     out = await s.reader().read("mug?", toks)
     assert out.confidence == "high"
@@ -518,3 +530,20 @@ def test_build_reader_passes_the_image_loader():
 
     r = build_reader(_settings(reader_provider="vlm"), image_loader=loader)
     assert isinstance(r, VLMReader) and r.image_loader is loader
+
+
+def test_encode_jpeg_is_cached_by_content(tmp_path):
+    from megamind.agent.reader import _ENC_CACHE, clear_encode_cache, encode_thumb
+
+    p = tmp_path / "f.jpg"
+    Image.new("RGB", (960, 720), (200, 10, 10)).save(p, "JPEG")
+    clear_encode_cache()
+    a = encode_thumb(str(p), 512)
+    assert a and encode_thumb(str(p), 512) == a and len(_ENC_CACHE) == 1
+    with Image.open(io.BytesIO(base64.b64decode(a.split(",", 1)[1]))) as im:
+        assert im.size == (512, 384)
+    Image.new("RGB", (960, 720), (10, 10, 200)).save(p, "JPEG")  # privacy blur rewrites the thumb in place
+    b = encode_thumb(str(p), 512)
+    assert b not in (None, a) and len(_ENC_CACHE) == 2
+    p.unlink()  # purge: never served from the cache
+    assert encode_thumb(str(p), 512) is None

@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eval_agent import DEFAULT_DATASET, load_day, render_thumbs, seed_store  # noqa: E402
 
+import megamind.agent.reader as reader_mod  # noqa: E402
 from megamind.agent.reader import CaptionOnlyReader, Reader, ReaderOutput, VLMReader, build_user_content  # noqa: E402
 from megamind.agent.tools import RecallMemory  # noqa: E402
 from megamind.config import Settings  # noqa: E402
@@ -118,10 +119,12 @@ async def main() -> int:
         calls = await capture(day, args.limit)
         n_img = statistics.mean(len(t) for _, t in calls)
         print(f"{len(calls)} reader calls, {n_img:.1f} images each, frames {args.frame_px}px wide\n")
-        print("| thumb px | build ms/call | image payload KB/call |\n|--:|--:|--:|")
+        print("| thumb px | build ms/call (cold) | build ms/call (warm) | image payload KB/call |\n|--:|--:|--:|--:|")
         for px in pxs:
+            reader_mod.clear_encode_cache()
             ms, size = bench_build(calls, day.now, px, day.tz)
-            print(f"| {px} | {ms:.0f} | {size / 1024:.0f} |")
+            warm, _ = bench_build(calls, day.now, px, day.tz)
+            print(f"| {px} | {ms:.0f} | {warm:.0f} | {size / 1024:.0f} |")
         if not args.live:
             return 0
         if settings.reader_api_key in ("", "none"):
