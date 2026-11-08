@@ -185,6 +185,7 @@ async def test_health_reports_live_providers_and_unwired_ones(tmp_path):
     )
     assert models["claude"] == "claude-sonnet-4-6"
     assert models["reader"] == "google/gemma-4-31B-it"
-    # keyed but the app still builds a mock for these roles: say so rather than claim the provider is live
+    # keyed but the app still builds a mock for this role: say so rather than claim the provider is live
     assert models["embed"] == "mock (openai configured, not implemented)"
-    assert models["tts"] == "mock (elevenlabs configured, not implemented)"
+    # ElevenLabs TTS is wired (agent/tts.py), so a key makes it the live provider
+    assert models["tts"] == "elevenlabs"
