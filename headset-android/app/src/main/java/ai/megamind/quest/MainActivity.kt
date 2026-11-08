@@ -21,6 +21,7 @@ import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -35,6 +36,7 @@ import java.util.Locale
  *   --ez autostart true          start capture as soon as permissions are granted
  *   --es backend_url http://...  override and save the backend URL
  *   --es device_id quest3-abc    override and save the device_id sent to Megamind
+ *   --ez video false             turn real-video recording (/v1/video) off (true = on, the default)
  *   --es action start|pause|stop control capture
  */
 class MainActivity : Activity() {
@@ -61,6 +63,7 @@ class MainActivity : Activity() {
   private lateinit var intervalEdit: EditText
   private lateinit var chunkEdit: EditText
   private lateinit var deviceEdit: EditText
+  private lateinit var videoCheck: CheckBox
   private lateinit var settingsMsg: TextView
   private lateinit var pulse: ObjectAnimator
 
@@ -98,6 +101,7 @@ class MainActivity : Activity() {
     intent.removeExtra("action")
     intent.removeExtra("backend_url")
     intent.removeExtra("device_id")
+    intent.removeExtra("video")
     setIntent(intent)
   }
 
@@ -117,6 +121,11 @@ class MainActivity : Activity() {
     intent.getStringExtra("device_id")?.takeIf { it.isNotBlank() }?.let { id ->
       SettingsStore.save(this, SettingsStore.get(this).copy(deviceId = id.trim()))
       deviceEdit.setText(id.trim())
+    }
+    if (intent.hasExtra("video")) {
+      val on = intent.getBooleanExtra("video", true)
+      SettingsStore.save(this, SettingsStore.get(this).copy(recordVideo = on))
+      videoCheck.isChecked = on
     }
     autostartPending = intent.getBooleanExtra("autostart", false)
     when (intent.getStringExtra("action")) {
@@ -252,6 +261,12 @@ class MainActivity : Activity() {
     intervalEdit = field("Frame interval (seconds)", fmt(s.frameIntervalSec), InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
     chunkEdit = field("Chunk length (seconds; also the length of each /v1/audio clip)", s.chunkSec.toString(), InputType.TYPE_CLASS_NUMBER)
     deviceEdit = field("Device ID (device_id sent with every frame and audio clip)", s.deviceId, InputType.TYPE_CLASS_TEXT)
+    videoCheck = CheckBox(this).apply {
+      text = "Record real video (30 fps H.264 to /v1/video; JPEG-only fallback if the encoder fails; applies from the next Start)"
+      setTextColor(Color.WHITE)
+      isChecked = s.recordVideo
+      root.addView(this, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(6) })
+    }
     val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(10), 0, 0) }
     settingsMsg = text(14f, Color.rgb(170, 220, 170))
     row.addView(button("Save", Color.rgb(50, 110, 200)) { saveSettings() }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { rightMargin = dp(10) })
@@ -279,7 +294,7 @@ class MainActivity : Activity() {
       settingsMsg.text = "Invalid settings (interval >= 0.1 s, chunk 1-600 s, device ID, valid URL)"
       return
     }
-    SettingsStore.save(this, Settings(url, interval, chunk, device))
+    SettingsStore.save(this, Settings(url, interval, chunk, device, videoCheck.isChecked))
     settingsMsg.text = "Saved"
     Uploader.retryNow()
   }
@@ -301,6 +316,7 @@ class MainActivity : Activity() {
     }
     infoText.text = listOf(
         Status.cameraInfo,
+        "${Status.videoInfo}  (encoded ${Status.videoFramesEncoded} frames, ${Status.videoChunks} chunks, ${Status.videoSent} uploaded)",
         "${Status.audioInfo}  (peak ${Status.audioPeak}/32767)" +
             (if (Status.micSilenced == true) "\n  MIC MUTED BY SYSTEM - headset off-head/asleep or mic privacy on; frames still captured" else ""),
         "camera frames received: ${Status.framesReceived}",

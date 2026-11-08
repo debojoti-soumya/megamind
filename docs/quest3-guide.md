@@ -343,6 +343,12 @@ select, type in the bar to ask.
 Then press **Enter passthrough** (`immersive-ar`; falls back to **Enter VR** / `immersive-vr` where AR is
 unsupported) and allow the permission prompt. *Exit* or the Meta button leaves immersive mode.
 
+- **Voice questions.** The round mic button next to the ask box: hold it and release to send, or tap once to start and
+  tap again to stop (Space / Enter toggles it from the keyboard). In immersive mode use the *Ask by voice (tap)* button
+  above the suggestions: trigger once to start, again to send. The clip goes to `POST /v1/chat` as 16 kHz WAV and is
+  transcribed by the server's configured STT (`STT_PROVIDER`, the same as the /ui push-to-talk; `mock` answers
+  "[mock transcript]"). The mic is released after each question. The mic also needs the secure context above: on
+  `http://<laptop-ip>:8000/xr` the button explains that instead of recording.
 - `?device=quest3-1` scopes cards, chat and replays to one device; `?session=<id>` keeps one chat session across reloads.
 - Replays only exist for the last `REPLAY_WINDOW_S` (15 min) of frames; older moments show the still thumbnail.
 - The page loads three.js from `cdn.jsdelivr.net`, so the headset needs internet (or the page shows "Failed to start").

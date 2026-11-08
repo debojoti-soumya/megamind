@@ -231,4 +231,5 @@ async def stats(request: Request):
             "cold_retention_days": s.cold_retention_days,
             "cold_decodes": media.decodes,
         },
+        **({"video": app.video.stats()} if getattr(app, "video", None) is not None else {}),
     }

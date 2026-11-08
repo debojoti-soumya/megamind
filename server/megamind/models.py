@@ -47,6 +47,25 @@ class AudioAccepted(BaseModel):
     token_ids: list[str] = Field(default_factory=list)
 
 
+class VideoMeta(BaseModel):
+    """`POST /v1/video` meta: `ts_start` is the unix time (seconds) of the clip's first frame."""
+
+    device_id: str
+    ts_start: float = Field(allow_inf_nan=False)
+
+
+class VideoAccepted(BaseModel):
+    video_id: str  # "" when not kept
+    accepted: bool = True
+    # duplicate = this clip (same device, start and length) is already stored: its id is returned, nothing new kept;
+    # privacy = PRIVACY_BLUR_FACES is on and real video cannot be blurred, so it was discarded (don't resend)
+    reason: Literal["duplicate", "privacy"] | None = None
+    ts_start: float
+    duration_s: float = 0.0
+    width: int = 0
+    height: int = 0
+
+
 class MemoryToken(BaseModel):
     id: str
     device_id: str
@@ -174,6 +193,9 @@ class MontageRequest(BaseModel):
     time_from: float | str | None = None
     time_to: float | str | None = None
     max_clips: int | None = Field(None, ge=0, le=24)  # None/0 = MONTAGE_MAX_CLIPS
+    # "" / "auto" (MONTAGE_SMART decides) | "smart" (content-filtered: every clip shows the query's subject) |
+    # "classic" (highlight reel, the pre-smart behaviour). Time-range-only requests are always classic.
+    mode: Literal["", "auto", "smart", "classic"] | None = None
 
 
 class MontageClip(BaseModel):
@@ -181,7 +203,8 @@ class MontageClip(BaseModel):
     ts: float
     title: str
     duration_s: float
-    source: Literal["replay", "timelapse"]  # buffered frames (#58) or a ~1 fps run of stored keyframes
+    # real headset video (POST /v1/video), buffered frames (#58), or a ~1 fps run of stored keyframes
+    source: Literal["video", "replay", "timelapse"]
     thumb_url: str = ""
 
 
@@ -192,6 +215,11 @@ class MontageResponse(BaseModel):
     narration: str = ""
     planner: Literal["claude", "offline"] = "offline"
     clips: list[MontageClip] = Field(default_factory=list)
+    # content-filtered ("smart") montages only; defaults on the classic path
+    mode: Literal["classic", "smart"] = "classic"
+    subject: str = ""  # what every clip shows, e.g. "the guy in the black coat"
+    candidates: int = 0  # retriever candidates checked
+    matches: int = 0  # matching moments the verifier confirmed (0 when unverified: planner="offline")
 
 
 class HealthResponse(BaseModel):

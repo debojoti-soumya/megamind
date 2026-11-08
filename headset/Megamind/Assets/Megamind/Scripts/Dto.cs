@@ -18,6 +18,12 @@ namespace Megamind
 
     [Serializable] public class AudioAccepted { public string audio_id; public double duration_s; public string transcript; public List<string> token_ids = new List<string>(); }
 
+    // POST /v1/video (optional real H.264 clip for replay/montage; the native Quest app sends it, Unity does not).
+    // ts_start = unix seconds of the clip's first frame. reason: null | "duplicate" (already stored) | "privacy" (not kept).
+    [Serializable] public class VideoMeta { public string device_id; public double ts_start; }
+
+    [Serializable] public class VideoAccepted { public string video_id; public bool accepted; public string reason; public double ts_start; public double duration_s; public int width; public int height; }
+
     // thumb_url is "" for tokens without an image (kind="transcript", heard speech, or a frame whose pixels aged
     // out, tier="text" on the server): skip the thumbnail. replay_url may be keyframe-rate for older memories.
     // thumb_url: /v1/thumbs/{id}.jpg, or /v1/live/{id}.jpg for live "NOW" frames (id "now_..."), or "" (speech)
@@ -62,8 +68,10 @@ namespace Megamind
 
     // POST /v1/montage. time_from/time_to: unix seconds or ISO-8601 as strings; JsonUtility sends "" for null,
     // which the server reads as unbounded (and query "" as no query). max_clips 0 = server default.
-    [Serializable] public class MontageRequest { public string device_id; public string query; public string time_from; public string time_to; public int max_clips; }
+    // mode: "" = auto (server decides), "smart" = content-filtered (every clip shows the query's subject), "classic".
+    [Serializable] public class MontageRequest { public string device_id; public string query; public string time_from; public string time_to; public int max_clips; public string mode; }
 
+    // source: "video" (real headset video) | "replay" (buffered frames) | "timelapse" (stored keyframes)
     [Serializable] public class MontageClip { public string token_id; public double ts; public string title; public double duration_s; public string source; public string thumb_url; }
 
     [Serializable]
@@ -75,5 +83,10 @@ namespace Megamind
         public string narration;
         public string planner;
         public List<MontageClip> clips = new List<MontageClip>();
+        // content-filtered ("smart") montages; classic: "classic", "", 0, 0
+        public string mode;
+        public string subject;
+        public int candidates;
+        public int matches;
     }
 }

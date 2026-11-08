@@ -12,7 +12,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from PIL import Image
@@ -121,15 +121,26 @@ class ReplayCache:
         return self.dir / f"{key}.mp4"
 
     async def get_or_render(
-        self, key: str, frames: Sequence[BufferedFrame], *, ffmpeg: str, fps: int, max_width: int
+        self,
+        key: str,
+        frames: Sequence[BufferedFrame],
+        *,
+        ffmpeg: str,
+        fps: int,
+        max_width: int,
+        render: Callable[[Path], object] | None = None,
     ) -> Path:
+        """`render(path)`, when given, replaces the frame render (e.g. real video cut by `megamind.video`)."""
         p = self.path(key)
         lock = self._locks.setdefault(key, asyncio.Lock())
         try:
             async with lock:
                 if not p.exists():
                     async with self._renders:
-                        await asyncio.to_thread(self._render, frames, p, ffmpeg, fps, max_width)
+                        if render is not None:
+                            await asyncio.to_thread(render, p)
+                        else:
+                            await asyncio.to_thread(self._render, frames, p, ffmpeg, fps, max_width)
                     self._prune(keep=p)
         finally:
             if not lock.locked():
