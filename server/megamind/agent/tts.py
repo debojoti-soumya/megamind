@@ -82,9 +82,7 @@ class OpenAITTS(_FileTTS):
         self.voice = settings.tts_voice
 
     async def _render(self, text: str) -> bytes:
-        r = await self.client.audio.speech.create(
-            model=self.model, voice=self.voice, input=text, response_format="wav"
-        )
+        r = await self.client.audio.speech.create(model=self.model, voice=self.voice, input=text, response_format="wav")
         return r.content
 
 
