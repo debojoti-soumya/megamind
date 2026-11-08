@@ -86,10 +86,12 @@ class ChatJSON:
         retries: int = 6,
         transport: httpx.AsyncBaseTransport | None = None,
         reasoning_effort: str = "low",
+        service_tier: str = "",
     ) -> None:
         self.model = model
         self.retries = retries
         self.reasoning_effort = reasoning_effort
+        self.service_tier = service_tier
         self._sem = asyncio.Semaphore(concurrency)
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -110,6 +112,8 @@ class ChatJSON:
             body["max_completion_tokens"] = max_tokens + 4000
         else:
             body["temperature"] = 0
+        if self.service_tier:
+            body["service_tier"] = self.service_tier
         return body
 
     async def __call__(self, system: str, user: str, *, max_tokens: int = 800) -> dict[str, Any]:
@@ -799,6 +803,7 @@ def build_hier(
     # recall-time calls fail fast (the stage is also bounded by timeout_s); note writing keeps the patient defaults
     fast = dict(kw, timeout_s=float(getattr(settings, "hier_call_timeout_s", 4.0) or 4.0))
     fast["retries"] = max(1, int(getattr(settings, "hier_retries", 2) or 2))
+    fast["service_tier"] = getattr(settings, "hier_service_tier", "") or ""
     pick_llm = ChatJSON(api_key, pick_model, **fast)
     rank_llm = pick_llm if rank_model == pick_model else ChatJSON(api_key, rank_model, **fast)
     cfg = HierConfig(

@@ -77,7 +77,7 @@ async def main() -> int:
         action="append",
         default=[],
         metavar="LABEL:k=v,...",
-        help="extra hier row; keys note/pick/rank (models), effort, pool, hints, gate, minhits, hours, direct; "
+        help="extra hier row; keys note/pick/rank (models), effort, tier, pool, hints, gate, minhits, hours, direct; "
         "e.g. m:pick=gpt-5-mini,hours=8",
     )
     ap.add_argument("--max-usd", type=float, default=3.0, help="OpenAI budget across all runs (ledger)")
@@ -216,6 +216,7 @@ HIER_KEYS = {
     "pick": "hier_model",
     "rank": "hier_rank_model",
     "effort": "hier_reasoning_effort",
+    "tier": "hier_service_tier",
     "pool": "hier_base_pool",
     "hints": "hier_hint_windows",
     "gate": "hier_gate_margin",

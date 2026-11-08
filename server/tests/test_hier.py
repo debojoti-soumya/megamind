@@ -477,3 +477,16 @@ async def test_summary_reports_paths_and_stage_latency_percentiles():
     assert [x["path"] for x in r.recent] == ["gated", "llm"]
     assert out["llm_ms"]["p50"] >= 0 and out["llm_ms"]["p95"] >= out["llm_ms"]["p50"]
     assert out["stage1_ms"] is not None and out["stage2_ms"] is not None
+
+
+def test_build_hier_service_tier_applies_to_the_recall_calls_only():
+    from megamind.retrieval.hier import build_hier
+
+    s = SimpleNamespace(hier_model="gpt-5-mini", hier_service_tier="priority", hier_cache_path="", wearer_tz="UTC")
+    r = build_hier(s, InMemoryStore(), FixedRetriever([]), "k")
+    assert r.llm._body("s", "u", 10)["service_tier"] == "priority"
+    assert "service_tier" not in r.memory.llm._body("s", "u", 10)  # note writing stays on the standard tier
+    plain = build_hier(
+        SimpleNamespace(hier_model="gpt-5-mini", hier_cache_path=""), InMemoryStore(), FixedRetriever([]), "k"
+    )
+    assert "service_tier" not in plain.llm._body("s", "u", 10)

@@ -106,6 +106,7 @@ class Settings(BaseSettings):
     # (R@1 0.74 vs 0.60, 3.7x cheaper, same latency); "" rank model -> hier_model
     hier_model: str = "gpt-5-mini"  # stage 1 block pick; also stage 2 when hier_rank_model is ""
     hier_rank_model: str = "gpt-5-mini"  # stage 2 token rank
+    hier_service_tier: str = ""  # OpenAI service_tier of the two recall-time calls: "" | priority (faster, ~2x $/token)
     hier_reasoning_effort: str = "minimal"  # reasoning models only (gpt-5*/o*): minimal|none|low|medium, per model
     hier_base_pool: int = 30  # hybrid candidates handed to the LLM stages
     hier_hint_windows: int = 10  # stage 2 always shows the windows around this many top hybrid hits
