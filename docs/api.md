@@ -82,7 +82,7 @@ Speech that starts ≤ `SPEECH_MERGE_S` (10 s) after the device's last transcrip
 utterance cut by a chunk boundary stays one token. Only the first window of a chunk can continue the previous chunk;
 so `token_ids` may start with an **existing** (merged-into) token id. The merge target is kept per device in server
 memory (no merge across a restart) and dropped by `DELETE /memories`.
-Silence → `token_ids: []`. Bad `meta` (same limits as `POST /frames`) / empty body → 400; > 25 MB or > 600 s → 413;
+Silence (incl. a 0-sample or digitally silent 16-bit chunk, which skips STT) → `token_ids: []`, `transcript: ""`. Bad `meta` (same limits as `POST /frames`) / empty body → 400; > 25 MB or > 600 s → 413;
 undecodable audio → 415; STT provider error → 502.
 
 ## `POST /video`  (headset -> server; optional)
