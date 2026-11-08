@@ -258,8 +258,11 @@ class HierMemory:
         """How many closed blocks before `until` still need a note."""
         return len(await self._missing(until, device_id))
 
-    async def build(self, until: float, *, device_id: str | None = None, full: bool = False) -> int:
-        """Write the missing notes for every block that closed before `until`; returns how many were written."""
+    async def build(
+        self, until: float, *, device_id: str | None = None, full: bool = False, rollup: bool = True
+    ) -> int:
+        """Write the missing notes for every block that closed before `until` (and, with `rollup`, the hour/day
+        overviews they complete); returns how many were written."""
         async with self._lock:
             todo = await self._missing(until, device_id, full=full)
             self._scanned[device_id] = max(until, self._scanned.get(device_id, until))
@@ -279,7 +282,7 @@ class HierMemory:
                 written += 1
 
             await asyncio.gather(*(one(s, ts) for s, ts in todo))
-            for level, span in (("hour", 3600.0), ("day", 86400.0)):
+            for level, span in (("hour", 3600.0), ("day", 86400.0)) if rollup else ():
                 written += await self._rollup(level, span, until)
             self._save()
             return written
@@ -470,11 +473,14 @@ class HierRetriever(Retriever):
         }
 
     async def _ensure_notes(self, until: float, device_id: str | None) -> None:
-        """Write a few missing notes inline; a large backlog (cold start, a long upload) is built in the
-        background so the query answers from the notes that exist instead of waiting on dozens of LLM calls."""
+        """Write a few missing block notes inline; a large backlog (cold start, a long upload) is built in the
+        background so the query answers from the notes that exist instead of waiting on dozens of LLM calls.
+        Hour/day overviews are never written inline: stage 1 lists the blocks either way, and the two serial
+        rollup calls (~2 s each) on top of a block note (~3 s) would eat the whole `timeout_s` budget."""
         if await self.memory.pending(until, device_id=device_id) <= self.cfg.inline_build_max:
-            await self.memory.build(until, device_id=device_id)
-        elif self._bg is None or self._bg.done():
+            if not await self.memory.build(until, device_id=device_id, rollup=False):
+                return
+        if self._bg is None or self._bg.done():
             self._bg = asyncio.create_task(self.memory.build(until, device_id=device_id))
 
     async def run_forever(self, interval_s: float) -> None:
@@ -802,6 +808,7 @@ def build_hier(
         gate_min_hits=int(getattr(settings, "hier_gate_min_hits", 5) or 0),
         outline_hours=int(getattr(settings, "hier_outline_hours", 0) or 0),
         base_pool=int(getattr(settings, "hier_base_pool", 30) or 30),
+        inline_build_max=int(getattr(settings, "hier_inline_build_max", 3) or 0),
         hint_windows=int(getattr(settings, "hier_hint_windows", 10) or 10),
     )
     memory = HierMemory(

@@ -212,6 +212,28 @@ async def test_large_note_backlog_builds_in_background_not_inline():
     assert f"block:{T0 + 1200:.0f}" in mem.notes  # a small backlog is written inline
 
 
+async def test_inline_notes_skip_the_rollups_which_land_in_the_background():
+    store, llm = await _store(), FakeLLM(stage1={"blocks": []}, stage2={"ids": []})
+    mem = HierMemory(store, llm, tz="UTC")
+    r = HierRetriever(store, FixedRetriever([await store.get("a1")]), mem)
+    now = datetime.fromtimestamp(T0 + 3700, UTC)  # the hour closed too: 3 block notes + an hour rollup are due
+
+    def kinds():
+        return [
+            "note" if "Lines from" in c else "rollup" if "Log entries" in c else "pick" if "Pick up to" in c else "rank"
+            for c in llm.calls
+        ]
+
+    await r.retrieve("keys", k=1, now=now)
+    assert kinds()[:4] == ["note", "note", "note", "pick"]  # block notes before stage 1, the rollup not
+    assert r._bg is not None
+    await r._bg
+    assert f"hour:{T0:.0f}" in mem.notes and kinds().count("rollup") == 1 and kinds().count("note") == 3
+    n = len(llm.calls)
+    await r.retrieve("keys", k=1, now=now)
+    assert kinds()[n:] == kinds()[3:n] and r._bg.done()  # nothing left to write: stages only, no new background task
+
+
 async def test_gate_margin_skips_the_llm_when_the_hybrid_is_confident():
     from megamind.retrieval.hier import top_margin
 

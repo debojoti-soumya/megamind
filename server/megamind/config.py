@@ -109,6 +109,7 @@ class Settings(BaseSettings):
     hier_reasoning_effort: str = "minimal"  # reasoning models only (gpt-5*/o*): minimal|none|low|medium, per model
     hier_base_pool: int = 30  # hybrid candidates handed to the LLM stages
     hier_hint_windows: int = 10  # stage 2 always shows the windows around this many top hybrid hits
+    hier_inline_build_max: int = 3  # a recall writes up to this many missing block notes itself (0: never waits)
     hier_note_model: str = "gpt-4.1-mini"  # writes the block/hour/day notes
     hier_base_url: str = "https://api.openai.com/v1"
     hier_api_key: str = ""  # "" -> openai_api_key
