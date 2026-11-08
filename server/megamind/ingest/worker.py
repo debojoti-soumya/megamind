@@ -126,13 +126,28 @@ class EnrichmentWorker:
                 Path(token.thumb_path).write_bytes(blurred)
                 if self.face_blur.upstream:
                     jpeg = blurred
-        e = await self.enricher.enrich(jpeg)
-        token.caption, token.ocr_text, token.entities = e.caption, e.ocr_text, e.entities
-        token.text_vec = await self.text_embedder.embed(f"{e.caption}\n{e.ocr_text}\n{' '.join(e.entities)}")
-        if self.image_embedder is not None:
-            # reuse the vector an enricher already computed from this JPEG with this very embedder (LocalEnricher)
-            reuse = e.image_vec is not None and e.image_vec_from is self.image_embedder
-            token.image_vec = e.image_vec if reuse else await self.image_embedder.embed_image(jpeg)
+        # the image embedding needs only the pixels, so it overlaps enrich + text embedding -- unless the
+        # enricher computes it itself with this very embedder (LocalEnricher's single SigLIP pass)
+        image_task = None
+        shared = getattr(self.enricher, "image_embedder", None) is self.image_embedder
+        if self.image_embedder is not None and not shared:
+            image_task = asyncio.create_task(self.image_embedder.embed_image(jpeg))
+            image_task.add_done_callback(lambda t: t.cancelled() or t.exception())  # never "unretrieved"
+        try:
+            e = await self.enricher.enrich(jpeg)
+            token.caption, token.ocr_text, token.entities = e.caption, e.ocr_text, e.entities
+            token.text_vec = await self.text_embedder.embed(f"{e.caption}\n{e.ocr_text}\n{' '.join(e.entities)}")
+            if self.image_embedder is not None:
+                # reuse the vector an enricher already computed from this JPEG with this very embedder
+                if e.image_vec is not None and e.image_vec_from is self.image_embedder:
+                    token.image_vec = e.image_vec
+                elif image_task is not None:
+                    token.image_vec = await image_task
+                else:
+                    token.image_vec = await self.image_embedder.embed_image(jpeg)
+        finally:
+            if image_task is not None:
+                image_task.cancel()  # no-op once done; stops a pending embed when enrichment failed
         async with self._add_lock:
             if token.id in self._discarded:
                 return
