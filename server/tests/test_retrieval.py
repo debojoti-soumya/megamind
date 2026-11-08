@@ -396,3 +396,20 @@ async def test_contentless_explicit_window_near_now_falls_back_to_latest_frames(
         "what did I see?", k=1, time_from=now.timestamp() - 300, device_id="dev", now=now
     )
     assert r.widened and [x.token.id for x in r.tokens] == ["r3"]
+
+
+async def test_ocr_search_cache_sees_new_late_enriched_and_purged_tokens():
+    store = InMemoryStore()
+    base = NOW.timestamp() - 3600
+    await store.add(_tok("a", base, "a wall sign", ocr_text="EXIT ROUTE B"))
+    await store.add(_tok("b", base + 60, "a poster"))
+    ad = StoreAdapter(store)
+    assert [i for i, _ in await ad.ocr_search("exit", 5)] == ["a"]
+    assert await ad.ocr_search("wifi", 5) == []
+    await store.add(_tok("c", base + 120, "a router label", ocr_text="WIFI PASSWORD hunter2"))  # new token
+    assert [i for i, _ in await ad.ocr_search("wifi", 5)] == ["c"]
+    await store.add(_tok("b", base + 60, "a poster", ocr_text="WIFI GUEST"))  # OCR filled in late
+    assert {i for i, _ in await ad.ocr_search("wifi", 5)} == {"b", "c"}
+    assert [i for i, _ in await ad.ocr_search("wifi", 5, time_to=base + 90)] == ["b"]
+    await store.purge("dev", since_ts=base + 100)  # count drops -> full re-read
+    assert [i for i, _ in await ad.ocr_search("wifi", 5)] == ["b"]

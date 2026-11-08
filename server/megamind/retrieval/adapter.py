@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from collections import Counter
+from dataclasses import dataclass, field
 from typing import Literal
 
 from megamind.models import MemoryToken
@@ -52,11 +54,17 @@ def cosine(a: list[float], b: list[float]) -> float:
 
 def bm25_scores(query: str, docs: dict[str, str], k1: float = 1.5, b: float = 0.75) -> list[tuple[str, float]]:
     """Okapi BM25 over `docs` (id -> text); positive scores only, best first."""
-    q = tokenize(query)
-    if not q or not docs:
+    if not tokenize(query) or not docs:
         return []
-    tf = {i: Counter(tokenize(d)) for i, d in docs.items()}
-    n = len(docs)
+    return bm25_rank(query, {i: Counter(tokenize(d)) for i, d in docs.items()}, k1, b)
+
+
+def bm25_rank(query: str, tf: dict[str, Counter[str]], k1: float = 1.5, b: float = 0.75) -> list[tuple[str, float]]:
+    """`bm25_scores` over pre-tokenised docs (id -> term counts)."""
+    q = tokenize(query)
+    if not q or not tf:
+        return []
+    n = len(tf)
     avgdl = sum(sum(c.values()) for c in tf.values()) / n or 1.0
     df = Counter()
     for c in tf.values():
@@ -77,11 +85,35 @@ def bm25_scores(query: str, docs: dict[str, str], k1: float = 1.5, b: float = 0.
     return out
 
 
+@dataclass
+class _OcrIndex:
+    """Per-device OCR corpus for `ocr_search`, kept between queries instead of re-reading the day each time."""
+
+    ids: set[str] = field(default_factory=set)  # every token id read for this device (to detect purges)
+    docs: dict[str, tuple[MemoryToken, Counter[str]]] = field(default_factory=dict)  # tokens with OCR text
+    max_ts: float = -math.inf
+    built: float = 0.0  # monotonic time of the last full read
+
+    def put(self, toks: list[MemoryToken]) -> None:
+        for t in toks:
+            self.ids.add(t.id)
+            self.max_ts = max(self.max_ts, t.ts)
+            if t.ocr_text.strip():
+                self.docs[t.id] = (t, Counter(tokenize(t.ocr_text)))
+            else:
+                self.docs.pop(t.id, None)
+
+
 class StoreAdapter:
     def __init__(self, store: MemoryStore) -> None:
         self.store = store
         self._seen: dict[str, MemoryToken] = {}
-        self.ocr_pool = 5_000  # tokens scanned by `ocr_search` (no store primitive for OCR-only BM25)
+        self.ocr_pool = 5_000  # tokens scanned by `ocr_search` when the store can't be cached (no count/range)
+        # `ocr_search` keeps a per-device OCR corpus: each query re-reads only the last `ocr_refresh_s` (enrichment
+        # fills OCR in late), a full re-read happens every `ocr_rebuild_s` or when the store count disagrees (purge)
+        self.ocr_refresh_s = 900.0
+        self.ocr_rebuild_s = 300.0
+        self._ocr: dict[str | None, _OcrIndex] = {}
 
     def _rank(self, rows: list) -> list[tuple[str, float]]:
         """Normalise a store ranking (`(token, score)` per #3, or `(id, score)`) to ids."""
@@ -152,11 +184,35 @@ class StoreAdapter:
         time_to: float | None = None,
         device_id: str | None = None,
     ) -> list[tuple[str, float]]:
-        """BM25 over `ocr_text` only. No store primitive covers this, so it runs over `range()`."""
-        pool = await self.range(time_from, time_to, limit=self.ocr_pool, device_id=device_id)
-        for t in pool:
-            self._seen[t.id] = t
-        return bm25_scores(query, {t.id: t.ocr_text for t in pool if t.ocr_text.strip()})[:k]
+        """BM25 over `ocr_text` only. No store primitive covers this, so it runs over a cached `range()` corpus."""
+        idx = await self._ocr_index(device_id)
+        if idx is None:
+            pool = await self.range(time_from, time_to, limit=self.ocr_pool, device_id=device_id)
+            for t in pool:
+                self._seen[t.id] = t
+            return bm25_scores(query, {t.id: t.ocr_text for t in pool if t.ocr_text.strip()})[:k]
+        tf = {
+            i: c
+            for i, (t, c) in idx.docs.items()
+            if (time_from is None or t.ts >= time_from) and (time_to is None or t.ts <= time_to)
+        }
+        out = bm25_rank(query, tf)[:k]
+        for i, _ in out:
+            self._seen[i] = idx.docs[i][0]
+        return out
+
+    async def _ocr_index(self, device_id: str | None) -> _OcrIndex | None:
+        if not (hasattr(self.store, "count") and hasattr(self.store, "range")):
+            return None
+        idx = self._ocr.get(device_id)
+        if idx is not None and time.monotonic() - idx.built < self.ocr_rebuild_s:
+            idx.put(await self.store.range(idx.max_ts - self.ocr_refresh_s, None, 10**9, device_id=device_id))
+            if len(idx.ids) == await self.store.count(device_id):
+                return idx
+        idx = _OcrIndex(built=time.monotonic())
+        idx.put(await self.store.range(None, None, 10**9, device_id=device_id))
+        self._ocr[device_id] = idx
+        return idx
 
     async def range(
         self,
