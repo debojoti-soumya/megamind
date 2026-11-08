@@ -456,7 +456,8 @@ blank chats are dropped on save. Up to 60 chats x 200 messages are kept.
 
 **Voice path (fast).** Release push-to-talk → `POST /v1/stt` (audio + `command_hints` = every phrase in
 `VoiceCommands.cs`; ≈ 0.5 s) → the transcript appears as your bubble → `VoiceCommands.Match` runs locally (exact, then
-fuzzy: all words of a multi-word phrase present — "could you open the menu please" — or edit distance ≤ 1–2 — "paws
+fuzzy: all words of a multi-word phrase present with only courtesy words around it — "please open the menu for me", while
+"did I start recording" stays a question — or edit distance ≤ 1–2 — "paws
 recording"; single-word phrases exact only), falling back to the server's `command.phrase`. A command runs at once with a
 confirmation chip (`"paws recording" → "pause recording" → recording paused`) and never reaches Claude/TTS; anything else
 is asked as **text** on `/v1/chat/stream`, whose `audio` events start speaking after the first sentence (clips queued in

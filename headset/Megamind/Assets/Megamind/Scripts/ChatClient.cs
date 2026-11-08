@@ -178,7 +178,10 @@ namespace Megamind
                 {
                     string text = (stt.Response.transcript ?? "").Trim();
                     if (text.Length == 0) { panel?.AddSystemMessage("(didn\u2019t catch that)"); yield break; }
-                    string serverPhrase = stt.Response.command != null ? stt.Response.command.phrase : null;
+                    // the server's fuzzy match (difflib >= 0.8) also fires on short questions ("did I start recording" = 0.83),
+                    // so only a near-exact server hit backs up the local matcher
+                    var sc = stt.Response.command;
+                    string serverPhrase = sc != null && sc.score >= 0.9f ? sc.phrase : null;
                     if (menu != null && menu.TryVoiceCommand(text, serverPhrase)) yield break;
                     yield return SendTextCo(text); // shows the transcript as the user bubble, then streams the answer
                     yield break;
