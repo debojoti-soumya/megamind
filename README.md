@@ -7,8 +7,9 @@
 Megamind continuously samples the Quest 3's passthrough cameras, distils keyframes into
 **memory tokens** (caption + OCR + entities + embeddings + thumbnail) and stores them in a
 vector database. A **Claude** agent exposes a `recall_memory` tool; when called, relevant
-tokens are retrieved and handed to a **Qwen-VL reader** sub-agent that attends over the
-concatenated captions *and images* and returns cited evidence. Claude answers; the wearer
+tokens are retrieved and handed to a **Gemma 4 31B reader** sub-agent (a vision LLM on Sail
+Research's OpenAI-compatible API) that attends over the concatenated captions *and images* and
+returns cited evidence. Claude answers; the wearer
 hears it and sees the remembered frame on a world-locked AR panel.
 
 - Design document: [`docs/megamind-design.pdf`](docs/megamind-design.pdf) (read this first)
@@ -22,13 +23,13 @@ hears it and sees the remembered frame on a world-locked AR panel.
  Quest 3 (Unity)                      Server (FastAPI, Python)
  ┌───────────────────┐   JPEG 1 fps   ┌─────────┐  ┌────────┐  ┌───────────────┐  ┌───────┐  ┌───────────┐
  │ Passthrough camera├───────────────▶│ /frames │─▶│ dedupe │─▶│ caption + OCR │─▶│ embed │─▶│ LanceDB   │
- │ keyframe sampler  │                └─────────┘  └────────┘  │  (Qwen-VL)    │  └───────┘  │ memory    │
+ │ keyframe sampler  │                └─────────┘  └────────┘  │  (Gemma 4)    │  └───────┘  │ memory    │
  ├───────────────────┤                                         └───────────────┘             │ tokens    │
  │ AR chat panel     │   audio/text   ┌─────────┐  ┌─────┐  ┌──────────────┐  recall_memory  └─────┬─────┘
  │ push-to-talk, TTS │◀──────────────▶│  /chat  │─▶│ STT │─▶│ Claude agent │◀────────────────────┐ │ top-k
  └───────────────────┘  answer+thumbs └─────────┘  └─────┘  └──────┬───────┘   evidence + cites  │ ▼
                                                                    │ query, k           ┌────────┴────────┐
-                                                                   └───────────────────▶│ Qwen-VL reader  │
+                                                                   └───────────────────▶│ Gemma 4 reader  │
                                                                                         │ attention over  │
                                                                                         │ memory tokens   │
                                                                                         └─────────────────┘
@@ -38,13 +39,13 @@ Three streams of work:
 
 | # | Stream | Where | Status |
 |---|---|---|---|
-| 1 | **Capture → tokenize → store.** Passthrough Camera API → 1 fps JPEG → dHash dedupe → Qwen-VL caption/OCR/entities → text + SigLIP embeddings → LanceDB | `headset/.../FrameUploader.cs`, `server/megamind/ingest`, `server/megamind/store` | filter + worker + in-memory store done; VLM enricher, embeddings, LanceDB are `TODO(stream-1)` |
-| 2 | **Retrieval tool + reader.** `recall_memory(query, time_from, time_to, k, mode)` → hybrid search (vector + BM25 + time filter, RRF) → Qwen-VL reads captions + thumbnails → evidence with citations → Claude | `server/megamind/agent/{tools,reader,claude_agent}.py` | tool wiring done; Claude tool-use loop and Qwen-VL reader are `TODO(stream-2)` |
+| 1 | **Capture → tokenize → store.** Passthrough Camera API → 1 fps JPEG → dHash dedupe → VLM (Gemma 4 31B) caption/OCR/entities → text + SigLIP embeddings → LanceDB | `headset/.../FrameUploader.cs`, `server/megamind/ingest`, `server/megamind/store` | filter + worker + in-memory store done; VLM enricher, embeddings, LanceDB are `TODO(stream-1)` |
+| 2 | **Retrieval tool + reader.** `recall_memory(query, time_from, time_to, k, mode)` → hybrid search (vector + BM25 + time filter, RRF) → Gemma 4 31B reads captions + thumbnails → evidence with citations → Claude | `server/megamind/agent/{tools,reader,claude_agent}.py` | done: Claude tool-use loop, Gemma 4 reader (6 s deadline, then caption-only), `server/tools/eval_agent.py` |
 | 3 | **AR chat.** World-locked panel, push-to-talk → STT, spoken reply via TTS, cited thumbnails | `headset/.../{ChatClient,ChatPanel}.cs`, `server/megamind/agent/{stt,tts}.py` | C# stubs written (untested on device); STT/TTS providers are `TODO(stream-3)` |
 
 Key decisions (details and rationale in the design doc §3): one Unity app does both capture
 and chat (Horizon OS suspends background apps); a memory token is a *record*, not a learned
-vector; Claude orchestrates while Qwen-VL reads; the headset is a thin client; LanceDB for
+vector; Claude orchestrates while an open VLM (Gemma 4 31B) reads; the headset is a thin client; LanceDB for
 zero-infra storage; voice-first UI.
 
 ## Repository layout
@@ -78,10 +79,14 @@ curl -s "localhost:8000/v1/memories?q=keys&k=5"
 
 With no API keys configured the server runs entirely on deterministic mocks (mock captions,
 hashing embeddings, caption-only reader, no STT/TTS), so the whole loop is exercisable on a
-laptop. Set `ANTHROPIC_API_KEY`, `READER_API_KEY` + `READER_BASE_URL` (Sail Research:
-`https://api.sailresearch.com/v1` serving `google/gemma-4-31B-it`; or any OpenAI-compatible endpoint:
-vLLM on Modal, Together, OpenRouter), `EMBED_PROVIDER`, `STT_PROVIDER`,
+laptop. Set `ANTHROPIC_API_KEY`, `READER_API_KEY` + `READER_BASE_URL`, `EMBED_PROVIDER`, `STT_PROVIDER`,
 `TTS_PROVIDER` to turn on the real thing — see `server/.env.example` and `docs/resources.md`.
+
+**Reader.** Default: Sail Research (`READER_BASE_URL=https://api.sailresearch.com/v1`, OpenAI-compatible)
+serving `READER_MODEL=google/gemma-4-31B-it` with image input; `READER_FALLBACK_MODEL=nvidia/Gemma-4-31B-IT-NVFP4`
+takes the single retry after a 429/503/timeout. Calls take ~3 s; a turn with Claude is ~5–6 s. Any
+OpenAI-compatible endpoint works by changing those two variables. Plan B if Sail is unavailable:
+self-host a VLM (e.g. Qwen2.5-VL-7B) on vLLM on Modal and point `READER_BASE_URL` at it.
 
 ### Headset
 
