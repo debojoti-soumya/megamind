@@ -3,9 +3,12 @@
 # `downloadedInstallerPath` under UNITY_EDITOR_WIN / UNITY_EDITOR_OSX (error CS0103). The XR Simulator is not
 # available on Linux anyway, so give the variable a value there. Re-run after any package re-resolve
 # (Library/PackageCache is regenerated). Harmless on Windows/macOS. Usage: sh headset/tools/patch-metaxr-linux.sh
+# Also patches an embedded copy in Packages/com.meta.xr.sdk.core (what .github/workflows/headset-apk.yml uses, so a
+# fresh CI checkout compiles on the first editor launch).
 set -e
 cd "$(dirname "$0")/../Megamind"
-for f in Library/PackageCache/com.meta.xr.sdk.core@*/Editor/MetaXRSimulator/Installer.cs; do
+for f in Library/PackageCache/com.meta.xr.sdk.core@*/Editor/MetaXRSimulator/Installer.cs \
+         Packages/com.meta.xr.sdk.core/Editor/MetaXRSimulator/Installer.cs; do
   [ -f "$f" ] || continue
   grep -q 'meta_xr_simulator.bin' "$f" && { echo "already patched: $f"; continue; }
   python3 - "$f" <<'PY'

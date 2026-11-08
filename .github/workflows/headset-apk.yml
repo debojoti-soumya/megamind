@@ -1,0 +1,161 @@
+# Prebuilt Quest APKs, so nobody has to install Unity:
+#   megamind.apk         Unity app (headset/Megamind): capture + AR chat panel. Needs Unity licence secrets (see
+#                        headset/README.md "Get the APK"); fails fast with a clear error when they are missing.
+#   megamind-native.apk  native capture-only app (headset-android/): plain Gradle, no licence.
+# Both are uploaded as workflow artifacts; a `headset-v*` tag also attaches them to a GitHub Release.
+name: headset-apk
+on:
+  push:
+    branches: [main]
+    tags: ["headset-v*"]
+    paths:
+      - "headset/**"
+      - "headset-android/**"
+      - ".github/workflows/headset-apk.yml"
+      - ".github/gradle/**"
+  pull_request:
+    paths:
+      - "headset-android/**"
+      - ".github/workflows/headset-apk.yml"
+      - ".github/gradle/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: headset-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: native APK (headset-android, Gradle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: headset-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build + unit tests
+        run: ./gradlew --no-daemon --init-script ../.github/gradle/maven-central-mirror.init.gradle assembleDebug testDebugUnitTest
+      - run: cp app/build/outputs/apk/debug/app-debug.apk megamind-native.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: megamind-native.apk
+          path: headset-android/megamind-native.apk
+          if-no-files-found: error
+
+  unity:
+    name: Unity APK (headset/Megamind, game-ci)
+    # Licence secrets are not exposed to pull_request runs, so only build on main / tags / manual runs.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+      UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+      UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+      UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+    steps:
+      - name: Check Unity licence secrets
+        run: |
+          missing=()
+          [ -n "$UNITY_EMAIL" ] || missing+=("UNITY_EMAIL")
+          [ -n "$UNITY_PASSWORD" ] || missing+=("UNITY_PASSWORD")
+          [ -n "$UNITY_LICENSE$UNITY_SERIAL" ] || missing+=("UNITY_LICENSE (Personal: contents of Unity_lic.ulf) or UNITY_SERIAL (Plus/Pro)")
+          if [ ${#missing[@]} -gt 0 ]; then
+            for m in "${missing[@]}"; do
+              echo "::error title=Unity licence secret missing::Repository secret $m is not set. See headset/README.md -> 'Get the APK' for how to add it. The native APK (megamind-native.apk) does not need it."
+            done
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      # The unityci/editor Android image is ~7 GB; the stock runner does not have room for it plus the build.
+      - uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+      # Meta XR Core SDK 85 does not compile in the Linux editor (CS0103 in MetaXRSimulator/Installer.cs). Embed the
+      # registry package (same version as Packages/manifest.json, checksum from the registry) and patch it before
+      # Unity starts, so the first and only editor launch compiles.
+      - name: Embed + patch Meta XR Core SDK (Linux editor fix)
+        working-directory: headset/Megamind
+        run: |
+          set -euo pipefail
+          pkg=com.meta.xr.sdk.core
+          ver=$(jq -r --arg p "$pkg" '.dependencies[$p]' Packages/manifest.json)
+          dist=$(curl -sSf "https://packages.unity.com/$pkg" | jq -c --arg v "$ver" '.versions[$v].dist')
+          url=$(jq -r .tarball <<<"$dist"); sha=$(jq -r .shasum <<<"$dist")
+          curl -sSfL "$url" -o "$RUNNER_TEMP/$pkg.tgz"
+          echo "$sha  $RUNNER_TEMP/$pkg.tgz" | sha1sum -c -
+          mkdir -p "Packages/$pkg"
+          tar xzf "$RUNNER_TEMP/$pkg.tgz" --strip-components=1 -C "Packages/$pkg"
+          sh ../tools/patch-metaxr-linux.sh
+          grep -q meta_xr_simulator.bin "Packages/$pkg/Editor/MetaXRSimulator/Installer.cs"
+      - uses: actions/cache@v4
+        with:
+          path: headset/Megamind/Library
+          key: unity-library-android-${{ hashFiles('headset/Megamind/Packages/manifest.json', 'headset/Megamind/Packages/packages-lock.json', 'headset/Megamind/ProjectSettings/**', 'headset/Megamind/Assets/**') }}
+          restore-keys: unity-library-android-
+      # The project's own headless entry point (Megamind > 3. Build APK) builds the committed scene with the committed
+      # player settings (com.megamind.quest, IL2CPP, ARM64, min SDK 32) into Builds/megamind.apk.
+      - uses: game-ci/unity-builder@v4
+        with:
+          projectPath: headset/Megamind
+          targetPlatform: Android
+          unityVersion: auto
+          buildMethod: Megamind.EditorTools.MegamindSceneBuilder.BuildApk
+          customParameters: -setDefaultPlatformTextureFormat astc
+          versioning: None
+          allowDirtyBuild: true # the embedded, patched Meta package above
+      # BuildApk logs a failed BuildPlayer instead of throwing, so the editor can exit 0 without an APK.
+      - name: Check APK
+        run: |
+          apk=headset/Megamind/Builds/megamind.apk
+          if [ ! -s "$apk" ]; then
+            echo "::error title=No APK::Unity exited without producing $apk; search the log above for '[Megamind] build' and 'error CS'."
+            exit 1
+          fi
+          ls -la "$apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: megamind.apk
+          path: headset/Megamind/Builds/megamind.apk
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release (headset-v* tags)
+    needs: [native, unity]
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/headset-v') && needs.native.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          UNITY_RESULT: ${{ needs.unity.result }}
+        run: |
+          ls -la dist
+          notes="Quest APKs built from ${GITHUB_SHA::7}. Install: adb install -r megamind.apk (see docs/quest3-guide.md)."
+          [ "$UNITY_RESULT" = success ] || notes="$notes NOTE: the Unity build (megamind.apk) failed or was skipped for this tag; only megamind-native.apk is attached."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.apk --clobber
+          else
+            gh release create "$TAG" dist/*.apk --title "$TAG" --notes "$notes"
+          fi

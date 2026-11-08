@@ -1,0 +1,8 @@
+// CI only: try Google's Maven Central mirror before repo.maven.apache.org, which rate-limits shared
+// runner egress IPs (HTTP 429). Same mirror the Unity project uses in Assets/Plugins/Android/settingsTemplate.gradle.
+// Usage: ./gradlew --init-script ../.github/gradle/maven-central-mirror.init.gradle assembleDebug
+beforeSettings { settings ->
+  def mirror = 'https://maven-central.storage-download.googleapis.com/maven2/'
+  settings.pluginManagement.repositories.maven { name = 'MavenCentralMirror'; url = mirror }
+  settings.dependencyResolutionManagement.repositories.maven { name = 'MavenCentralMirror'; url = mirror }
+}

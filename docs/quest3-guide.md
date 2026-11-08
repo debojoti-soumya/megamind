@@ -221,6 +221,22 @@ Meta XR Core SDK **85.0.0**, MR Utility Kit **85.0.0**, OpenXR 1.15.1 (`Packages
 `com.megamind.quest`, ARM64, IL2CPP, min SDK 32. Full details are in [`headset/README.md` → Build + sideload](../headset/README.md#build--sideload-step-by-step).
 None of this was run here, so all Unity steps are **(verify on device)**.
 
+**Shortcut: no Unity at all.** Download a prebuilt APK from GitHub (Actions → *headset-apk* → newest green run →
+*Artifacts*, or a `headset-v*` [Release](https://github.com/debojoti-soumya/megamind/releases); details and the
+one-time licence setup in [`headset/README.md` → Get the APK](../headset/README.md#get-the-apk-no-unity-needed)), then:
+```sh
+gh run download -R debojoti-soumya/megamind -n megamind.apk     # or unzip the artifact you downloaded
+adb devices                                                     # headset must show as "device" (2.1)
+adb uninstall com.megamind.quest                                # only if a build from another machine is installed
+adb install -r megamind.apk
+adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerGameActivity
+```
+Then point it at your server with `megamind.json` (section 5) and continue at step 7 below. The capture-only native
+app is `megamind-native.apk` (`adb install -r megamind-native.apk`, package `ai.megamind.quest`, see
+[`headset-android/README.md`](../headset-android/README.md)). No CI-built APK has been installed on a headset yet
+**(verify on device)**.
+
+
 1. **Unity Hub** → *Installs* → *Install Editor* → `6000.0.66f2`. Add the **Android Build Support** module, including **OpenJDK** and **Android SDK & NDK Tools** [U-android].
 2. Hub → *Add* → open the folder `headset/Megamind`. The first import downloads the Meta packages.
 3. *File → Build Profiles* (Unity 6) → **Android** → *Switch Platform* [D-unity-build].
