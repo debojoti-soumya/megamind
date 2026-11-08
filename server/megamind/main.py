@@ -10,16 +10,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from megamind.agent.claude_agent import ClaudeAgent
+from megamind.agent.montage import install as install_montage
 from megamind.agent.reader import build_reader
 from megamind.agent.router import router as agent_router
 from megamind.agent.stt import build_stt
 from megamind.agent.tools import RecallMemory
 from megamind.agent.tts import build_tts
 from megamind.config import Settings, get_settings
+from megamind.ingest.audio import TranscriptSink
 from megamind.ingest.audio import router as audio_router
 from megamind.ingest.enrich import build_enricher
 from megamind.ingest.filter import KeyframeFilter
 from megamind.ingest.privacy import build_face_blur
+from megamind.ingest.recent import router as recent_router
 from megamind.ingest.router import router as ingest_router
 from megamind.ingest.transcribe import build_audio_stt
 from megamind.ingest.worker import EnrichmentWorker
@@ -32,6 +35,7 @@ from megamind.store import build_store
 from megamind.store.consolidate import Consolidator, build_summarizer
 from megamind.store.embeddings import build_image_embedder, build_text_embedder
 from megamind.ui.router import router as ui_router
+from megamind.xr import install as install_xr
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -68,6 +72,19 @@ def image_calibration(settings: Settings, image_embedder: object | None) -> tupl
     return cal
 
 
+def _enrich_label(settings: Settings, enricher: object) -> str:
+    """Health label for the enricher: "vlm:<model>" / "local" (+ degraded reason), or mock and why."""
+    configured = settings.enrich_provider.lower()
+    if type(enricher).__name__ == "LocalEnricher":
+        active = "local"
+    else:
+        active = f"vlm:{settings.enrich_model_name}"
+    if configured == "auto" and type(enricher).__name__.startswith("Mock"):
+        return "mock (auto: no enrich/reader key, no image embedder)"
+    # vlm without a key reports "mock (enrich configured, no key)" via provider_key("enrich")
+    return active_provider(settings, "enrich" if configured in ("auto", "vlm") else configured, enricher, active)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
@@ -83,9 +100,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.text_embedder = build_text_embedder(settings)
         st.image_embedder = build_image_embedder(settings)
         st.store.image_calibration = image_calibration(settings, st.image_embedder)
+        st.transcripts = TranscriptSink(
+            st.store,
+            st.text_embedder,
+            merge_s=settings.speech_merge_s,
+            max_token_s=settings.speech_max_token_s,
+        )
         st.worker = EnrichmentWorker(
             st.store,
-            build_enricher(settings),
+            build_enricher(settings, st.image_embedder),
             st.text_embedder,
             st.image_embedder,
             face_blur=build_face_blur(settings),
@@ -123,6 +146,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await st.worker.stop()
 
     app = FastAPI(title="Megamind", version="0.1.0", lifespan=lifespan)
+    app.include_router(recent_router, prefix="/v1")  # GET /v1/memories/recent
     app.include_router(ingest_router, prefix="/v1")
     app.include_router(audio_router, prefix="/v1")
     app.include_router(agent_router, prefix="/v1")
@@ -131,6 +155,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     install_replay(app, settings)  # moment replay: frame tap + GET /v1/replay.mp4
     install_live(app, settings)  # live short-term memory: GET /v1/live/{id}.jpg (+ retriever wrap in lifespan)
+    install_xr(app)  # Memory Theater: static WebXR page at GET /xr
+    install_montage(app, settings)  # highlight reel: POST /v1/montage + GET /v1/montages/{id}.mp4
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health():
@@ -154,6 +180,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     st.text_embedder,
                     f"{settings.embed_provider}:{getattr(st.text_embedder, 'model', settings.embed_model)}",
                 ),
+                "enrich": _enrich_label(settings, st.worker.enricher),
                 "stt": active_provider(settings, settings.stt_provider, st.stt, settings.stt_provider),
                 "tts": active_provider(settings, settings.tts_provider, st.tts, settings.tts_provider),
             },

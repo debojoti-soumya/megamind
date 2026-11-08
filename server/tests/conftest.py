@@ -14,6 +14,7 @@ async def client(request, tmp_path):
         lancedb_path=tmp_path / "lancedb",
         embed_provider="mock",
         filter_min_gap_s=0.0,
+        enrich_provider="mock",  # deterministic captions even where tesseract / a reader key is installed
         consolidate_enabled=False,
         _env_file=None,
     )
