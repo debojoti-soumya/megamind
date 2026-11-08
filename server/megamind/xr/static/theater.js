@@ -23,6 +23,15 @@ export const SUGGESTIONS = [
   "What did I see most recently?",
 ];
 const MAX_CARDS = 24;
+// In-headset voice button (only when the page passes `onVoice`), per voice.js recorder phase.
+const VOICE_LABELS = {
+  idle: "Ask by voice (tap)",
+  starting: "Opening mic…",
+  listening: "Listening… tap to send",
+  transcribing: "Transcribing…",
+  error: "Mic problem: tap to retry",
+};
+const VOICE_BG = { idle: "#1c2a4a", starting: "#4a3a12", listening: "#5a1f2a", transcribing: "#1f3460", error: "#3a1d24" };
 
 export function formatClock(ts) {
   if (typeof ts !== "number" || !Number.isFinite(ts)) return "";
@@ -92,7 +101,8 @@ function drawCover(ctx, img, x, y, w, h) {
 export class MemoryTheater {
   /**
    * @param {HTMLElement} container
-   * @param {{onSelectMemory: (m: object) => void, onAsk: (q: string) => void, onExit: () => void}} cb
+   * @param {{onSelectMemory: (m: object) => void, onAsk: (q: string) => void, onExit: () => void,
+   *          onVoice?: () => void}} cb  `onVoice` adds an "Ask by voice" button (tap to start / tap to send)
    */
   constructor(container, cb) {
     this.container = container;
@@ -177,6 +187,16 @@ export class MemoryTheater {
     SUGGESTIONS.forEach((q, i) =>
       this.addButton(q, new THREE.Vector3(1.62, 2.0 - i * 0.2, -1.5), -0.75, () => this.cb.onAsk(q)),
     );
+    if (this.cb.onVoice) {
+      // Free-form questions in the headset (the page's ask box is out of sight there): tap to talk.
+      this.voiceButton = this.addButton(
+        VOICE_LABELS.idle,
+        new THREE.Vector3(1.62, 2.0 + 0.22, -1.5),
+        -0.75,
+        () => this.cb.onVoice(),
+        VOICE_BG.idle,
+      );
+    }
     this.addButton(
       "Exit",
       new THREE.Vector3(1.62, 2.0 - SUGGESTIONS.length * 0.2 - 0.06, -1.5),
@@ -240,6 +260,14 @@ export class MemoryTheater {
       y += 52;
     }
     tex.needsUpdate = true;
+  }
+
+  /** Mirror the voice recorder (voice.js) on the in-headset button: phase + seconds while listening. */
+  setVoiceState(phase, elapsed = 0) {
+    const b = this.voiceButton;
+    if (!b) return;
+    const text = phase === "listening" ? `${VOICE_LABELS.listening} ${elapsed.toFixed(0)}s` : VOICE_LABELS[phase];
+    b.userData.draw(text || VOICE_LABELS.idle, VOICE_BG[phase] || VOICE_BG.idle);
   }
 
   setThinking(question) {
@@ -382,17 +410,22 @@ export class MemoryTheater {
 
   addButton(text, pos, rotY, onSelect, bg = "#1c2a4a") {
     const p = canvasPanel(720, 128);
-    p.ctx.fillStyle = bg;
-    roundRect(p.ctx, 4, 4, 712, 120, 40);
-    p.ctx.fill();
-    p.ctx.strokeStyle = "#6f8fd8";
-    p.ctx.lineWidth = 4;
-    p.ctx.stroke();
-    p.ctx.fillStyle = "#f2f5fa";
-    p.ctx.font = "600 44px system-ui, sans-serif";
-    p.ctx.textBaseline = "middle";
-    p.ctx.fillText(text, 36, 66);
-    p.tex.needsUpdate = true;
+    const draw = (label, fill) => {
+      if (m.userData.drawn === `${label}|${fill}`) return; // redraw only on change (voice ticks every 100 ms)
+      m.userData.drawn = `${label}|${fill}`;
+      p.ctx.clearRect(0, 0, 720, 128);
+      p.ctx.fillStyle = fill;
+      roundRect(p.ctx, 4, 4, 712, 120, 40);
+      p.ctx.fill();
+      p.ctx.strokeStyle = "#6f8fd8";
+      p.ctx.lineWidth = 4;
+      p.ctx.stroke();
+      p.ctx.fillStyle = "#f2f5fa";
+      p.ctx.font = "600 44px system-ui, sans-serif";
+      p.ctx.textBaseline = "middle";
+      p.ctx.fillText(label, 36, 66);
+      p.tex.needsUpdate = true;
+    };
     const m = new THREE.Mesh(
       new THREE.PlaneGeometry(0.9, 0.16),
       new THREE.MeshBasicMaterial({ map: p.tex, transparent: true }),
@@ -401,8 +434,11 @@ export class MemoryTheater {
     m.rotation.y = rotY;
     m.userData.onSelect = onSelect;
     m.userData.hoverScale = 1.06;
+    m.userData.draw = draw;
+    draw(text, bg);
     this.scene.add(m);
     this.selectables.push(m);
+    return m;
   }
 
   buildCards(hits) {

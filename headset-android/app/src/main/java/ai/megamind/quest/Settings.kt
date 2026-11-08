@@ -8,6 +8,12 @@ data class Settings(
     val chunkSec: Int = 5,
     /** `device_id` sent in every /v1/frames and /v1/audio meta. */
     val deviceId: String = DEFAULT_DEVICE_ID,
+    /**
+     * Record real H.264 video (30 fps) next to the JPEGs and upload one clip per chunk to `/v1/video`.
+     * On by default; the camera falls back to JPEG-only by itself if the encoder fails. Applies from the
+     * next camera start.
+     */
+    val recordVideo: Boolean = true,
 ) {
   val frameIntervalMs: Long
     get() = (frameIntervalSec * 1000).toLong().coerceAtLeast(100L)
@@ -36,6 +42,7 @@ object SettingsStore {
             frameIntervalSec = p.getFloat("frame_interval_sec", 1.0f).toDouble(),
             chunkSec = p.getInt("chunk_sec", 5),
             deviceId = p.getString("device_id", Settings.DEFAULT_DEVICE_ID)?.takeIf { it.isNotBlank() } ?: Settings.DEFAULT_DEVICE_ID,
+            recordVideo = p.getBoolean("record_video", true),
         )
     cached = s
     return s
@@ -64,6 +71,7 @@ object SettingsStore {
         .putFloat("frame_interval_sec", s.frameIntervalSec.toFloat())
         .putInt("chunk_sec", s.chunkSec)
         .putString("device_id", s.deviceId)
+        .putBoolean("record_video", s.recordVideo)
         .apply()
     cached = s
   }

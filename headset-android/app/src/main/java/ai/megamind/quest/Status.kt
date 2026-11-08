@@ -31,6 +31,11 @@ object Status {
   @Volatile var micSilenced: Boolean? = null
   @Volatile var cameraInfo: String = "camera: not opened"
   @Volatile var audioInfo: String = "audio: off"
+  @Volatile var videoInfo: String = "video: off"
+  @Volatile var videoFramesEncoded: Long = 0L
+  @Volatile var videoChunks: Int = 0
+  /** Clips accepted by POST /v1/video. */
+  @Volatile var videoSent: Int = 0
   @Volatile var uploadInfo: String = ""
   @Volatile var lastError: String? = null
   @Volatile var lastErrorAtMs: Long = 0L

@@ -1,4 +1,4 @@
-"""Retention / privacy CLI: delete memory tokens (+ thumbnails) from the configured store.
+"""Retention / privacy CLI: delete memory tokens (+ thumbnails and real video clips) from the configured store.
 
     python -m megamind.store.purge                     # everything
     python -m megamind.store.purge --device quest-abc  # one device
@@ -52,6 +52,9 @@ async def purge(
         from megamind.store.media import MediaStore
 
         await MediaStore(settings, store).purge_window(device_id, since_ts)
+        from megamind.video import VideoSettings, build_video_store
+
+        build_video_store(settings, VideoSettings()).purge(device_id, since_ts)  # real video clips (POST /v1/video)
     return await store.purge(device_id, since_ts=since_ts, delete_thumbs=delete_thumbs)
 
 

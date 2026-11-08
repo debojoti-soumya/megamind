@@ -37,6 +37,7 @@ from megamind.store.consolidate import Consolidator, build_summarizer
 from megamind.store.embeddings import build_image_embedder, build_text_embedder
 from megamind.store.media import MediaStore, aging_loop
 from megamind.ui.router import router as ui_router
+from megamind.video import install as install_video
 from megamind.xr import install as install_xr
 
 logging.basicConfig(level=logging.INFO)
@@ -168,6 +169,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # the browser panel may be served from a different origin (e.g. file:// or another laptop)
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     install_replay(app, settings)  # moment replay: frame tap + GET /v1/replay.mp4
+    install_video(app, settings)  # real headset video: POST /v1/video; replay + montage prefer it when present
     install_live(app, settings)  # live short-term memory: GET /v1/live/{id}.jpg (+ retriever wrap in lifespan)
     install_xr(app)  # Memory Theater: static WebXR page at GET /xr
     install_montage(app, settings)  # highlight reel: POST /v1/montage + GET /v1/montages/{id}.mp4

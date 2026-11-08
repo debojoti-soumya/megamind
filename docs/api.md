@@ -62,6 +62,35 @@ memory (no merge across a restart) and dropped by `DELETE /memories`.
 Silence → `token_ids: []`. Bad `meta` (incl. non-finite `ts_start`) / empty body → 400; > 25 MB or > 600 s → 413;
 undecodable audio → 415; STT provider error → 502.
 
+## `POST /video`  (headset -> server; optional)
+Real video for replay and montage: one short H.264 clip per request (the native Quest app sends one 5 s, 30 fps clip
+per chunk next to its `/frames` + `/audio` uploads). Frames still drive memory; video only makes replays and montages
+real-frame-rate. Sending no video changes nothing.
+`multipart/form-data`
+- `video`: an mp4 (or mov) with an H.264 video stream; audio tracks are ignored. Max `VIDEO_MAX_CLIP_BYTES`
+  (32 MB) and `VIDEO_MAX_CLIP_S` (60 s); frame size up to 4096 px a side.
+- `meta`: JSON string; `ts_start` is the Unix time (seconds, float) of the clip's **first frame**
+  ```json
+  { "device_id": "quest3-abc", "ts_start": 1731000000.067 }
+  ```
+The server validates the clip with ffprobe (falls back to `ffmpeg -i` when only ffmpeg is installed) and stores it on
+disk (`VIDEO_STORE_DIR`, default `<THUMB_DIR>/../video`). Response `200 OK`:
+```json
+{ "video_id": "01J...", "accepted": true, "reason": null, "ts_start": 1731000000.067, "duration_s": 4.967,
+  "width": 1280, "height": 960 }
+```
+- `reason="duplicate"` (`accepted: true`): a clip with the same device, start (±50 ms) and length (±0.1 s) is
+  already stored (an upload retried after its response was lost); its `video_id` is returned, nothing new is kept.
+- `reason="privacy"` (`accepted: false`, `video_id: ""`): `PRIVACY_BLUR_FACES(_VLM)` is on. Real video is never
+  blurred, so it is discarded; don't resend.
+- Bad `meta` (incl. non-finite `ts_start`, or a `device_id` too long to be a directory name, ~230 bytes) /
+  empty body → 400; larger or longer than the caps → 413; not a decodable video, not mp4/mov, not H.264 → 415; `DELETE /memories` covered the clip while it was uploading → 409
+  (not kept); `VIDEO_ENABLED=false` → 404 (clients should then stop sending video); no ffmpeg/ffprobe → 503.
+Retention: clips are hot media (tiered media, see `POST /admin/age`): one is deleted once its footage is older than
+`VIDEO_RETENTION_H` (default `HOT_RETENTION_H`, 72 h, when keyframes move to AV1), and the oldest go first beyond
+`VIDEO_MAX_BYTES` (20 GB). `DELETE /memories` deletes every clip holding footage in the purged window (the whole clip,
+also when it straddles `since`).
+
 ## `GET /memories`  (debug search)
 Query: `q` (str), `from`/`to` (ISO-8601, optional; unparseable → 400), `k` (int, default 12),
 `mode` (`semantic|visual|hybrid`, default `hybrid`), `device_id` (optional).
@@ -107,8 +136,8 @@ devices, most recent first, see `GET /devices`). Clients should show it.
 while the headset streams"): in that same case the turn searches the most recently active device instead, and
 reports it: `"device_id_used": "quest3-1"`, `"warning": "device 'browser-x' has no memories; answered from
 'quest3-1' instead"`. A device that has memories is never redirected.
-`replay_url` is optional and `null` when the server holds neither buffered frames nor kept keyframes with pixels
-around the citation (pixels aged out, replay disabled, or a different device). It covers `ts - 5 s .. ts + 5 s`.
+`replay_url` is optional and `null` when the server holds neither buffered frames, kept keyframes with pixels nor
+stored real video (`POST /video`) around the citation (pixels aged out, replay disabled, or a different device). It covers `ts - 5 s .. ts + 5 s`.
 `cited[].thumb_url` is `""` when the cited token has no image (heard speech, or a frame whose pixels aged out,
 `tier="text"`): show the caption, skip the thumbnail.
 For questions about the present ("what am I looking at right now", "what did I just see") the evidence also
@@ -170,9 +199,18 @@ The server keeps raw frames for a sliding window per device (default 15 min, bou
 - Headers: `X-Replay-Start` (unix ts at offset 0), `X-Replay-Device`, `X-Replay-Frames`.
 - Older than the buffer: the clip is rendered from the keyframes the filter kept in the window (hot or cold tier),
   so it is keyframe-rate (one frame every few seconds, each held until the next). `X-Replay-Source` says which:
-  `buffer` (every received frame) or `keyframes`.
-- 404 when neither buffered nor kept frames exist in the window; 503 when ffmpeg is not available on the server.
-Rendered clips are cached; `DELETE /memories` also purges the matching buffered frames and the clip cache.
+  `buffer` (every received frame), `keyframes`, or `video`.
+- Real video (`POST /video`) is preferred when the stored clips cover at least `VIDEO_MIN_COVERAGE` (0.5) of the
+  window's footage extent (earliest to latest footage of any kind inside `[from, to]`): the window is cut from the
+  clips (frame-exact, re-encoded H.264 at up to `VIDEO_REPLAY_FPS` (30) and `REPLAY_MAX_WIDTH`), gaps between clips
+  hold the last frame, and offset 0 is the first clip footage in the window (`X-Replay-Start`). Then
+  `X-Replay-Source: video`, `X-Replay-Clips` = clips used, `X-Replay-Frames` = rendered frames. Never while
+  `PRIVACY_BLUR_FACES(_VLM)` is on (video is not blurred). Otherwise, or if cutting fails, the frame path above runs
+  unchanged. With stored video, the default `to` is the newest footage of either kind (newest buffered frame or end
+  of the newest stored clip).
+- 404 when neither buffered nor kept frames nor stored video exist in the window; 503 when ffmpeg is not available on
+  the server.
+Rendered clips are cached; `DELETE /memories` also purges the matching buffered frames, stored video and the clip cache.
 
 ## `GET /live/{id}.jpg`
 Live short-term memory frame (JPEG): a raw frame from the replay buffer that was shown to the reader as a
@@ -194,10 +232,12 @@ Highlight reel: a captioned mp4 of the best few moments for a query and/or a tim
 - Clip choice: Claude (`montage_plan` tool, `CLAUDE_MODEL`) when `ANTHROPIC_API_KEY` is set and
   `MONTAGE_PLANNER` is not `offline`; otherwise (or on any API failure) a deterministic plan of evenly spaced,
   non-empty, de-duplicated moments. `planner` says which one ran.
-- Each clip shows the moment's local time and a short title burned in, with 0.3 s fades. `source="replay"`: the
-  frames buffered for `GET /replay.mp4` around the moment (real frame rate). `source="timelapse"`: the stored
-  keyframe thumbnails from that moment on, each held ~1 s (a ~1 fps timelapse; used once the moment is older
-  than the replay window, and always when `PRIVACY_BLUR_FACES` is on: buffered frames are not blurred).
+- Each clip shows the moment's local time and a short title burned in, with 0.3 s fades. `source="video"`: cut from
+  real headset video (`POST /video`) when stored clips cover at least `VIDEO_MIN_COVERAGE` of the clip (rendered at
+  `MONTAGE_FPS`). `source="replay"`: the frames buffered for `GET /replay.mp4` around the moment (real frame rate).
+  `source="timelapse"`: the stored keyframe thumbnails from that moment on, each held ~1 s (a ~1 fps timelapse;
+  used once the moment is older than the replay window and has no stored video, and always when
+  `PRIVACY_BLUR_FACES` is on: real video and buffered frames are not blurred).
 Response:
 ```json
 { "id": "3f2a9c0d1e5b7a8c6d4e", "url": "/v1/montages/3f2a9c0d1e5b7a8c6d4e.mp4", "title": "Your highlights",
@@ -205,9 +245,44 @@ Response:
   "clips": [ { "token_id": "...", "ts": 1731005000.2, "title": "Team lunch at the long table",
                "duration_s": 4.0, "source": "timelapse", "thumb_url": "/v1/thumbs/....jpg" } ] }
 ```
-404 when nothing matches or no chosen moment has frames/thumbnails; 503 without ffmpeg (same lookup as
+404 when nothing matches or no chosen moment has video/frames/thumbnails; 503 without ffmpeg (same lookup as
 replay, `REPLAY_FFMPEG`); 404 when `MONTAGE_ENABLED=false`; 409 when `DELETE /memories` ran while it was
 being made (nothing is kept; POST again). The same plan always yields the same `id`.
+
+### Content-filtered ("smart") montages
+"Montage of all shots of the guy in the black coat": every clip must show the query's subject. Additive request
+field `mode`: `""`/`"auto"` (default; `MONTAGE_SMART` decides), `"smart"`, `"classic"` (the highlight reel above).
+- Subject: the query minus its framing ("make a montage of all shots of") and any time phrase. A query with no
+  content words ("my afternoon", "make me a highlight reel") has none, and a request without a query never does:
+  those always take the classic path, exactly as before.
+- Auto (`MONTAGE_SMART=auto`): smart iff there is a subject AND the query asks for a collection ("all", "every
+  time", "whenever", "shots/clips/photos of", "supercut of" ...; not "all day" / "every morning"). Other queries
+  with a subject ("what happened at work", "montage of my trip to Paris") keep the classic highlight reel, with or
+  without an API key; `mode:"smart"` opts them in. `MONTAGE_SMART=off`: only `mode:"smart"` opts in.
+  `mode:"classic"` always opts out.
+- Candidates: the retriever's top `2 x MONTAGE_SMART_MAX_CANDIDATES` hits for the subject across all history
+  (or `time_from`/`time_to`, or a time phrase in the query), spread so one long visit can't fill the pool, cut to
+  `MONTAGE_SMART_MAX_CANDIDATES` (60).
+- Verification: Claude `MONTAGE_VERIFY_MODEL` (`claude-haiku-5-5`) looks at each candidate's caption, OCR text and
+  thumbnail, `MONTAGE_VERIFY_BATCH` (8) per call, and keeps matches with confidence >= `MONTAGE_VERIFY_MIN_CONFIDENCE`
+  (0.5). Without `ANTHROPIC_API_KEY` (or `MONTAGE_VERIFIER=offline`), or when every verifier call failed,
+  candidates are kept unverified in retrieval order (`planner:"offline"`). Once any batch was checked, only
+  confirmed matches are used; if some calls failed and the rest found nothing: **503** with a speakable `detail`
+  ("I couldn't finish checking ...; please try again").
+- Clips: matches within `MONTAGE_MOMENT_GAP_S` (90 s) of each other are one moment; one clip per moment (its most
+  confident token), chronological, at most `MONTAGE_SMART_MAX_CLIPS` (12, or `max_clips` if smaller), evenly
+  spread in time when there are more. Clip sources/render/caching are the same as above.
+- No match: **404** with a speakable `detail`, e.g. `"I couldn't find any moments matching the guy in the black
+  coat in your memories (checked 37 candidate moments), so there's no montage to make."`
+
+Additive response fields (classic defaults in brackets): `mode` (`"classic"`), `subject` (`""`), `candidates`
+(`0`, retriever candidates checked), `matches` (`0`, moments the verifier confirmed). `planner` is `"claude"` when
+the verifier checked the clips, `"offline"` when they are unverified retrieval hits.
+```json
+{ "id": "9b1c...", "url": "/v1/montages/9b1c....mp4", "title": "The guy in the black coat",
+  "narration": "Found 4 moments matching the guy in the black coat across 2 days.", "planner": "claude",
+  "mode": "smart", "subject": "the guy in the black coat", "candidates": 60, "matches": 4, "clips": [ ... ] }
+```
 
 ## `GET /montages/{id}.mp4`
 The rendered montage (H.264, `MONTAGE_WIDTH`x`MONTAGE_HEIGHT`, default 960x540). `GET` or `HEAD`; supports
@@ -220,7 +295,8 @@ TTS output for a chat response.
 
 ## `DELETE /memories?device_id=...&since=...`
 Purge memory tokens (rows **and** thumbnails; frames already aged into an AV1 chunk are cut out of it by
-re-encoding the chunk without them, so the chunk's other frames survive). Both params are optional: `device_id` limits the purge to one
+re-encoding the chunk without them, so the chunk's other frames survive). Stored real video (`POST /video`) holding
+footage in the window is deleted too (whole clips). Both params are optional: `device_id` limits the purge to one
 device (default: all devices); `since` deletes only tokens with `ts >= since` ("forget the last 2 hours"),
 given as ISO-8601 (`2026-11-07T09:00:00Z`; naive = server local time) or unix seconds (`1731000000.0`).
 Episode summaries whose `ts` (episode start) falls in the window are deleted too. Invalid, empty/whitespace (`since=`) or non-finite `since` → 400 (omit the param to purge all time).
@@ -230,10 +306,12 @@ Returns `{ "deleted": 1234 }`. Offline equivalent: `python -m megamind.store.pur
 Run one media-aging pass now (the server also runs one every `MEDIA_AGE_INTERVAL_S`, default 3600 s). Frames older
 than `cold_older_than_s` (default `COLD_RETENTION_DAYS`, 100 d) drop their pixels (`tier="text"`); hot frames older
 than `hot_older_than_s` (default `HOT_RETENTION_H`, 72 h) are re-encoded into one AV1 mp4 per (device, episode)
-run (`tier="cold"`) and their JPEGs deleted once the chunk's frame count is verified. Negative / non-finite → 400.
+run (`tier="cold"`) and their JPEGs deleted once the chunk's frame count is verified. Stored real video clips
+(`POST /video`) older than `hot_older_than_s` (default `VIDEO_RETENTION_H`, i.e. `HOT_RETENTION_H`) are deleted
+(`video_deleted`). Negative / non-finite → 400.
 ```json
 { "to_cold": 120, "chunks": 1, "jpeg_bytes": 7800000, "chunk_bytes": 820000, "to_text": 0, "aborted": 0,
-  "skipped": null }
+  "skipped": null, "video_deleted": 0 }
 ```
 `skipped` explains why nothing went cold (e.g. no ffmpeg with an AV1 encoder: frames then stay hot JPEG).
 
@@ -246,8 +324,10 @@ Storage and ingest counters.
   "disk_bytes": { "hot_jpeg": 26000000, "cold_chunks": 6300000, "index": 9000000 },
   "bytes_per_frame": { "hot": 65000, "cold": 7000, "index": 6000 },
   "projected_100d_gb_at_budget": 8.4,
-  "media": { "encoder": "libsvtav1", "hot_retention_h": 72, "cold_retention_days": 100, "cold_decodes": 12 } }
+  "media": { "encoder": "libsvtav1", "hot_retention_h": 72, "cold_retention_days": 100, "cold_decodes": 12 },
+  "video": { "clips": 860, "seconds": 4300.0, "bytes": 1650000000, "devices": 1 } }
 ```
+`video` (stored `POST /video` clips) is absent when `VIDEO_ENABLED=false`.
 `tiers` counts `kind="frame"` tokens. `bytes_per_frame` values are `null` until a tier has frames. The projection
 assumes the frame budget (`FILTER_MAX_PER_MIN`) for 16 h/day, `HOT_RETENTION_H` as JPEG and the rest as AV1
 (a tier not measured yet is assumed 8x larger / smaller than the other, JPEG vs AV1); `null` while no frame has
@@ -285,4 +365,6 @@ recall_memory(query, time_from?, time_to?, k=12, mode="hybrid")
 ## Memory Theater: `GET /xr` (outside `/v1`; not part of the headset contract)
 A static WebXR page served by the server (`server/megamind/xr/static/`, plain ES modules, three.js from a pinned
 CDN). It only calls the public endpoints above (`/memories/recent`, `/chat`, `/thumbs/*`, `/replay.mp4`).
+Voice questions (mic button / in-headset *Ask by voice*) use the existing multipart form of `POST /chat` (16 kHz mono
+WAV `audio`); the theater shows the response's `transcript` as the question, and an empty `transcript` as "didn't catch that".
 Assets are under `/xr/static/`. `XR_ENABLED=false` removes both routes. Quest usage: [quest3-guide.md](quest3-guide.md#8-memory-theater-xr-in-the-quest-browser).

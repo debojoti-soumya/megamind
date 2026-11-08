@@ -167,6 +167,9 @@ async def purge_all(state: Any, device_id: str | None = None, *, since_ts: float
     kf = getattr(state, "keyframe_filter", None)
     if kf is not None:
         kf.reset(device_id)
+    video = getattr(state, "video", None)
+    if video is not None:  # real video clips (POST /v1/video) holding footage in the window
+        video.purge(device_id, since_ts=since_ts)
     invalidate = getattr(getattr(state, "retriever", None), "invalidate_caches", None)
     if invalidate is not None:  # retrieval caches (OCR corpus, token cache) must not serve purged text
         invalidate(device_id)
