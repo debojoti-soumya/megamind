@@ -9,6 +9,7 @@ PRIMITIVES = {
     "vector_search image",
     "keyword_search",
     "range 1h",
+    "range day (consolidator)",
     "get_many 12",
     "neighbors ±2",
     "search hybrid",
