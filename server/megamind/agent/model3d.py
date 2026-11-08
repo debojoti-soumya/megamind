@@ -669,13 +669,17 @@ async def start_multiview(st, found, phrase: str, prompt: str, views: list[Memor
 
     async def job() -> None:
         try:
+            if st.model3d_mv_stuck:  # retries would only pile more threads and photos behind it
+                raise ValueError("an earlier 3D build is still stuck; try again later")
             images = [d for t in views if (d := await _load_image(st, t))]
+            work = asyncio.get_running_loop().run_in_executor(
+                None, reconstruct_views, st.model3d_models, st.model3d_mv, cfg, images, prompt
+            )
             try:  # the thread can't be cancelled, but the viewer gets an answer
-                data, info = await asyncio.wait_for(
-                    asyncio.to_thread(reconstruct_views, st.model3d_models, st.model3d_mv, cfg, images, prompt),
-                    cfg.mv_timeout_s,
-                )
+                data, info = await asyncio.wait_for(asyncio.shield(work), cfg.mv_timeout_s)
             except TimeoutError:
+                st.model3d_mv_stuck.add(work)
+                work.add_done_callback(st.model3d_mv_stuck.discard)
                 raise ValueError(f"it took longer than {cfg.mv_timeout_s:.0f} s") from None
             if cache.generation != gen:
                 raise ValueError("memories were deleted while the model was being made; try again")
@@ -744,6 +748,7 @@ def install(app: FastAPI, settings, model3d_settings: Model3DSettings | None = N
     st.model3d_models = LocalModels(cfg)
     st.model3d_mv = mv.VGGTRunner(cfg.vggt_weights)
     st.model3d_jobs = {}
+    st.model3d_mv_stuck = set()  # timed-out reconstructions whose thread is still running
     if cfg.enabled:
         st.model3d_cache = Model3DCache(
             cfg.cache_dir or Path(settings.thumb_dir).parent / "models3d", cfg.cache_max_files

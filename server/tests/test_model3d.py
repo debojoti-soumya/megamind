@@ -412,22 +412,37 @@ def test_model3d_multiview_that_runs_too_long_is_reported(app3d, tmp_path):
     import time
 
     class SlowRunner(FakeRunner):
+        runs = 0
+
         def run(self, images):
+            SlowRunner.runs += 1
             time.sleep(0.5)
             return super().run(images)
 
-    app3d.state.store = _walk_around(tmp_path)
-    app3d.state.model3d_mv = SlowRunner()
-    app3d.state.model3d_settings.mv_timeout_s = 0.05
-    with TestClient(app3d) as c:
+    def built(c):
         body = c.post("/v1/model3d", json={"query": "make a 3D model of my mug"}).json()
         assert body["status"] == "building"
         for _ in range(100):
             r = c.get(body["url"])
             if r.status_code != 202:
-                break
-            time.sleep(0.05)
+                return r
+            time.sleep(0.02)
+        raise AssertionError("still building")
+
+    app3d.state.store = _walk_around(tmp_path)
+    app3d.state.model3d_mv = SlowRunner()
+    app3d.state.model3d_settings.mv_timeout_s = 0.05
+    with TestClient(app3d) as c:
+        r = built(c)
         assert r.status_code == 422 and "took longer than" in r.json()["detail"]
+        r = built(c)  # the first thread is still going: no second one behind it
+        assert r.status_code == 422 and "still stuck" in r.json()["detail"] and SlowRunner.runs == 1
+        for _ in range(100):
+            if not app3d.state.model3d_mv_stuck:
+                break
+            time.sleep(0.02)
+        app3d.state.model3d_settings.mv_timeout_s = 5
+        assert built(c).status_code == 200 and SlowRunner.runs == 2
 
 
 def test_model3d_multiview_defaults_to_gpu_only(app3d, tmp_path, monkeypatch):
