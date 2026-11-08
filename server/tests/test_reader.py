@@ -408,9 +408,9 @@ def test_default_deadlines_leave_room_for_the_fallback(monkeypatch):
     for var in ("READER_HEDGE_S", "READER_DEADLINE_S", "READER_TIMEOUT_S"):
         monkeypatch.delenv(var, raising=False)
     s = Settings(_env_file=None)
-    healthy_call_s = 3.1  # Sail Gemma asap, measured (issue #66)
-    assert s.reader_hedge_s > healthy_call_s  # healthy primaries never pay for a second call
-    assert s.reader_hedge_s + healthy_call_s <= s.reader_deadline_s <= s.reader_timeout_s
+    healthy_p50_s, healthy_p95_s = 3.1, 3.25  # Sail Gemma asap, both models (tools/bench_reader.py, issue #85)
+    assert s.reader_hedge_s >= healthy_p95_s > healthy_p50_s  # healthy primaries rarely pay for a second call
+    assert s.reader_hedge_s + healthy_p95_s + 0.5 <= s.reader_deadline_s <= s.reader_timeout_s
 
 
 async def test_hung_primary_is_hedged_on_the_fallback_model(tmp_path):

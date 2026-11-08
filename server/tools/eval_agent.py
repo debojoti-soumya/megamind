@@ -95,19 +95,22 @@ def load_day(path: Path | str = DEFAULT_DATASET, thumb_dir: Path | None = None) 
     return Day(tokens=tokens, cases=cases, now=_local(d, raw["now"], tz).timestamp(), tz=tz, device_id=device_id)
 
 
-def render_thumbs(day: Day, out_dir: Path) -> None:
-    """Synthetic frames: the caption + OCR text drawn on a card, so a real VLM has pixels to read."""
-    from PIL import Image, ImageDraw
+def render_thumbs(day: Day, out_dir: Path, width: int = 512) -> None:
+    """Synthetic frames: the caption + OCR text drawn on a card, so a real VLM has pixels to read.
+    `width` > 512 scales the card up (e.g. 960 = headset frame size) so the reader has to downscale it."""
+    from PIL import Image, ImageDraw, ImageFont
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    scale = width / 512
+    font = ImageFont.load_default(size=round(11 * scale)) if scale != 1 else None
     for t in day.tokens:
-        img = Image.new("RGB", (512, 384), (235, 235, 225))
+        img = Image.new("RGB", (width, round(384 * scale)), (235, 235, 225))
         dr = ImageDraw.Draw(img)
-        y = 16
+        y = 16 * scale
         for line in [t.caption, *t.ocr_text.splitlines()]:
             for i in range(0, len(line), 48):
-                dr.text((16, y), line[i : i + 48], fill=(20, 20, 20))
-                y += 18
+                dr.text((16 * scale, y), line[i : i + 48], fill=(20, 20, 20), font=font)
+                y += 18 * scale
         img.save(t.thumb_path, "JPEG", quality=80)
 
 
