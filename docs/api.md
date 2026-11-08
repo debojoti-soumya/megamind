@@ -4,6 +4,19 @@ Base path: `/v1`. JSON unless noted. Timestamps are Unix seconds (float, UTC) in
 bodies and ISO-8601 in query strings. This file is authoritative; `server/megamind/models.py`
 and the C# DTOs in `headset/` must match it.
 
+## Auth
+Off by default. When the server's `API_TOKEN` is set (always on the Modal deploy, [deploy/README.md](../deploy/README.md)),
+every route (`/v1/*`, `/ui`, `/xr`, static assets, the SSE stream, thumbnails, replays, audio) needs the token:
+- `Authorization: Bearer <token>` (feeder, ask.py, Unity `MegamindConfig.apiToken` / `megamind.json` `"apiToken"`), or
+- `?token=<token>` on any URL, for `<img>`/`<video>`/`<audio>` and pasted links. A request authorized this way also
+  gets `Set-Cookie: megamind_token=<token>; Path=/; HttpOnly; SameSite=Lax` (`; Secure` over https), so the page it
+  opened (`/ui?token=...`, `/xr?token=...`) authenticates its own later fetches and media without code changes.
+- The `megamind_token` cookie is accepted on its own.
+
+Missing or wrong token: `401 {"detail": "missing or invalid API token"}` with `WWW-Authenticate: Bearer`
+(WebSockets are closed with 1008). CORS preflights (`OPTIONS`) are never blocked. Comparison is constant-time.
+Response bodies are unchanged: `thumb_url`/`replay_url`/`audio_url` stay token-free, clients add the header or `?token=`.
+
 ## `GET /health`
 ```json
 { "status": "ok", "store_count": 1234,

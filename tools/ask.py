@@ -9,9 +9,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 
 import httpx
+
+
+def auth_headers(token: str) -> dict[str, str]:
+    """Bearer header for a server with API_TOKEN set (docs/api.md#auth); none when the token is empty."""
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def latest_device(http: httpx.Client) -> str | None:
@@ -29,6 +35,9 @@ def main(argv: list[str] | None = None, transport: httpx.BaseTransport | None = 
     ap = argparse.ArgumentParser()
     ap.add_argument("text", nargs="?")
     ap.add_argument("--server", default="http://localhost:8000")
+    ap.add_argument(
+        "--token", default=os.environ.get("MEGAMIND_API_TOKEN", ""), help="server API_TOKEN (env MEGAMIND_API_TOKEN)"
+    )
     ap.add_argument("--session", default="cli")
     ap.add_argument(
         "--device-id",
@@ -40,7 +49,8 @@ def main(argv: list[str] | None = None, transport: httpx.BaseTransport | None = 
     if not args.audio and not args.text:
         raise SystemExit("text or --audio required")
 
-    with httpx.Client(base_url=args.server, timeout=60.0, transport=transport) as http:
+    headers = auth_headers(args.token)
+    with httpx.Client(base_url=args.server, timeout=60.0, transport=transport, headers=headers) as http:
         device_id = args.device_id
         if device_id is None:
             device_id = latest_device(http)

@@ -256,7 +256,7 @@ allowed to remove `HEADSET_CAMERA` (it regenerates the file without it).
 | File | Stream | Purpose |
 |---|---|---|
 | `MegamindConfig.cs` | 3 | ScriptableObject with server URL / device id (stream 3 owns it) |
-| `CaptureSettings.cs` | 1 | ScriptableObject: fps, camera resolution, JPEG width/quality, backpressure, `ambientAudio` toggle + chunk/gate/queue; `megamind.json` adb override for the server URL (and `ambientAudio`) |
+| `CaptureSettings.cs` | 1 | ScriptableObject: fps, camera resolution, JPEG width/quality, backpressure, `ambientAudio` toggle + chunk/gate/queue; `megamind.json` adb override for the server URL (and `ambientAudio`, `apiToken`: [api.md#auth](../docs/api.md#auth)) |
 | `Dto.cs` | shared | C# mirrors of `docs/api.md` payloads |
 | `MegamindPermissions.cs` | 1 | requests `HEADSET_CAMERA` + mic at start, exposes `CameraGranted` / `MicrophoneGranted` |
 | `FrameUploader.cs` | 1 | 1 fps sample of `PassthroughCameraAccess.GetTexture()` → JPEG → `POST /v1/frames` with pose meta |

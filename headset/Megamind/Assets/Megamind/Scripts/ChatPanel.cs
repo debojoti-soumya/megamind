@@ -132,6 +132,7 @@ namespace Megamind
         {
             using (var req = UnityWebRequestTexture.GetTexture(url))
             {
+                config.Authorize(req);
                 req.timeout = 10;
                 yield return req.SendWebRequest();
                 if (req.result == UnityWebRequest.Result.Success && target != null)
@@ -144,6 +145,7 @@ namespace Megamind
             if (config == null) yield break;
             using (var req = UnityWebRequest.Get(config.Url("/v1/health")))
             {
+                config.Authorize(req);
                 req.timeout = 3;
                 yield return req.SendWebRequest();
                 _serverOk = req.result == UnityWebRequest.Result.Success;

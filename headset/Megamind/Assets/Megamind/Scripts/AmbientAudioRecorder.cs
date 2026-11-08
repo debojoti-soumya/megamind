@@ -278,6 +278,7 @@ namespace Megamind
                 string url = settings.Url(config, "/v1/audio");
                 using (var req = UnityWebRequest.Post(url, form))
                 {
+                    MegamindConfig.Authorize(req, settings.ApiToken(config));
                     req.timeout = Mathf.Max(1, settings.audioUploadTimeoutSeconds); // the server transcribes synchronously
                     yield return req.SendWebRequest();
                     Sent++;
