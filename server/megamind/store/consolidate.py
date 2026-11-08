@@ -215,20 +215,27 @@ class Consolidator:
     async def pending(self, now: float, device_id: str | None = None) -> list[list[MemoryToken]]:
         """Closed, un-summarised episodes as chronological frame lists."""
         since = now - self.lookback_s
-        frames = await self.store.range(since, now, limit=1_000_000, device_id=device_id, kinds=("frame",))
-        done = {
-            t.episode_id
-            for t in await self.store.range(since, now, limit=1_000_000, device_id=device_id, kinds=("episode",))
-        }
+        # Plan on vector-less rows (this runs every interval over the whole lookback), then load full rows
+        # only for the episodes that will actually be summarised.
+        scan = dict(time_from=since, time_to=now, device_id=device_id, vectors=False)
+        frames = await self.store.list_tokens(kinds=("frame",), **scan)
+        done = {t.episode_id for t in await self.store.list_tokens(kinds=("episode",), **scan)}
         groups: dict[str, list[MemoryToken]] = {}
         for t in frames:
             if t.episode_id:
                 groups.setdefault(t.episode_id, []).append(t)
-        return [
+        ready = [
             g
             for ep, g in groups.items()
             if ep not in done and len(g) >= self.min_tokens and g[-1].ts <= now - self.gap_s
         ]
+        if not ready:
+            return []
+        # one time-window scan, not `get_many`: an `id IN (...)` over thousands of ids is the slow path
+        lo, hi = min(g[0].ts for g in ready), max(g[-1].ts for g in ready)
+        rows = await self.store.list_tokens(time_from=lo, time_to=hi, device_id=device_id, kinds=("frame",))
+        full = {t.id: t for t in rows}
+        return [[full[t.id] for t in g if t.id in full] for g in ready]
 
     async def summarize_episode(self, frames: list[MemoryToken]) -> MemoryToken:
         frames = sorted(frames, key=lambda t: (t.ts, t.id))

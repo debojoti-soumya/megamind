@@ -227,3 +227,28 @@ async def test_consolidator_writes_episode_summary(make_store, tmp_path):
     # purge removes the summary + its copied thumbnail too
     assert await store.purge("dev1") == 5
     assert not (tmp_path / f"{ep.id}.jpg").exists()
+
+
+async def test_consolidator_plans_without_vectors_and_returns_full_rows(make_store, tmp_path):
+    store = make_store(EpisodeTracker(gap_s=60))
+    for i, ts in enumerate((1000, 1005, 1010, 1500)):
+        await store.add(_frame(i, ts, caption=f"c{i}", tmp_path=tmp_path))
+    calls = []
+    real = store.list_tokens
+
+    async def spy(**kw):
+        calls.append(kw.get("vectors", True))
+        return await real(**kw)
+
+    store.list_tokens = spy
+    job = Consolidator(store, MockSummarizer(), _Embedder(), gap_s=60, min_tokens=3)
+
+    (group,) = await job.pending(now=1520)
+    assert [t.id for t in group] == ["f0000", "f0001", "f0002"]
+    assert all(t.image_vec is not None for t in group)  # full rows are reloaded for summarising
+    assert calls == [False, False, True]
+
+    calls.clear()
+    await job.run_once(now=1520)
+    assert await job.pending(now=1520) == []
+    assert calls[-2:] == [False, False]  # steady state: nothing to summarise, no vectors loaded
