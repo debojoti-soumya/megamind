@@ -48,6 +48,26 @@ namespace Megamind
         public List<CollageImage> images = new List<CollageImage>();
     }
 
+    /// <summary>3D model of an object from one photo (POST /v1/model3d, or ChatResponse.model3d).</summary>
+    [Serializable]
+    public class Model3DResponse
+    {
+        public string id;
+        public string url;         // /v1/models3d/{id}.glb|.ply; "" when the chat turn made no model
+        public string viewer_url;  // /ui/3d?m={id}&f=...: WebXR viewer for Quest Browser
+        public string format;      // glb | ply
+        public string kind;        // mesh | splat | points
+        public bool full_3d;       // false: a relief of the side the camera saw
+        public string status;      // building (multi-view, a few minutes; the viewer waits) | ready | failed
+        public int views;          // photos a multi-view model is made from
+        public string title;
+        public string narration;
+        public string subject;
+        public string token_id;
+        public double ts;
+        public string thumb_url;
+    }
+
     [Serializable] public class ToolCallRecord { public string name; public string confidence; }
 
     [Serializable] public class ChatRequest { public string session_id; public string device_id; public string text; }
@@ -65,7 +85,10 @@ namespace Megamind
         public List<Marker> markers = new List<Marker>(); // "where is X": X's box in a cited frame (ObjectMarkers)
         public CollageResponse collage; // photo montage the turn made (make_collage); null or url "" = none
 
+        public Model3DResponse model3d; // 3D model the turn made (make_3d_model); null or url "" = none
+
         public bool HasCollage() => collage != null && !string.IsNullOrEmpty(collage.url);
+        public bool HasModel3D() => model3d != null && !string.IsNullOrEmpty(model3d.viewer_url);
 
         /// <summary>Confidence of the recall_memory call, or null if the agent did not recall.</summary>
         public string Confidence()

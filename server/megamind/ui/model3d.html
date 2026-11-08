@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Megamind · 3D memory</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0e1116; color: #e8ecf1; font: 14px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #hud { position: fixed; left: 16px; top: 14px; right: 16px; display: flex; gap: 12px; align-items: center; pointer-events: none; }
+  #hud h1 { font-size: 18px; margin: 0; font-weight: 650; }
+  #hud .sub { color: #94a0b0; font-size: 13px; }
+  .chip { font-size: 12px; padding: 2px 8px; border-radius: 9px; background: rgba(255,196,0,0.16); color: #ffcd5a; }
+  #status { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: #94a0b0; pointer-events: none; }
+  #help { position: fixed; left: 16px; bottom: 14px; color: #6f7a88; font-size: 12px; }
+  #xr { position: fixed; right: 16px; bottom: 14px; display: flex; gap: 8px; }
+  #xr button { font: inherit; padding: 9px 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.18); background: rgba(255,255,255,0.08); color: #fff; cursor: pointer; }
+  #xr button:disabled { opacity: 0.4; cursor: default; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+  "@mkkellogg/gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js"
+} }
+</script>
+</head>
+<body>
+<div id="hud"><h1 id="title">3D memory</h1><span class="sub" id="sub"></span><span class="chip" id="chip" hidden></span></div>
+<div id="status">loading…</div>
+<div id="help">drag to orbit · scroll to zoom · in the headset: trigger / pinch to bring it in front of you, thumbstick to turn it</div>
+<div id="xr"><button id="ar" disabled>View in AR</button><button id="vr" disabled>View in VR</button></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
+
+const q = new URLSearchParams(location.search);
+if (q.has('token')) {  // the server already set the session cookie; keep the API token out of browser history
+  const clean = new URLSearchParams(q); clean.delete('token');
+  history.replaceState(null, '', `${location.pathname}?${clean}${location.hash}`);
+}
+const id = q.get('m') || '', fmt = q.get('f') || 'glb';
+const kind = q.get('k') || (fmt === 'ply' ? 'splat' : 'mesh');
+const base = q.get('server') || '';
+const url = q.get('src') || `${base}/v1/models3d/${id}.${fmt}`;
+const $ = s => document.getElementById(s);
+$('title').textContent = q.get('t') || '3D memory';
+if (q.get('when')) $('sub').textContent = q.get('when');
+if (q.get('full') !== '1') { $('chip').hidden = false; $('chip').textContent = 'relief: only the side you saw'; }
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.xr.enabled = true;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const bg = new THREE.Color(0x0e1116);
+scene.background = bg;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 2.0));
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.01, 50);
+camera.position.set(0, 0.35, 0.9);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.15, 0); controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.8;
+controls.minAzimuthAngle = -Math.PI / 3; controls.maxAzimuthAngle = Math.PI / 3;  // a relief has no back
+if (q.get('full') === '1') { controls.minAzimuthAngle = -Infinity; controls.maxAzimuthAngle = Infinity; }
+const grid = new THREE.GridHelper(1.2, 12, 0x2a3340, 0x1b222c); scene.add(grid);
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+const holder = new THREE.Group(); scene.add(holder);
+let sway = 1, splatViewer = null;
+function frame(obj) {  // centre on the floor, longest side ~0.4 m
+  const box = new THREE.Box3().setFromObject(obj), size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+  const s = 0.4 / Math.max(size.x, size.y, size.z, 1e-6);
+  obj.scale.setScalar(s); obj.position.set(-c.x * s, -box.min.y * s, -c.z * s);
+  controls.target.set(0, size.y * s / 2, 0);
+}
+async function whenReady() {  // multi-view models build in the background: the URL answers 202 until then
+  const t0 = Date.now();
+  for (;;) {
+    const r = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+    if (r.ok && r.status !== 202) return;
+    if (r.status !== 202) {
+      const g = await fetch(url, { cache: 'no-store' }), j = await g.json().catch(() => ({}));
+      throw new Error(j.detail || `HTTP ${g.status}`);
+    }
+    $('status').textContent = `building the 3D model from your photos… ${Math.round((Date.now() - t0) / 1000)} s`;
+    await new Promise(res => setTimeout(res, 3000));
+  }
+}
+async function load() {
+  if (!q.get('src')) await whenReady();
+  if (kind === 'splat') {
+    const GS = await import('@mkkellogg/gaussian-splats-3d');
+    splatViewer = new GS.DropInViewer({ gpuAcceleratedSort: false, sharedMemoryForWorkers: false });
+    await splatViewer.addSplatScene(url, { format: GS.SceneFormat.Ply, showLoadingUI: false, splatAlphaRemovalThreshold: 5 });
+    holder.add(splatViewer);
+    controls.target.set(0, 0.2, 0);
+  } else if (fmt === 'ply') {
+    const geo = await new PLYLoader().loadAsync(url);
+    const pts = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.003, vertexColors: true }));
+    holder.add(pts); frame(pts);
+  } else {
+    const gltf = await new GLTFLoader().loadAsync(url);
+    holder.add(gltf.scene); frame(gltf.scene);
+  }
+  $('status').textContent = '';
+}
+load().catch(e => { $('status').textContent = `${e.message || e}`; console.error(e); });
+
+// ---- WebXR: AR = the model over passthrough on Quest, VR = dark room ----
+let session = null, placed = false;
+async function start(mode) {
+  if (session) { await session.end(); return; }
+  const init = { requiredFeatures: ['local-floor'], optionalFeatures: ['hand-tracking'] };
+  session = await navigator.xr.requestSession(mode, init);
+  renderer.xr.setReferenceSpaceType('local-floor');
+  await renderer.xr.setSession(session);
+  scene.background = mode === 'immersive-ar' ? null : bg;
+  grid.visible = mode !== 'immersive-ar';
+  placed = false;
+  session.addEventListener('end', () => { session = null; scene.background = bg; grid.visible = true; holder.position.set(0, 0, 0); holder.rotation.set(0, 0, 0); });
+}
+function placeInFront() {  // ~0.7 m ahead, a bit below the eyes, facing the wearer
+  const cam = renderer.xr.getCamera(), p = new THREE.Vector3(), f = new THREE.Vector3();
+  cam.getWorldPosition(p); cam.getWorldDirection(f); f.y = 0; f.normalize();
+  holder.position.set(p.x + f.x * 0.7, Math.max(0.6, p.y - 0.45), p.z + f.z * 0.7);
+  holder.rotation.set(0, Math.atan2(-f.x, -f.z), 0);
+  placed = true;
+}
+for (let i = 0; i < 2; i++) renderer.xr.getController(i).addEventListener('select', placeInFront);
+if (navigator.xr) {
+  for (const [btn, mode] of [['ar', 'immersive-ar'], ['vr', 'immersive-vr']]) {
+    navigator.xr.isSessionSupported(mode).then(ok => { $(btn).disabled = !ok; }).catch(() => {});
+    $(btn).onclick = () => start(mode).catch(e => { $('status').textContent = e.message; });
+  }
+}
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (renderer.xr.isPresenting) {
+    if (!placed) placeInFront();
+    for (const src of renderer.xr.getSession()?.inputSources || []) {
+      const ax = src.gamepad?.axes; if (ax && ax.length >= 4 && Math.abs(ax[2]) > 0.2) holder.rotation.y += ax[2] * dt * 2;
+    }
+  } else controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

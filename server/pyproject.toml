@@ -30,6 +30,8 @@ local-stt = ["faster-whisper>=1.0"]
 # keyless enricher OCR (ENRICH_PROVIDER=local, or auto without a key); also needs the tesseract binary on PATH
 # (brew install tesseract / apt install tesseract-ocr)
 local-enrich = ["pytesseract>=0.3.10"]
+# 3D from memory, local backend (MODEL3D_BACKEND=local): Grounding DINO + SAM + Depth Anything; plus CPU torch
+local-3d = ["transformers>=4.45"]
 # sharper object-marker boxes (LOCATE_REFINE): OWLv2 open-vocabulary detector; CPU torch index as above
 locate-refine = ["torch", "transformers>=4.40", "scipy"]
 local-embeddings = ["open-clip-torch>=2.24", "sentence-transformers>=3.0", "transformers", "sentencepiece", "protobuf"]

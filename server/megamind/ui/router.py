@@ -19,3 +19,9 @@ _HERE = Path(__file__).parent
 @router.get("/ui", include_in_schema=False)
 async def ui_index():
     return FileResponse(_HERE / "index.html", media_type="text/html")
+
+
+@router.get("/ui/3d", include_in_schema=False)
+async def ui_model3d():
+    """3D memory viewer (three.js + WebXR): /ui/3d?m={id}&f=glb|ply, from `POST /v1/model3d`'s `viewer_url`."""
+    return FileResponse(_HERE / "model3d.html", media_type="text/html")

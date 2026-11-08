@@ -235,6 +235,42 @@ class CollageResponse(BaseModel):
     hero: int = 0  # index into `images` of the lead (best) photo
 
 
+class Model3DRequest(BaseModel):
+    """`POST /v1/model3d`: the object to lift into 3D from the wearer's photos ("my blue mug")."""
+
+    device_id: str | None = None
+    query: str
+    time_from: float | str | None = None
+    time_to: float | str | None = None
+
+
+class Model3DResponse(BaseModel):
+    """A 3D model of an object from one stored photo: a .glb mesh or a .ply Gaussian splat, plus a WebXR viewer."""
+
+    id: str
+    url: str  # /v1/models3d/{id}.glb | .ply
+    viewer_url: str  # /ui/3d?m={id}&f={format}: three.js + WebXR (open in Quest Browser)
+    format: str  # glb | ply
+    kind: str  # mesh | splat | points
+    full_3d: bool = False  # False: a relief of the side the camera saw (local backend)
+    backend: str = "local"
+    title: str = ""
+    narration: str = ""
+    subject: str = ""
+    verified: bool = False  # Claude checked the photo shows the subject
+    token_id: str = ""  # the photo it was made from
+    ts: float = 0.0
+    thumb_url: str = ""
+    box: list[float] | None = None  # object box in that photo (pixels x0, y0, x1, y1)
+    detection_score: float = 0.0  # 0 = the detector didn't find it (the middle of the photo was used)
+    candidates: int = 0
+    vertices: int = 0  # mesh vertices, or points of a point cloud
+    size_bytes: int = 0
+    status: str = "ready"  # building (multi-view runs in the background; the url answers 202) | ready | failed
+    detail: str = ""  # why it failed
+    views: int = 0  # photos the multi-view model is made from (0: one photo)
+
+
 class RecallResult(BaseModel):
     evidence: str
     confidence: Confidence
@@ -242,6 +278,7 @@ class RecallResult(BaseModel):
     all_retrieved: list[Citation]
     images: list[tuple[str, str]] = Field(default_factory=list, exclude=True)  # (token id, data URI), best first
     collage: CollageResponse | None = Field(None, exclude=True)  # set by the make_collage tool only
+    model3d: Model3DResponse | None = Field(None, exclude=True)  # set by the make_3d_model tool only
 
 
 class ToolCallRecord(BaseModel):
@@ -268,6 +305,7 @@ class ChatResponse(BaseModel):
     warning: str | None = None  # e.g. the request's device has no memories while other devices do
     markers: list[Marker] = Field(default_factory=list)  # "where is X" answers: X's box in a cited frame
     collage: CollageResponse | None = None  # photo montage the turn made (make_collage tool); null otherwise
+    model3d: Model3DResponse | None = None  # 3D model the turn made (make_3d_model tool); null otherwise
 
 
 class DeviceInfo(BaseModel):

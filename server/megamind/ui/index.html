@@ -112,6 +112,10 @@
   #lightbox.gallery #lbstrip { display: flex; }
   #lbstrip img { height: 46px; width: auto; max-width: none; max-height: none; border-radius: 6px; opacity: 0.5; cursor: pointer; border: 2px solid transparent; }
   #lbstrip img.on { opacity: 1; border-color: #ffd678; }
+  .model3d { display: flex; gap: 10px; align-items: center; max-width: min(100%, 560px); padding: 8px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.04); }
+  .model3d img { width: 96px; height: 72px; object-fit: cover; border-radius: 8px; }
+  .model3d a { padding: 8px 12px; border-radius: 10px; background: rgba(120,170,255,0.18); color: #cfe0ff; text-decoration: none; font-weight: 600; }
+  .model3d .note { font-size: 12px; color: var(--muted); }
   #lightbox .nav { position: absolute; top: 50%; transform: translateY(-50%); width: 48px; height: 48px; border-radius: 24px; border: 0;
     background: var(--glass); color: #fff; font-size: 26px; cursor: pointer; display: none; }
   #lightbox.gallery .nav { display: block; }
@@ -377,10 +381,22 @@
     const s = document.createElement('span'); s.textContent = m.label; d.appendChild(s);
     return d;
   }
-  function addAssistant(text, cited, toolCalls, isError, ms, markers, collage) {
+  function addAssistant(text, cited, toolCalls, isError, ms, markers, collage, model3d) {
     $('empty')?.remove();
     const el = document.createElement('div'); el.className = 'msg assistant';
     const b = document.createElement('div'); b.className = 'bubble' + (isError ? ' error' : ''); b.textContent = text; el.appendChild(b);
+    if (model3d?.viewer_url) {
+      const card = document.createElement('div'); card.className = 'model3d';
+      if (model3d.thumb_url) { const t = document.createElement('img'); t.alt = ''; t.src = media(model3d.thumb_url); card.appendChild(t); }
+      const info = document.createElement('div');
+      const qs = new URLSearchParams({ t: model3d.title || '3D memory', when: `${fmtTime(model3d.ts)} (${ago(model3d.ts)})`, full: model3d.full_3d ? '1' : '0', k: model3d.kind || '' });
+      if (location.origin !== new URL(media('/')).origin) qs.set('server', new URL(media('/')).origin);
+      const a = document.createElement('a'); a.href = media(model3d.viewer_url) + '&' + qs; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'View in 3D';
+      const note = document.createElement('div'); note.className = 'note';
+      const what = model3d.kind === 'splat' ? 'Gaussian splat' : model3d.kind === 'points' ? `point cloud from ${model3d.views} photos` : model3d.kind;
+      note.textContent = `${what}${model3d.full_3d ? '' : ' · relief (only the side you saw)'}${model3d.status === 'building' ? ' · building, a few minutes' : ''} · opens in Quest Browser for AR`;
+      info.appendChild(a); info.appendChild(note); card.appendChild(info); el.appendChild(card);
+    }
     if (collage?.url) {
       el.appendChild(memCard(collage));
     } else if (cited && cited.length) {
@@ -533,7 +549,7 @@
     const j = await r.json();
     if (echoTranscript && j.transcript) addUser(j.transcript);
     if (j.warning) addAssistant('Note: ' + j.warning, [], null, true);
-    addAssistant(j.answer, j.cited, j.tool_calls, false, ms, j.markers, j.collage);
+    addAssistant(j.answer, j.cited, j.tool_calls, false, ms, j.markers, j.collage, j.model3d);
     $('latency').textContent = (ms / 1000).toFixed(1) + 's';
     if (j.audio_url && cfg.autoplay) {
       try { speaker?.pause(); speaker = new Audio(media(j.audio_url)); await speaker.play(); } catch (e) { console.warn('audio playback failed', e); }

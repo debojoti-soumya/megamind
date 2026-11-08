@@ -14,6 +14,8 @@ from megamind.agent.claude_agent import ClaudeAgent
 from megamind.agent.collage import agent_tool as collage_tool
 from megamind.agent.collage import install as install_collage
 from megamind.agent.locate import build_locator
+from megamind.agent.model3d import agent_tool as model3d_tool
+from megamind.agent.model3d import install as install_model3d
 from megamind.agent.montage import install as install_montage
 from megamind.agent.reader import build_reader
 from megamind.agent.router import router as agent_router
@@ -140,7 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st.recall = RecallMemory(
             st.store, st.text_embedder, st.image_embedder, st.reader, retriever=st.retriever, tz=settings.wearer_tz
         )
-        st.agent = ClaudeAgent(settings, st.recall, collage=collage_tool(st))
+        st.agent = ClaudeAgent(settings, st.recall, collage=collage_tool(st), model3d=model3d_tool(st))
         st.stt = build_stt(settings)
         st.tts = build_tts(settings)
         st.locator = build_locator(st, settings)  # "where is X": X's box in a cited frame (ChatResponse.markers)
@@ -203,6 +205,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_xr(app)  # Memory Theater: static WebXR page at GET /xr
     install_montage(app, settings)  # highlight reel: POST /v1/montage + GET /v1/montages/{id}.mp4
     install_collage(app, settings)  # photo montage: POST /v1/collage + GET /v1/collages/{id}.jpg + chat tool
+    install_model3d(app, settings)  # 3D from memory: POST /v1/model3d + GET /v1/models3d/{id}.glb|ply
     if settings.api_token:
         app.add_middleware(TokenAuth, token=settings.api_token)  # outermost: nothing runs before the check
 

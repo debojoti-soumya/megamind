@@ -43,6 +43,10 @@ namespace Megamind
         public bool transcribeFirst = true;
 
         public event Action<ChatResponse> OnResponse;
+
+        [Tooltip("Open a 3D model the agent made (make_3d_model) in Quest Browser's WebXR viewer.")]
+        public bool open3DInBrowser = true;
+
         /// <summary>Seconds from sending the question to the complete answer.</summary>
         public float LastLatencySeconds { get; private set; }
         /// <summary>Streamed turns: seconds to the first answer words / the first spoken sentence (0 = none).</summary>
@@ -355,8 +359,19 @@ namespace Megamind
             if (echoTranscript && !string.IsNullOrEmpty(resp.transcript)) panel?.AddUserMessage(resp.transcript);
             panel?.AddAssistantMessage(resp.answer, resp.cited, false, resp.Confidence(), LastLatencySeconds, 0f, resp.markers,
                 resp.HasCollage() ? resp.collage : null);
+            Open3D(resp);
             OnResponse?.Invoke(resp);
             if (!string.IsNullOrEmpty(resp.audio_url) && config.speakAnswers) StartCoroutine(PlayAudio(config.Url(resp.audio_url)));
+        }
+
+        private void Open3D(ChatResponse resp)
+        {
+            if (!open3DInBrowser || !resp.HasModel3D()) return;
+            var q = "&t=" + UnityWebRequest.EscapeURL(resp.model3d.title ?? "") + "&full=" + (resp.model3d.full_3d ? "1" : "0")
+                  + "&k=" + UnityWebRequest.EscapeURL(resp.model3d.kind ?? "");
+            // Quest Browser has no bearer header: ?token= (auth.py) sets the session cookie the model fetch then uses
+            if (!string.IsNullOrWhiteSpace(config.apiToken)) q += "&token=" + UnityWebRequest.EscapeURL(config.apiToken.Trim());
+            Application.OpenURL(config.Url(resp.model3d.viewer_url) + q);
         }
 
         // ---- POST /v1/chat/stream (docs/api.md): transcript, retrieval, delta, reset, audio, final | error ----
@@ -537,6 +552,7 @@ namespace Megamind
             turn.Released = true;
             panel?.FinishDraft(resp.answer, resp.cited, resp.Confidence(), LastLatencySeconds, turn.FirstText, resp.markers,
                 resp.HasCollage() ? resp.collage : null);
+            Open3D(resp);
             OnResponse?.Invoke(resp);
             string audioUrl = string.IsNullOrEmpty(resp.audio_url) ? null : config.Url(resp.audio_url);
             if (turn.Speech != null)

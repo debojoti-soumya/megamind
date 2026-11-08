@@ -647,7 +647,7 @@ class _PurgeMirror:
 
         await self.app(scope, receive, _send)
         if status[:1] == [200]:
-            for name in ("montage_cache", "collage_cache"):
+            for name in ("montage_cache", "collage_cache", "model3d_cache"):
                 if (cache := getattr(self.state, name, None)) is not None:
                     cache.clear()
 
