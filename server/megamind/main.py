@@ -99,11 +99,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings.audio_dir.mkdir(parents=True, exist_ok=True)
         st = app.state
         st.settings = settings
-        st.store = build_store(settings)
-        st.keyframe_filter = KeyframeFilter(settings)
-        st.pending_hashes = {}
         st.text_embedder = build_text_embedder(settings)
         st.image_embedder = build_image_embedder(settings)
+        st.store = build_store(
+            settings,
+            text_dim=getattr(st.text_embedder, "dim", None),
+            image_dim=getattr(st.image_embedder, "dim", None),
+        )
+        st.keyframe_filter = KeyframeFilter(settings)
+        st.pending_hashes = {}
         st.store.image_calibration = image_calibration(settings, st.image_embedder)
         st.transcripts = TranscriptSink(
             st.store,
@@ -111,12 +115,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             merge_s=settings.speech_merge_s,
             max_token_s=settings.speech_max_token_s,
         )
+        st.face_blur = build_face_blur(settings)  # thumbnails (worker) and replay clips
         st.worker = EnrichmentWorker(
             st.store,
             build_enricher(settings, st.image_embedder),
             st.text_embedder,
             st.image_embedder,
-            face_blur=build_face_blur(settings),
+            face_blur=st.face_blur,
         )
         st.media = MediaStore(settings, st.store, lock=st.worker.add_lock)  # hot JPEG -> cold AV1 -> text
         st.worker.media = st.media
@@ -189,10 +194,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/v1/health", response_model=HealthResponse)
     async def health():
         st = app.state
+        store_degraded = getattr(st.store, "degraded", None)
         return HealthResponse(
-            status="ok",
+            status="degraded" if store_degraded else "ok",
             store_count=await st.store.count(),
             models={
+                "store": f"{settings.store_backend} (degraded: {store_degraded})"
+                if store_degraded
+                else settings.store_backend,
                 "claude": settings.claude_model
                 if st.agent.enabled
                 else f"fallback ({settings.claude_model} configured, no key)",

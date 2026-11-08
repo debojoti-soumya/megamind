@@ -142,7 +142,7 @@ HTTPS URL, leave off the port unless the tunnel uses one, and don't add a traili
 | C. Tailscale on both ends (recommended) | `http://100.x.y.z:8000` (`tailscale ip -4` on the server) | Usually yes, because traffic is relayed when direct paths are blocked | Quest: sideload the Tailscale Android APK (`tailscale-android-universal-*.apk`, Android 8+) from https://pkgs.tailscale.com/stable/#android with `adb install`. Then open it from *Unknown Sources* and log in to the same tailnet. Signing in inside the headset may be fiddly (verify on device). |
 | D. `tailscale serve` on the server | `https://<machine>.<tailnet>.ts.net` | Yes (tailnet only) | Needs HTTPS certificates enabled for the tailnet. The Quest still needs Tailscale. `tailscale serve 8000` [T-serve] (exact CLI syntax varies by version; verify). |
 | E. Tailscale Funnel / ngrok / any public HTTPS URL | `https://...` | Yes, and the Quest does **not** need Tailscale | Funnel is public internet, disabled by default, only on ports 443/8443/10000, and DNS can take up to 10 min [T-funnel]. Set `API_TOKEN` on the server and `"apiToken"` in `megamind.json` ([api.md#auth](api.md#auth)). Without it anyone with the URL can read or wipe memories. Turn the tunnel off after the demo. |
-| F. Modal (public HTTPS, recommended) | `https://<workspace>--megamind-web.modal.run` | Yes. The server is in the cloud, so no hotspot, Tailscale, firewall rule or client isolation matters | Deploy with [deploy/README.md](../deploy/README.md) (one CPU container, memories on a Modal Volume). Put the deploy's `API_TOKEN` in `megamind.json` as `"apiToken"` (section 5). HTTPS needs nothing special in `UnityWebRequest`, and the manifest's cleartext flag doesn't affect `https://`. The first request after 10 min idle has a ~10-15 s cold start. The server-side checklist below does not apply. Test with `curl -H "Authorization: Bearer <token>" <url>/v1/health` then the Quest Browser at `<url>/v1/health?token=<token>` (verify on device). |
+| F. Modal (public HTTPS, recommended) | `https://<workspace>--megamind-web.modal.run` | Yes. The server is in the cloud, so no hotspot, Tailscale, firewall rule or client isolation matters | Deploy with [deploy/README.md](../deploy/README.md) (one CPU container, memories on a Modal Volume). Put the deploy's `API_TOKEN` in `megamind.json` as `"apiToken"` (section 5). The native app (`headset-android/`) takes it as Settings → *API token* or `--es api_token <token>`. HTTPS needs nothing special in `UnityWebRequest`, and the manifest's cleartext flag doesn't affect `https://`. The first request after 10 min idle has a ~10-15 s cold start. The server-side checklist below does not apply. Test with `curl -H "Authorization: Bearer <token>" <url>/v1/health` then the Quest Browser at `<url>/v1/health?token=<token>` (verify on device). |
 
 **Server side checklist:**
 1. Bind to all interfaces: `uvicorn megamind.main:app --host 0.0.0.0 --port 8000`. The default `127.0.0.1` is unreachable from the headset.
@@ -234,7 +234,10 @@ adb shell am start -n com.megamind.quest/com.unity3d.player.UnityPlayerGameActiv
 ```
 Then point it at your server with `megamind.json` (section 5) and continue at step 7 below. The capture-only native
 app is `megamind-native.apk` (`adb install -r megamind-native.apk`, package `ai.megamind.quest`, see
-[`headset-android/README.md`](../headset-android/README.md)). No CI-built APK has been installed on a headset yet
+[`headset-android/README.md`](../headset-android/README.md)). Against a token-protected server (option F, Modal)
+the native app takes the token in Settings → *API token* or `adb shell am start -n ai.megamind.quest/.MainActivity
+--es api_token <token>`; a wrong or missing token pauses uploads with "check API token" instead of retrying
+(verify on device). No CI-built APK has been installed on a headset yet
 **(verify on device)**.
 
 

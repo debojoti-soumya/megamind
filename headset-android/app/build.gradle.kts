@@ -40,9 +40,11 @@ dependencies {
 }
 
 // `./gradlew testDebugUnitTest -Pmegamind.url=http://127.0.0.1:8300` also POSTs the exact request
-// bodies the app builds to a running Megamind server (otherwise those tests are skipped).
+// bodies the app builds to a running Megamind server (otherwise those tests are skipped); add
+// `-Pmegamind.token=<API_TOKEN>` (or MEGAMIND_API_TOKEN) for a server with auth on.
 tasks.withType<Test>().configureEach {
   systemProperty("megamind.url", (project.findProperty("megamind.url") as String?) ?: System.getenv("MEGAMIND_URL") ?: "")
+  systemProperty("megamind.token", (project.findProperty("megamind.token") as String?) ?: System.getenv("MEGAMIND_API_TOKEN") ?: "")
   outputs.upToDateWhen { false }
   testLogging { events("passed", "skipped", "failed"); showStandardStreams = true }
 }

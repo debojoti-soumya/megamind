@@ -4,8 +4,6 @@ import android.content.Context
 import android.util.Log
 import java.io.File
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import org.json.JSONObject
@@ -66,6 +64,8 @@ object Uploader {
     data class Ok(val body: String) : Outcome
     data class Retry(val message: String) : Outcome
     data class Permanent(val message: String) : Outcome
+    /** 401/403 ([MegamindApi.isAuthFailure]): pause until the token changes, keep the chunk. */
+    data class AuthFailed(val message: String) : Outcome
   }
 
   private fun refreshCounts() {
@@ -100,6 +100,19 @@ object Uploader {
             Log.e(TAG, "Backend rejected ${next.name}: ${outcome.message}")
             ChunkStore.moveToFailed(app, next)
             Status.error("Upload rejected: ${outcome.message}")
+          }
+          is Outcome.AuthFailed -> {
+            // Not retried: the same token gets the same 401. Chunks stay queued (bounded by the cap) and
+            // upload once Save / an api_token intent / Retry uploads calls retryNow().
+            Log.e(TAG, "Upload of ${next.name} paused: ${outcome.message}")
+            Status.error(outcome.message)
+            Status.uploadInfo = "PAUSED: server rejected the API token (fix it in Settings, then Save)"
+            ChunkStore.enforceCap(app)
+            refreshCounts()
+            retryWake.clear()
+            retryWake.take()
+            wake.clear()
+            backoffMs = BACKOFF_INITIAL_MS
           }
           is Outcome.Retry -> {
             val wait = backoffMs
@@ -138,6 +151,7 @@ object Uploader {
   private sealed interface PartResult {
     data class Done(val note: String) : PartResult
     data class Retry(val message: String) : PartResult
+    data class AuthFailed(val message: String) : PartResult
   }
 
   /**
@@ -145,7 +159,7 @@ object Uploader {
    * chunk start + `meta.video.offset`. Never blocks frames or audio: a server without `/v1/video`, a
    * rejected clip or 3 consecutive 5xx skip the chunk's video only.
    */
-  private fun uploadVideo(base: String, deviceId: String, dir: File, startMs: Long, info: JSONObject, mp4: File): PartResult {
+  private fun uploadVideo(base: String, deviceId: String, token: String, dir: File, startMs: Long, info: JSONObject, mp4: File): PartResult {
     if (!serverTakesVideo) {
       markSent(dir, VIDEO_PART)
       return PartResult.Done(" video skipped (server has no /v1/video)")
@@ -153,8 +167,10 @@ object Uploader {
     val ts = startMs / 1000.0 + info.optDouble("offset", 0.0)
     val r =
         MegamindApi.post(
-            base, MegamindApi.VIDEO_PATH, MegamindApi.videoRequest(deviceId, ts, MegamindApi.Body.FileBody(mp4), dir.name + ".mp4"))
+            base, MegamindApi.VIDEO_PATH, MegamindApi.videoRequest(deviceId, ts, MegamindApi.Body.FileBody(mp4), dir.name + ".mp4"),
+            token = token)
     return when {
+      MegamindApi.isAuthFailure(r.code) -> PartResult.AuthFailed(MegamindApi.authFailureMessage(MegamindApi.VIDEO_PATH, r.code))
       r.code in 200..299 -> {
         markSent(dir, VIDEO_PART)
         videoFailures.remove(dir.name)
@@ -199,6 +215,7 @@ object Uploader {
         normalizeBaseUrl(SettingsStore.get(app).backendUrl)
             ?: return Outcome.Retry("Invalid backend URL (check settings)")
     val deviceId = SettingsStore.get(app).deviceId
+    val token = SettingsStore.get(app).apiToken
     return try {
       val meta = JSONObject(File(dir, "meta.json").readText())
       val startMs =
@@ -222,8 +239,9 @@ object Uploader {
           val f = File(dir, name)
           if (!f.exists()) continue
           val ts = startMs / 1000.0 + fr.optDouble("t", 0.0)
-          val r = MegamindApi.post(base, MegamindApi.FRAMES_PATH, MegamindApi.frameRequest(deviceId, ts, MegamindApi.Body.FileBody(f), name))
+          val r = MegamindApi.post(base, MegamindApi.FRAMES_PATH, MegamindApi.frameRequest(deviceId, ts, MegamindApi.Body.FileBody(f), name), token = token)
           when {
+            MegamindApi.isAuthFailure(r.code) -> return Outcome.AuthFailed(MegamindApi.authFailureMessage(MegamindApi.FRAMES_PATH, r.code))
             r.code in 200..299 -> {
               if (r.body.contains("\"accepted\":true")) accepted++ else dropped++
               markSent(dir, name)
@@ -247,8 +265,10 @@ object Uploader {
             MegamindApi.post(
                 base, MegamindApi.AUDIO_PATH,
                 MegamindApi.audioRequest(deviceId, startMs / 1000.0, MegamindApi.Body.FileBody(audio), sampleRate, dir.name + ".wav"),
-                readTimeoutMs = 120_000) // transcription is synchronous
+                readTimeoutMs = 120_000, // transcription is synchronous
+                token = token)
         when {
+          MegamindApi.isAuthFailure(r.code) -> return Outcome.AuthFailed(MegamindApi.authFailureMessage(MegamindApi.AUDIO_PATH, r.code))
           r.code in 200..299 -> {
             markSent(dir, AUDIO_PART)
             audioFailures.remove(dir.name)
@@ -282,9 +302,10 @@ object Uploader {
       val videoInfo = meta.optJSONObject("video")
       val mp4 = File(dir, VideoRecorder.FILE_NAME)
       if (videoInfo != null && VIDEO_PART !in sent && mp4.exists() && mp4.length() > 0) {
-        when (val v = uploadVideo(base, deviceId, dir, startMs, videoInfo, mp4)) {
+        when (val v = uploadVideo(base, deviceId, token, dir, startMs, videoInfo, mp4)) {
           is PartResult.Done -> videoNote = v.note
           is PartResult.Retry -> return Outcome.Retry(v.message)
+          is PartResult.AuthFailed -> return Outcome.AuthFailed(v.message)
         }
       }
       Outcome.Ok("frames accepted=$accepted filtered=$dropped" + (if (rejected > 0) " undecodable=$rejected" else "") + audioNote + videoNote)
@@ -296,16 +317,17 @@ object Uploader {
     }
   }
 
-  /** GET {backend}/v1/health. Blocking; call off the main thread. */
-  fun testConnection(rawUrl: String): String {
+  /** GET {backend}/v1/health with [token]. Blocking; call off the main thread. */
+  fun testConnection(rawUrl: String, token: String = ""): String {
     val base = normalizeBaseUrl(rawUrl) ?: return "Invalid URL: $rawUrl"
     return try {
-      val c = URL(base + MegamindApi.HEALTH_PATH).openConnection() as HttpURLConnection
-      c.connectTimeout = 5_000
-      c.readTimeout = 5_000
-      val code = c.responseCode
-      c.disconnect()
-      if (code in 200..299) "Connected to Megamind at $base (HTTP $code)" else "Reached $base but got HTTP $code (is this a Megamind server?)"
+      val code = MegamindApi.get(base, MegamindApi.HEALTH_PATH, token).code
+      when {
+        code in 200..299 -> "Connected to Megamind at $base (HTTP $code)"
+        MegamindApi.isAuthFailure(code) ->
+            "Reached $base but the API token was " + (if (token.isBlank()) "missing" else "rejected") + " (HTTP $code): set API token"
+        else -> "Reached $base but got HTTP $code (is this a Megamind server?)"
+      }
     } catch (e: Exception) {
       "Can't reach $base: ${e.message ?: e.javaClass.simpleName}"
     }

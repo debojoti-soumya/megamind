@@ -61,11 +61,9 @@ namespace Megamind.EditorTools
             manager.isInsightPassthroughEnabled = true;
             ClearStartupPermissionRequests(manager);
             manager.trackingOriginType = OVRManager.TrackingOrigin.FloorLevel;
-            if (rigGo.GetComponent<OVRPassthroughLayer>() == null)
-            {
-                var layer = rigGo.AddComponent<OVRPassthroughLayer>();
-                layer.overlayType = OVROverlay.OverlayType.Underlay;
-            }
+            // Meta XR SDK 85 has a single background passthrough layer beneath the eye buffer; flexible layering
+            // (overlayType / compositionDepth) is obsolete, so the layer is added with its defaults.
+            if (rigGo.GetComponent<OVRPassthroughLayer>() == null) rigGo.AddComponent<OVRPassthroughLayer>();
             foreach (var cam in rigGo.GetComponentsInChildren<Camera>(true))
             {
                 cam.clearFlags = CameraClearFlags.SolidColor;

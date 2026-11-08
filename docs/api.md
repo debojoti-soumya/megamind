@@ -22,13 +22,18 @@ Response bodies are unchanged: `thumb_url`/`replay_url`/`audio_url` stay token-f
 { "status": "ok", "store_count": 1234,
   "models": { "claude": "claude-sonnet-4-6", "reader": "google/gemma-4-31B-it",
               "embed": "mock (openai configured, no key)", "enrich": "vlm:google/gemma-4-31B-it",
-              "stt": "mock", "tts": "mock" } }
+              "stt": "mock", "tts": "mock", "store": "lancedb" } }
 ```
 `models` names what is actually serving each role. When the configured provider has no key, or isn't wired up yet,
 the value is `mock (<provider> configured, no key | not installed | not implemented)`. Claude without a key reports
 `fallback (<model> configured, no key)`, meaning the no-LLM caption path. `enrich` is the keyframe captioner
 (`ENRICH_PROVIDER`): `vlm:<model>`, `local` (keyless SigLIP label + Tesseract OCR) or `mock`; a VLM that is failing
 over to its fallback reports `vlm:<model> (degraded: last error 503)` until its next successful call.
+`store` is `STORE_BACKEND` (`memory` | `lancedb`). LanceDB sizes its vector columns from the configured embedders
+(`EMBED_PROVIDER`/`IMAGE_EMBED_PROVIDER` widths), whatever kind of memory arrives first. If an existing table was
+built with different widths (embedder changed), new memories carrying those vectors can't be stored: the server
+logs an error, `status` becomes `"degraded"` and `store` reads `lancedb (degraded: <reason>)` until a full
+`DELETE /memories` (an empty mis-sized table is recreated automatically).
 
 ## `POST /frames`  (headset / feeder -> server)
 `multipart/form-data`
@@ -43,6 +48,11 @@ over to its fallback reports `vlm:<model> (degraded: last error 503)` until its 
   `kind="transcript"` token (same path and merge rule as `POST /audio`, no STT), **never** attached to the frame and
   **never** changes the frame's keep decision: it is stored even when the frame is rejected. `""`/`null` = none.
   Send each piece of text once (a repeat of the last piece within the merge window is ignored).
+
+  Meta limits (shared by `POST /frames`, `/audio` and `/video`): `ts` / `ts_start` must be finite Unix seconds no
+  more than 1 day (86400 s) past the server clock; `device_id` must be non-blank and short enough to be a directory
+  name once URL-quoted (~230 bytes: plain ASCII ids up to 238 chars). Otherwise `400 {"detail": "bad meta: ..."}`
+  and nothing is stored.
 Response `202 Accepted`:
 ```json
 { "frame_id": "01J...", "accepted": true, "reason": null }
@@ -72,7 +82,7 @@ Speech that starts ≤ `SPEECH_MERGE_S` (10 s) after the device's last transcrip
 utterance cut by a chunk boundary stays one token. Only the first window of a chunk can continue the previous chunk;
 so `token_ids` may start with an **existing** (merged-into) token id. The merge target is kept per device in server
 memory (no merge across a restart) and dropped by `DELETE /memories`.
-Silence (incl. a 0-sample or digitally silent 16-bit chunk, which skips STT) → `token_ids: []`, `transcript: ""`. Bad `meta` (incl. non-finite `ts_start`) / empty body → 400; > 25 MB or > 600 s → 413;
+Silence (incl. a 0-sample or digitally silent 16-bit chunk, which skips STT) → `token_ids: []`, `transcript: ""`. Bad `meta` (same limits as `POST /frames`) / empty body → 400; > 25 MB or > 600 s → 413;
 undecodable audio → 415; STT provider error → 502.
 
 ## `POST /video`  (headset -> server; optional)
@@ -96,7 +106,7 @@ disk (`VIDEO_STORE_DIR`, default `<THUMB_DIR>/../video`). Response `200 OK`:
   already stored (an upload retried after its response was lost); its `video_id` is returned, nothing new is kept.
 - `reason="privacy"` (`accepted: false`, `video_id: ""`): `PRIVACY_BLUR_FACES(_VLM)` is on. Real video is never
   blurred, so it is discarded; don't resend.
-- Bad `meta` (incl. non-finite `ts_start`, or a `device_id` too long to be a directory name, ~230 bytes) /
+- Bad `meta` (same limits as `POST /frames`: finite `ts_start` ≤ 1 day ahead, non-blank `device_id` ≤ ~230 bytes) /
   empty body → 400; larger or longer than the caps → 413; not a decodable video, not mp4/mov, not H.264 → 415; `DELETE /memories` covered the clip while it was uploading → 409
   (not kept); `VIDEO_ENABLED=false` → 404 (clients should then stop sending video); no ffmpeg/ffprobe → 503.
 Retention: clips are hot media (tiered media, see `POST /admin/age`): one is deleted once its footage is older than
@@ -221,6 +231,9 @@ The server keeps raw frames for a sliding window per device (default 15 min, bou
   `PRIVACY_BLUR_FACES(_VLM)` is on (video is not blurred). Otherwise, or if cutting fails, the frame path above runs
   unchanged. With stored video, the default `to` is the newest footage of either kind (newest buffered frame or end
   of the newest stored clip).
+- `PRIVACY_BLUR_FACES(_VLM)` on: every frame in the clip (buffered, hot JPEG or cold AV1 keyframe) gets the same
+  bystander face blur as stored thumbnails before rendering (each frame is blurred once and reused across clips,
+  `REPLAY_BLUR_CACHE_BYTES`, 64 MiB), and stored video is never used.
 - 404 when neither buffered nor kept frames nor stored video exist in the window; 503 when ffmpeg is not available on
   the server.
 Rendered clips are cached; `DELETE /memories` also purges the matching buffered frames, stored video and the clip cache.

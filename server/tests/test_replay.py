@@ -336,3 +336,108 @@ async def test_replay_falls_back_to_kept_frames_after_the_buffer_expires(client)
 
     await c.post("/v1/admin/age", params={"cold_older_than_s": 0})  # pixels aged out: nothing to replay
     assert (await c.get("/v1/replay.mp4", params=params)).status_code == 404
+
+
+# ---- privacy: PRIVACY_BLUR_FACES applies to replay clips too (#126) ----
+
+FACE = (24, 16, 48, 40)  # x, y, w, h inside the 96x72 test frames
+
+
+@pytest.fixture
+async def blur_client(tmp_path, monkeypatch):
+    from httpx import ASGITransport, AsyncClient
+
+    from megamind.config import Settings
+    from megamind.ingest import privacy
+    from megamind.main import create_app
+
+    calls = []
+
+    def detector(img):
+        calls.append(img.size)
+        return [FACE]
+
+    monkeypatch.setattr(privacy, "haar_detector", lambda: detector)
+    settings = Settings(
+        thumb_dir=tmp_path / "thumbs",
+        audio_dir=tmp_path / "audio",
+        store_backend="memory",
+        embed_provider="mock",
+        filter_min_gap_s=0.0,
+        enrich_provider="mock",
+        consolidate_enabled=False,
+        privacy_blur_faces=True,
+        _env_file=None,
+    )
+    app = create_app(settings)
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            yield c, app, calls
+
+
+def _first_frame(mp4: bytes, tmp_path) -> Image.Image:
+    import subprocess
+
+    src, out = tmp_path / "clip.mp4", tmp_path / "first.png"
+    src.write_bytes(mp4)
+    subprocess.run([find_ffmpeg(), "-y", "-v", "error", "-i", str(src), "-frames:v", "1", str(out)], check=True)
+    return Image.open(out).convert("L")
+
+
+def _face_stddev(img: Image.Image) -> float:
+    from PIL import ImageStat
+
+    x, y, w, h = FACE
+    return ImageStat.Stat(img.crop((x + 4, y + 4, x + w - 4, y + h - 4))).stddev[0]
+
+
+@needs_ffmpeg
+async def test_replay_blurs_faces_in_buffered_and_kept_frames(blur_client, tmp_path):
+    c, app, calls = blur_client
+    raw = _jpeg(40)
+    sharp = _face_stddev(Image.open(io.BytesIO(raw)).convert("L"))
+    for i in range(3):
+        assert (await _post_frame(c, _jpeg(40 + i), 1000.0 + 5 * i)).json()["accepted"]
+    await app.state.worker.queue.join()
+    params = {"device_id": "dev1", "from": "995", "to": "1015"}
+
+    r = await c.get("/v1/replay.mp4", params=params)
+    assert r.status_code == 200 and r.headers["x-replay-source"] == "buffer"
+    assert _face_stddev(_first_frame(r.content, tmp_path)) < 0.3 * sharp
+
+    # blurred once per frame: re-requests hit the clip cache, a grown window only blurs the new frame
+    n = len(calls)
+    assert (await c.get("/v1/replay.mp4", params=params)).status_code == 200
+    assert len(calls) == n
+    await _post_frame(c, _jpeg(49), 1012.0)
+    assert (await c.get("/v1/replay.mp4", params=params)).headers["x-replay-frames"] == "4"
+    assert len(calls) == n + 1 + 1  # the new frame's thumbnail (worker) + its replay copy
+
+    # hot JPEG and cold AV1 keyframe tiers are blurred too
+    app.state.replay.purge()
+    r = await c.get("/v1/replay.mp4", params=params)
+    assert r.status_code == 200 and r.headers["x-replay-source"] == "keyframes"
+    assert _face_stddev(_first_frame(r.content, tmp_path)) < 0.3 * sharp
+    await app.state.worker.queue.join()
+    aged = (await c.post("/v1/admin/age", params={"hot_older_than_s": 0, "cold_older_than_s": 1e12})).json()
+    assert aged["to_cold"] == 4, aged
+    app.state.replay_cache.clear()
+    app.state.replay_blur.clear()
+    r = await c.get("/v1/replay.mp4", params=params)
+    assert r.status_code == 200 and r.headers["x-replay-source"] == "keyframes"
+    assert _face_stddev(_first_frame(r.content, tmp_path)) < 0.3 * sharp
+
+    await c.delete("/v1/memories")  # purge also drops the blurred copies
+    assert len(app.state.replay_blur) == 0
+
+
+@needs_ffmpeg
+async def test_replay_without_blur_serves_frames_untouched(client, tmp_path):
+    c, app = client
+    raw = _jpeg(60)
+    await _post_frame(c, raw, 1000.0)
+    r = await c.get("/v1/replay.mp4", params={"device_id": "dev1", "from": "999", "to": "1001"})
+    assert r.status_code == 200
+    sharp = _face_stddev(Image.open(io.BytesIO(raw)).convert("L"))
+    assert _face_stddev(_first_frame(r.content, tmp_path)) > 0.5 * sharp
+    assert len(app.state.replay_blur) == 0

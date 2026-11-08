@@ -12,11 +12,14 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from PIL import Image
 
+from megamind.ingest.privacy import FaceBlur, blur_faces
 from megamind.replay.buffer import BufferedFrame
 
 
@@ -105,6 +108,56 @@ def _read_frames(frames: Sequence[BufferedFrame]) -> list[tuple[float, bytes]]:
         except FileNotFoundError:
             continue
     return out
+
+
+class BlurredFrames:
+    """Face-blurred copies of replay source frames (PRIVACY_BLUR_FACES), bounded LRU by bytes.
+
+    Each source frame is blurred once and reused by every clip that covers it, so a rolling replay window
+    (new frames change the clip cache key) only runs face detection on the frames it hasn't seen."""
+
+    def __init__(self, max_bytes: int = 64 << 20) -> None:
+        self.max_bytes = max_bytes
+        self._items: OrderedDict[tuple, bytes] = OrderedDict()
+        self._nbytes = 0
+        self._lock = threading.Lock()  # blur() runs in worker threads, possibly two renders at once
+
+    def blur(self, face_blur: FaceBlur, tag: str, frames: Sequence[BufferedFrame]) -> list[BufferedFrame]:
+        """Blurred in-memory copies of `frames` (call off the event loop); evicted spool frames are skipped."""
+        out = []
+        for f in frames:
+            key = (tag, f.ts, f.size)
+            with self._lock:
+                data = self._items.get(key)
+                if data is not None:
+                    self._items.move_to_end(key)
+            if data is None:
+                try:
+                    raw = f.read()
+                except FileNotFoundError:
+                    continue
+                data, _ = blur_faces(raw, face_blur.detector)
+                self._put(key, data)
+            out.append(BufferedFrame(ts=f.ts, size=len(data), data=data))
+        return out
+
+    def _put(self, key: tuple, data: bytes) -> None:
+        with self._lock:
+            if key in self._items:
+                return
+            self._items[key] = data
+            self._nbytes += len(data)
+            while self._nbytes > self.max_bytes and len(self._items) > 1:
+                _, old = self._items.popitem(last=False)
+                self._nbytes -= len(old)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items.clear()
+            self._nbytes = 0
+
+    def __len__(self) -> int:
+        return len(self._items)
 
 
 class ReplayCache:

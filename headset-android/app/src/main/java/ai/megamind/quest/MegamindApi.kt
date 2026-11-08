@@ -26,6 +26,18 @@ object MegamindApi {
   const val VIDEO_PATH = "/v1/video"
   const val HEALTH_PATH = "/v1/health"
 
+  /** `Authorization` value for a server with `API_TOKEN` set (docs/api.md#auth); null when [token] is blank. */
+  fun authorization(token: String?): String? = token?.trim()?.takeIf { it.isNotEmpty() }?.let { "Bearer $it" }
+
+  /**
+   * 401/403: the server wants a (different) API token. Retrying the same request can never fix that, so the
+   * uploader pauses (keeping the chunks) until the token changes instead of backing off forever.
+   */
+  fun isAuthFailure(code: Int): Boolean = code == 401 || code == 403
+
+  fun authFailureMessage(path: String, code: Int): String =
+      "$path HTTP $code: API token missing or wrong - set API token in Settings (or adb --es api_token), then Save"
+
   /** `detail` of the server's 400 for a corrupt JPEG (server/megamind/ingest/router.py): skip that frame only. */
   const val UNDECODABLE_JPEG = "not a decodable JPEG"
 
@@ -132,11 +144,12 @@ object MegamindApi {
   data class Response(val code: Int, val body: String)
 
   /**
-   * POSTs [body] to [base] + [path]. Throws IOException when the backend is unreachable.
+   * POSTs [body] to [base] + [path], with `Authorization: Bearer <token>` when [token] is set. Throws
+   * IOException when the backend is unreachable.
    * `Connection: close`: pooled keep-alive sockets went stale through `adb reverse` in Recall.
    */
   @Throws(IOException::class)
-  fun post(base: String, path: String, body: Multipart, readTimeoutMs: Int = 60_000): Response {
+  fun post(base: String, path: String, body: Multipart, readTimeoutMs: Int = 60_000, token: String = ""): Response {
     val conn = URL(base + path).openConnection() as HttpURLConnection
     try {
       conn.connectTimeout = 10_000
@@ -146,17 +159,37 @@ object MegamindApi {
       conn.setChunkedStreamingMode(64 * 1024)
       conn.setRequestProperty("Content-Type", body.contentType)
       conn.setRequestProperty("Connection", "close")
+      authorization(token)?.let { conn.setRequestProperty("Authorization", it) }
       conn.outputStream.buffered(64 * 1024).use { body.writeTo(it) }
-      val code = conn.responseCode
-      val text =
-          runCatching {
-                (if (code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
-              }
-              .getOrDefault("")
-      return Response(code, text)
+      return read(conn)
     } finally {
       conn.disconnect()
     }
+  }
+
+  /** GETs [base] + [path] (e.g. [HEALTH_PATH]) with the same auth header as [post]. */
+  @Throws(IOException::class)
+  fun get(base: String, path: String, token: String = "", timeoutMs: Int = 5_000): Response {
+    val conn = URL(base + path).openConnection() as HttpURLConnection
+    try {
+      conn.connectTimeout = timeoutMs
+      conn.readTimeout = timeoutMs
+      conn.setRequestProperty("Connection", "close")
+      authorization(token)?.let { conn.setRequestProperty("Authorization", it) }
+      return read(conn)
+    } finally {
+      conn.disconnect()
+    }
+  }
+
+  private fun read(conn: HttpURLConnection): Response {
+    val code = conn.responseCode
+    val text =
+        runCatching {
+              (if (code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+            }
+            .getOrDefault("")
+    return Response(code, text)
   }
 
   /**
