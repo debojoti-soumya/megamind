@@ -121,7 +121,7 @@ namespace Megamind
             target.text =
                 $"{line1}\n" +
                 $"sent {u.Sent}  accepted {u.Accepted}  last {u.LastReason}  {u.LastLatencyMs:0} ms  {u.LastJpegBytes / 1024} KB" +
-                (u.SkippedMotion + u.SkippedBacklog > 0 ? $"  skipped m{u.SkippedMotion}/b{u.SkippedBacklog}" : "") + "\n" +
+                (u.SkippedMotion + u.SkippedBacklog + u.SkippedBackoff > 0 ? $"  skipped m{u.SkippedMotion}/b{u.SkippedBacklog}/r{u.SkippedBackoff}" : "") + "\n" +
                 $"{u.ServerBaseUrl}  [{u.DeviceId}, url:{cfg.overrideSource}]{net}";
             if (_dot != null)
             {
