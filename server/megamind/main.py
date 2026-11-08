@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from megamind.agent.claude_agent import ClaudeAgent
+from megamind.agent.montage import install as install_montage
 from megamind.agent.reader import build_reader
 from megamind.agent.router import router as agent_router
 from megamind.agent.stt import build_stt
@@ -135,6 +136,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_replay(app, settings)  # moment replay: frame tap + GET /v1/replay.mp4
     install_live(app, settings)  # live short-term memory: GET /v1/live/{id}.jpg (+ retriever wrap in lifespan)
     install_xr(app)  # Memory Theater: static WebXR page at GET /xr
+    install_montage(app, settings)  # highlight reel: POST /v1/montage + GET /v1/montages/{id}.mp4
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health():

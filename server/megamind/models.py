@@ -131,6 +131,34 @@ class ChatResponse(BaseModel):
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
 
 
+class MontageRequest(BaseModel):
+    """`POST /v1/montage`: a query, a time range, or both (time bounds: unix seconds or ISO-8601; "" = unset)."""
+
+    device_id: str | None = None
+    query: str | None = None
+    time_from: float | str | None = None
+    time_to: float | str | None = None
+    max_clips: int | None = Field(None, ge=0, le=24)  # None/0 = MONTAGE_MAX_CLIPS
+
+
+class MontageClip(BaseModel):
+    token_id: str
+    ts: float
+    title: str
+    duration_s: float
+    source: Literal["replay", "timelapse"]  # buffered frames (#58) or a ~1 fps run of stored keyframes
+    thumb_url: str = ""
+
+
+class MontageResponse(BaseModel):
+    id: str
+    url: str  # /v1/montages/{id}.mp4
+    title: str
+    narration: str = ""
+    planner: Literal["claude", "offline"] = "offline"
+    clips: list[MontageClip] = Field(default_factory=list)
+
+
 class HealthResponse(BaseModel):
     status: str
     store_count: int
