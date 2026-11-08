@@ -19,6 +19,7 @@ from megamind.ingest.filter import KeyframeFilter
 from megamind.ingest.router import router as ingest_router
 from megamind.ingest.worker import EnrichmentWorker
 from megamind.models import HealthResponse
+from megamind.replay import install as install_replay
 from megamind.retrieval import build_retriever
 from megamind.store import build_store
 from megamind.store.consolidate import Consolidator, build_summarizer
@@ -74,6 +75,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="Megamind", version="0.1.0", lifespan=lifespan)
     app.include_router(ingest_router, prefix="/v1")
     app.include_router(agent_router, prefix="/v1")
+    install_replay(app, settings)  # moment replay: frame tap + GET /v1/replay.mp4
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health():

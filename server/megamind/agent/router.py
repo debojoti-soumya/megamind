@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from ulid import ULID
 
 from megamind.models import ChatRequest, ChatResponse
+from megamind.replay import annotate_citations
 
 router = APIRouter()
 
@@ -37,6 +38,7 @@ async def chat(request: Request):
         raise HTTPException(415, "use application/json or multipart/form-data")
 
     resp = await app.agent.chat(session_id, text, device_id)
+    annotate_citations(app, resp.cited, device_id)
     resp.audio_url = await app.tts.synthesize(resp.answer, str(ULID()))
     return resp
 
