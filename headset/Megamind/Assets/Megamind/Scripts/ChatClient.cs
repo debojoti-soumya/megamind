@@ -1,6 +1,9 @@
 // Stream 3: push-to-talk -> record mic -> POST /v1/chat (multipart WAV) -> play reply audio.
 // Also supports text questions for debugging (SendText).
-// TODO(stream-3): wire the push-to-talk input (OVRInput trigger / hand pinch) and test on device.
+//
+// Input: controller index trigger (either hand) OR hand-tracking index pinch (OVRHand). Hold to
+// record, release to send. Taps shorter than `minRecordSeconds` are ignored. The panel shows a
+// listening indicator while recording and a thinking indicator until the server replies.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -16,35 +19,71 @@ namespace Megamind
         public MegamindConfig config;
         public ChatPanel panel;
         public AudioSource speaker;
+
+        [Header("Push-to-talk")]
         public OVRInput.Button pushToTalk = OVRInput.Button.PrimaryIndexTrigger;
+        public OVRInput.Controller controllers = OVRInput.Controller.Touch;
+        [Tooltip("Optional: OVRHand components for pinch-to-talk (stretch).")]
+        public OVRHand leftHand, rightHand;
+        public float minRecordSeconds = 0.3f;
+
+        public event Action<ChatResponse> OnResponse;
+        public float LastLatencySeconds { get; private set; }
+        public bool IsRecording => _recordingActive;
+        public bool IsThinking { get; private set; }
 
         private string _sessionId;
         private AudioClip _recording;
-        private bool _recording_active;
+        private bool _recordingActive;
+        private float _recordStart;
+        private bool _pinchHeld;
 
         private void Awake() => _sessionId = Guid.NewGuid().ToString("N");
 
         private void Update()
         {
-            if (OVRInput.GetDown(pushToTalk)) BeginRecording();
-            if (OVRInput.GetUp(pushToTalk) && _recording_active) StartCoroutine(EndRecordingAndSend());
+            bool pinch = IsPinching(leftHand) || IsPinching(rightHand);
+            bool pinchDown = pinch && !_pinchHeld, pinchUp = !pinch && _pinchHeld;
+            _pinchHeld = pinch;
+
+            if (OVRInput.GetDown(pushToTalk, controllers) || pinchDown) BeginRecording();
+            if ((OVRInput.GetUp(pushToTalk, controllers) || pinchUp) && _recordingActive) StartCoroutine(EndRecordingAndSend());
         }
+
+        private static bool IsPinching(OVRHand hand)
+            => hand != null && hand.IsTracked && hand.GetFingerIsPinching(OVRHand.HandFinger.Index)
+               && hand.GetFingerConfidence(OVRHand.HandFinger.Index) == OVRHand.TrackingConfidence.High;
 
         public void BeginRecording()
         {
-            if (_recording_active) return;
+            if (_recordingActive || IsThinking) return;
+            if (Microphone.devices.Length == 0)
+            {
+                panel?.AddAssistantMessage("(no microphone available)", null, true);
+                return;
+            }
+            if (speaker != null && speaker.isPlaying) speaker.Stop(); // barge-in
             _recording = Microphone.Start(null, false, config.maxRecordSeconds, config.micSampleRate);
-            _recording_active = true;
+            _recordingActive = true;
+            _recordStart = Time.unscaledTime;
             panel?.SetListening(true);
+        }
+
+        public void CancelRecording()
+        {
+            if (!_recordingActive) return;
+            Microphone.End(null);
+            _recordingActive = false;
+            panel?.SetListening(false);
         }
 
         private IEnumerator EndRecordingAndSend()
         {
             int pos = Microphone.GetPosition(null);
             Microphone.End(null);
-            _recording_active = false;
+            _recordingActive = false;
             panel?.SetListening(false);
-            if (_recording == null || pos <= 0) yield break;
+            if (_recording == null || pos <= 0 || Time.unscaledTime - _recordStart < minRecordSeconds) yield break;
 
             var samples = new float[pos * _recording.channels];
             _recording.GetData(samples, 0);
@@ -58,11 +97,8 @@ namespace Megamind
             };
             using (var req = UnityWebRequest.Post(config.Url("/v1/chat"), form))
             {
-                req.timeout = 60;
-                panel?.SetThinking(true);
-                yield return req.SendWebRequest();
-                panel?.SetThinking(false);
-                HandleChatResponse(req);
+                req.timeout = config.chatTimeoutSeconds;
+                yield return Send(req, echoTranscript: true);
             }
         }
 
@@ -70,40 +106,60 @@ namespace Megamind
 
         private IEnumerator SendTextCo(string text)
         {
+            if (string.IsNullOrWhiteSpace(text)) yield break;
             var body = JsonUtility.ToJson(new ChatRequest { session_id = _sessionId, device_id = config.deviceId, text = text });
             using (var req = new UnityWebRequest(config.Url("/v1/chat"), "POST"))
             {
                 req.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
                 req.downloadHandler = new DownloadHandlerBuffer();
                 req.SetRequestHeader("Content-Type", "application/json");
-                req.timeout = 60;
+                req.timeout = config.chatTimeoutSeconds;
                 panel?.AddUserMessage(text);
-                panel?.SetThinking(true);
-                yield return req.SendWebRequest();
-                panel?.SetThinking(false);
-                HandleChatResponse(req);
+                yield return Send(req, echoTranscript: false);
             }
         }
 
-        private void HandleChatResponse(UnityWebRequest req)
+        private IEnumerator Send(UnityWebRequest req, bool echoTranscript)
+        {
+            IsThinking = true;
+            panel?.SetThinking(true);
+            float t0 = Time.unscaledTime;
+            yield return req.SendWebRequest();
+            LastLatencySeconds = Time.unscaledTime - t0;
+            IsThinking = false;
+            panel?.SetThinking(false);
+            HandleChatResponse(req, echoTranscript);
+        }
+
+        private void HandleChatResponse(UnityWebRequest req, bool echoTranscript)
         {
             if (req.result != UnityWebRequest.Result.Success)
             {
-                panel?.AddAssistantMessage("(network error: " + req.error + ")", null);
+                panel?.AddAssistantMessage("(network error: " + req.error + ")", null, true);
                 return;
             }
-            var resp = JsonUtility.FromJson<ChatResponse>(req.downloadHandler.text);
-            if (!string.IsNullOrEmpty(resp.transcript)) panel?.AddUserMessage(resp.transcript);
-            panel?.AddAssistantMessage(resp.answer, resp.cited);
-            if (!string.IsNullOrEmpty(resp.audio_url)) StartCoroutine(PlayAudio(config.Url(resp.audio_url)));
+            ChatResponse resp;
+            try { resp = JsonUtility.FromJson<ChatResponse>(req.downloadHandler.text); }
+            catch (Exception e)
+            {
+                panel?.AddAssistantMessage("(bad response: " + e.Message + ")", null, true);
+                return;
+            }
+            if (echoTranscript && !string.IsNullOrEmpty(resp.transcript)) panel?.AddUserMessage(resp.transcript);
+            panel?.AddAssistantMessage(resp.answer, resp.cited, false, resp.Confidence(), LastLatencySeconds);
+            OnResponse?.Invoke(resp);
+            if (!string.IsNullOrEmpty(resp.audio_url) && config.speakAnswers) StartCoroutine(PlayAudio(config.Url(resp.audio_url)));
         }
+
+        public void NewSession() => _sessionId = Guid.NewGuid().ToString("N");
 
         private IEnumerator PlayAudio(string url)
         {
             using (var req = UnityWebRequestMultimedia.GetAudioClip(url, AudioType.WAV))
             {
+                req.timeout = 20;
                 yield return req.SendWebRequest();
-                if (req.result != UnityWebRequest.Result.Success) yield break;
+                if (req.result != UnityWebRequest.Result.Success || speaker == null) yield break;
                 speaker.clip = DownloadHandlerAudioClip.GetContent(req);
                 speaker.Play();
             }

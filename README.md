@@ -41,7 +41,7 @@ Three streams of work:
 |---|---|---|---|
 | 1 | **Capture → tokenize → store.** Passthrough Camera API → 1 fps JPEG → dHash dedupe → VLM (Gemma 4 31B) caption/OCR/entities → text + SigLIP embeddings → LanceDB | `headset/.../FrameUploader.cs`, `server/megamind/ingest`, `server/megamind/store` | filter + worker + in-memory store done; VLM enricher, embeddings, LanceDB are `TODO(stream-1)` |
 | 2 | **Retrieval tool + reader.** `recall_memory(query, time_from, time_to, k, mode)` → hybrid search (vector + BM25 + time filter, RRF) → Gemma 4 31B reads captions + thumbnails → evidence with citations → Claude | `server/megamind/agent/{tools,reader,claude_agent}.py` | done: Claude tool-use loop, Gemma 4 reader (6 s deadline, then caption-only), `server/tools/eval_agent.py` |
-| 3 | **AR chat.** World-locked panel, push-to-talk → STT, spoken reply via TTS, cited thumbnails | `headset/.../{ChatClient,ChatPanel}.cs`, `server/megamind/agent/{stt,tts}.py` | C# stubs written (untested on device); STT/TTS providers are `TODO(stream-3)` |
+| 3 | **AR chat.** World-locked panel, push-to-talk → STT, spoken reply via TTS, cited thumbnails | `headset/.../{ChatClient,ChatPanel,PanelAnchor,SettingsPanel}.cs`, `server/megamind/agent/{stt,tts}.py`, `server/megamind/ui` (browser prototype at `/ui`) | browser prototype works end-to-end; OpenAI/Deepgram STT + OpenAI/ElevenLabs TTS implemented; Quest 3 APK playtested (capture + PTT chat + cited thumbnails) with mock providers — see `headset/README.md` |
 
 Key decisions (details and rationale in the design doc §3): one Unity app does both capture
 and chat (Horizon OS suspends background apps); a memory token is a *record*, not a learned
@@ -137,6 +137,12 @@ cd server && source .venv/bin/activate
 ruff check . && ruff format --check .      # lint
 pytest -q                                  # tests (offline, mocks)
 ```
+
+Browser prototype of the AR panel (no headset needed): <http://localhost:8000/ui> — webcam as
+passthrough, hold **Space** to talk, cited thumbnails, TTS playback, status HUD, and an optional
+1 fps capture toggle (settings ⚙) so the whole loop runs on one laptop. Real STT/TTS need
+`OPENAI_API_KEY` (or Deepgram / ElevenLabs keys) in `server/.env`; without keys the mock
+providers are used.
 
 Rules:
 - Headset and server communicate **only** through `docs/api.md`. A contract change is one PR

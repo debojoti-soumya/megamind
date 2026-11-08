@@ -10,7 +10,7 @@ from pathlib import Path
 from megamind.models import MemoryHit, MemoryToken, SearchMode
 from megamind.store.base import MemoryStore, Scored, VectorField
 from megamind.store.episodes import EpisodeTracker
-from megamind.store.rrf import MIN_SCORE, fuse_hits
+from megamind.store.rrf import MIN_SCORE, calibrated, fuse_hits
 
 _WORD = re.compile(r"[a-z0-9]+")
 
@@ -171,6 +171,7 @@ class InMemoryStore(MemoryStore):
     ) -> list[MemoryHit]:
         filters = {"time_from": time_from, "time_to": time_to, "device_id": device_id}
         n = max(k * 4, 48)
+        image_mult = None
         rankings: list[list[Scored]] = []
         if mode in ("semantic", "hybrid"):
             if query_text_vec is not None:
@@ -178,8 +179,13 @@ class InMemoryStore(MemoryStore):
             rankings.append(await self.keyword_search(query_text, n, **filters))
         if mode in ("visual", "hybrid") and query_image_vec is not None:
             rankings.append(await self.vector_search(query_image_vec, n, field="image_vec", **filters))
+            if mode == "hybrid":  # a lone image ranking (visual mode) keeps plain RRF scores
+                image_mult = calibrated(self.image_calibration)
 
-        return fuse_hits(rankings, k)
+        if image_mult is None:
+            return fuse_hits(rankings, k)
+        # the image ranking is always last; its hits are scaled by the SigLIP match probability
+        return fuse_hits(rankings, k, multipliers=[None] * (len(rankings) - 1) + [image_mult])
 
     async def purge(
         self, device_id: str | None = None, *, since_ts: float | None = None, delete_thumbs: bool = True
