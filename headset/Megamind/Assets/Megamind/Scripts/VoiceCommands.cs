@@ -1,6 +1,8 @@
 // Tiny normalized-string matcher for short spoken commands ("open menu", "pause recording", "bigger text", ...).
-// Runs on the transcript the server returns from POST /v1/chat (STT only happens there, see docs/api.md), so a
-// recognised command replaces the answer instead of skipping the request. No wake word, no dependencies.
+// Runs on the POST /v1/stt transcript before any chat request (or, on older servers, on the chat stream's transcript).
+// Exact phrase first, then fuzzy: every word of a multi-word phrase present in the utterance with only courtesy words
+// around it ("please open the menu for me"; "did I start recording" stays a question), or a small edit distance ("paws recording" -> pause recording). Single-word phrases match exactly only, so
+// a stray "pause" in a question never fires. No wake word, no dependencies.
 using System.Text;
 
 namespace Megamind
@@ -42,22 +44,78 @@ namespace Megamind
             ("help", VoiceCommand.OpenControls), ("show help", VoiceCommand.OpenControls),
         };
 
+        // Extra words allowed around a multi-word phrase in the fuzzy containment match (not dropped by Normalize).
+        static readonly string[] Courtesy = { "for", "me", "just", "go", "ahead", "and", "to", "i", "want", "lets", "let", "s", "this", "panel", "it" };
+
         static readonly string[] Fillers = { "please", "hey", "ok", "okay", "megamind", "can", "you", "could", "would", "the", "a", "my", "now", "up" };
 
         /// <summary>Human-readable list for the panel's empty-state hint and the docs.</summary>
         public const string Hint = "\"open menu\", \"open settings\", \"show debug\", \"pause recording\", \"start recording\", " +
                                    "\"bigger text\", \"smaller text\", \"pin panel\", \"unpin panel\", \"show controls\"";
 
-        public static VoiceCommand Match(string transcript)
+        /// <summary>All phrases, for POST /v1/stt `command_hints`.</summary>
+        public static string[] AllPhrases()
         {
+            var a = new string[Phrases.Length];
+            for (int i = 0; i < a.Length; i++) a[i] = Phrases[i].phrase;
+            return a;
+        }
+
+        public static VoiceCommand Match(string transcript) => Match(transcript, out _, out _);
+
+        /// <summary>exact = false for fuzzy hits (the panel shows what it understood); phrase = the matched phrase.</summary>
+        public static VoiceCommand Match(string transcript, out string phrase, out bool exact)
+        {
+            phrase = null; exact = false;
             string n = Normalize(transcript);
             if (n.Length == 0) return VoiceCommand.None;
-            int words = 1;
-            foreach (char c in n) if (c == ' ') words++;
-            if (words > MaxWords) return VoiceCommand.None;
-            foreach (var (phrase, cmd) in Phrases)
-                if (n == phrase) return cmd;
+            var words = n.Split(' ');
+            if (words.Length > MaxWords) return VoiceCommand.None;
+            foreach (var (p, cmd) in Phrases)
+                if (n == p) { phrase = p; exact = true; return cmd; }
+            // fuzzy: longest multi-word phrase whose words are all in the utterance, else the closest by edit distance
+            VoiceCommand best = VoiceCommand.None; int bestLen = 0;
+            foreach (var (p, cmd) in Phrases)
+            {
+                if (p.IndexOf(' ') < 0 || p.Length <= bestLen) continue;
+                var pw = p.Split(' ');
+                bool all = true;
+                foreach (var w in pw) if (System.Array.IndexOf(words, w) < 0) { all = false; break; }
+                // every other word must be courtesy ("for me", "just"): "did I start recording" is a question
+                foreach (var w in words) if (System.Array.IndexOf(pw, w) < 0 && System.Array.IndexOf(Courtesy, w) < 0) { all = false; break; }
+                if (all) { best = cmd; bestLen = p.Length; phrase = p; }
+            }
+            if (best != VoiceCommand.None) return best;
+            int bestDist = int.MaxValue;
+            foreach (var (p, cmd) in Phrases)
+            {
+                if (p.IndexOf(' ') < 0) continue;
+                int allowed = p.Length >= 12 ? 2 : 1;
+                int d = Levenshtein(n, p);
+                if (d <= allowed && d < bestDist) { bestDist = d; best = cmd; phrase = p; }
+            }
+            return best;
+        }
+
+        public static VoiceCommand FromPhrase(string phrase)
+        {
+            string n = Normalize(phrase);
+            foreach (var (p, cmd) in Phrases) if (p == n) return cmd;
             return VoiceCommand.None;
+        }
+
+        static int Levenshtein(string a, string b)
+        {
+            var prev = new int[b.Length + 1]; var cur = new int[b.Length + 1];
+            for (int j = 0; j <= b.Length; j++) prev[j] = j;
+            for (int i = 1; i <= a.Length; i++)
+            {
+                cur[0] = i;
+                for (int j = 1; j <= b.Length; j++)
+                    cur[j] = System.Math.Min(System.Math.Min(cur[j - 1] + 1, prev[j] + 1), prev[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1));
+                var t = prev; prev = cur; cur = t;
+            }
+            return prev[b.Length];
         }
 
         public static string Normalize(string s)

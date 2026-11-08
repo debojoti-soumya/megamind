@@ -30,8 +30,14 @@ namespace Megamind
         public ChatBubble assistantBubblePrefab;
         public ChatBubble systemChipPrefab;
         public RectTransform metaLinePrefab;
-        public RectTransform thumbnailRowPrefab;
+        public RectTransform thumbnailRowPrefab;  // legacy thumbnails (used when cardPrefab is empty)
         public RectTransform thumbnailPrefab;
+        public RectTransform cardStripPrefab;     // horizontal ScrollRect of CitationCards (candidates / cited)
+        public CitationCard cardPrefab;
+        public RectTransform turnActionsPrefab;   // meta caption + Copy + Retry under an answer
+        public Lightbox lightbox;                 // opened by card taps
+        public GameObject typingIndicator;        // "● ● ●" bubble in the transcript while thinking (optional)
+        public Button jumpToLatest;               // "↓ Latest" pill, shown when the user scrolled up
         public GameObject listeningIndicator;
         public GameObject thinkingIndicator;
         public GameObject emptyHint;        // "hold the trigger and ask…" shown until the first message
@@ -72,13 +78,27 @@ namespace Megamind
         }
 
         public void SetListening(bool on) { if (listeningIndicator) listeningIndicator.SetActive(on); }
-        public void SetThinking(bool on) { if (thinkingIndicator) thinkingIndicator.SetActive(on); }
+
+        public void SetThinking(bool on)
+        {
+            if (thinkingIndicator) thinkingIndicator.SetActive(on);
+            if (typingIndicator)
+            {
+                if (on) { typingIndicator.transform.SetAsLastSibling(); if (emptyHint && emptyHint.activeSelf) emptyHint.SetActive(false); }
+                typingIndicator.SetActive(on);
+                if (on) RequestScroll();
+            }
+        }
+
+        /// <summary>Last question asked (typed text or voice transcript), for Retry.</summary>
+        public string LastQuestion { get; private set; }
 
         public void AddUserMessage(string text)
         {
             var b = Instantiate(userBubblePrefab, content);
             b.Text = text;
             Track(b.gameObject);
+            if (!_replaying) LastQuestion = text;
             Record("user", text, null);
         }
 
@@ -104,7 +124,8 @@ namespace Megamind
         {
             var b = AddAssistantBubble(text);
             if (isError) b.SetError(errorTextColor, errorBubbleColor);
-            AddAnswerDetails(cited, confidence, latencySeconds, firstTextSeconds, markers);
+            if (isError) ClearCandidates();
+            else AddAnswerDetails(text, cited, confidence, latencySeconds, firstTextSeconds, markers);
             if (!isError) Record("assistant", text, cited);
         }
 
@@ -146,7 +167,7 @@ namespace Megamind
             b.gameObject.SetActive(true);
             b.transform.SetAsLastSibling(); // thumbnails/meta go right under it even if a system chip came in between
             b.Text = text;
-            AddAnswerDetails(cited, confidence, latencySeconds, firstTextSeconds, markers);
+            AddAnswerDetails(text, cited, confidence, latencySeconds, firstTextSeconds, markers);
             Record("assistant", text, cited);
             RequestScroll();
         }
@@ -158,16 +179,65 @@ namespace Megamind
             _draft = null;
         }
 
-        private void AddAnswerDetails(List<Citation> cited, string confidence, float latencySeconds, float firstTextSeconds,
+        private void AddAnswerDetails(string answer, List<Citation> cited, string confidence, float latencySeconds, float firstTextSeconds,
                                       List<Marker> markers)
         {
+            ClearCandidates(); // the answer's own citations replace the retrieval preview
             AddCitations(cited, markers);
-            AddMetaLine(confidence, latencySeconds, firstTextSeconds);
+            AddTurnActions(answer, confidence, latencySeconds, firstTextSeconds);
+        }
+
+        // ---- retrieval candidates (stream `retrieval` event): a strip shown right away, replaced by the cited cards ----
+
+        private GameObject _candidates;
+
+        public void ShowCandidates(List<Citation> candidates)
+        {
+            ClearCandidates();
+            if (candidates == null || candidates.Count == 0 || cardPrefab == null || cardStripPrefab == null) return;
+            var strip = MakeCardStrip(candidates);
+            if (strip == null) return;
+            _candidates = strip.gameObject;
+            Track(_candidates);
+            if (typingIndicator && typingIndicator.activeSelf) typingIndicator.transform.SetAsLastSibling();
+        }
+
+        public void ClearCandidates()
+        {
+            if (_candidates) Destroy(_candidates);
+            _candidates = null;
+        }
+
+        /// <summary>Strip of CitationCards for every citation with an image; null when none has one.</summary>
+        private RectTransform MakeCardStrip(List<Citation> cited, List<Marker> markers = null)
+        {
+            var withImage = cited.FindAll(c => c != null && !string.IsNullOrEmpty(c.thumb_url));
+            if (withImage.Count == 0) return null;
+            var strip = Instantiate(cardStripPrefab, content);
+            var scroll = strip.GetComponent<ScrollRect>();
+            Transform row = scroll != null && scroll.content != null ? scroll.content : strip.transform;
+            for (int i = 0; i < withImage.Count; i++)
+            {
+                var card = Instantiate(cardPrefab, row);
+                card.Bind(withImage[i], withImage, i, lightbox);
+                if (card.image) StartCoroutine(LoadThumb(card.image, config.Url(withImage[i].thumb_url)));
+                if (card.image && markers != null)
+                    foreach (var m in markers)
+                        if (m.token_id == withImage[i].id) AddBox(card.image.rectTransform, m);
+            }
+            return strip;
         }
 
         public void AddCitations(List<Citation> cited, List<Marker> markers = null)
         {
-            if (cited != null && cited.Count > 0 && thumbnailPrefab != null)
+            if (cited == null || cited.Count == 0) return;
+            if (cardPrefab != null && cardStripPrefab != null)
+            {
+                var strip = MakeCardStrip(cited, markers);
+                if (strip != null) Track(strip.gameObject);
+                return;
+            }
+            if (thumbnailPrefab != null)
             {
                 Transform row = content;
                 if (thumbnailRowPrefab != null)
@@ -194,15 +264,36 @@ namespace Megamind
 
         public void AddMetaLine(string confidence, float latencySeconds) => AddMetaLine(confidence, latencySeconds, 0f);
 
+        /// <summary>Row under an answer: meta caption + Copy (system clipboard) + Retry (asks LastQuestion again).</summary>
+        public void AddTurnActions(string answer, string confidence, float latencySeconds, float firstTextSeconds)
+        {
+            if (turnActionsPrefab == null) { AddMetaLine(confidence, latencySeconds, firstTextSeconds); return; }
+            var row = Instantiate(turnActionsPrefab, content);
+            var label = row.Find("Label")?.GetComponent<Text>();
+            if (label) label.text = MetaText(confidence, latencySeconds, firstTextSeconds);
+            var copy = row.Find("Copy")?.GetComponent<Button>();
+            var retry = row.Find("Retry")?.GetComponent<Button>();
+            if (copy) copy.onClick.AddListener(() =>
+            {
+                GUIUtility.systemCopyBuffer = answer ?? "";
+                var t = copy.GetComponentInChildren<Text>(); if (t) t.text = "Copied";
+            });
+            if (retry) retry.onClick.AddListener(() => { if (client != null) client.Retry(); });
+            Track(row.gameObject);
+        }
+
+        private static string MetaText(string confidence, float latencySeconds, float firstTextSeconds)
+            => (latencySeconds > 0f && firstTextSeconds > 0f ? firstTextSeconds.ToString("0.0") + " s first  \u00b7  " : "")
+             + (latencySeconds > 0f ? latencySeconds.ToString("0.0") + " s" : "")
+             + (!string.IsNullOrEmpty(confidence) ? (latencySeconds > 0f ? "  \u00b7  " : "") + confidence.Replace('_', ' ') : "");
+
         /// <summary>"0.9 s first · 2.4 s · high" under an answer; firstTextSeconds &gt; 0 only for streamed turns.</summary>
         public void AddMetaLine(string confidence, float latencySeconds, float firstTextSeconds)
         {
             if (metaLinePrefab == null || (string.IsNullOrEmpty(confidence) && latencySeconds <= 0f)) return;
             var meta = Instantiate(metaLinePrefab, content);
             var t = meta.GetComponentInChildren<Text>();
-            if (t) t.text = (latencySeconds > 0f && firstTextSeconds > 0f ? firstTextSeconds.ToString("0.0") + " s first  \u00b7  " : "")
-                          + (latencySeconds > 0f ? latencySeconds.ToString("0.0") + " s" : "")
-                          + (!string.IsNullOrEmpty(confidence) ? "  \u00b7  " + confidence.Replace('_', ' ') : "");
+            if (t) t.text = MetaText(confidence, latencySeconds, firstTextSeconds);
             Track(meta.gameObject);
         }
 
@@ -246,8 +337,41 @@ namespace Megamind
         public void Clear()
         {
             while (_messages.Count > 0) DestroyTracked(_messages.Dequeue());
-            _draft = null;
+            _draft = null; _candidates = null;
+            if (lightbox) lightbox.Close();
             if (emptyHint) emptyHint.SetActive(true);
+            _stickToBottom = true;
+            if (jumpToLatest) jumpToLatest.gameObject.SetActive(false);
+        }
+
+        // ---- auto-scroll: follow the newest message unless the user scrolled up; then offer "↓ Latest" ----
+
+        private bool _stickToBottom = true;
+        private bool _layoutSettling;
+
+        private void OnEnable()
+        {
+            if (scroll) scroll.onValueChanged.AddListener(OnScrolled);
+            if (jumpToLatest) { jumpToLatest.onClick.RemoveListener(JumpToLatest); jumpToLatest.onClick.AddListener(JumpToLatest); jumpToLatest.gameObject.SetActive(false); }
+        }
+
+        private void OnScrolled(Vector2 _)
+        {
+            if (_layoutSettling || _scrollPending || scroll == null) return;
+            // content shorter than the viewport reports 0 or NaN-ish values: always "at bottom" then
+            bool atBottom = scroll.verticalNormalizedPosition <= 0.02f || scroll.content.rect.height <= scroll.viewport.rect.height + 1f;
+            if (atBottom != _stickToBottom)
+            {
+                _stickToBottom = atBottom;
+                if (jumpToLatest) jumpToLatest.gameObject.SetActive(!atBottom);
+            }
+        }
+
+        public void JumpToLatest()
+        {
+            _stickToBottom = true;
+            if (jumpToLatest) jumpToLatest.gameObject.SetActive(false);
+            RequestScroll();
         }
 
         private void Track(GameObject go)
@@ -266,7 +390,13 @@ namespace Megamind
 
         private void RequestScroll()
         {
-            if (_scrollPending || !isActiveAndEnabled) return;
+            if (!isActiveAndEnabled) return;
+            if (!_stickToBottom)
+            {
+                if (jumpToLatest && !jumpToLatest.gameObject.activeSelf) jumpToLatest.gameObject.SetActive(true);
+                return;
+            }
+            if (_scrollPending) return;
             _scrollPending = true;
             StartCoroutine(ScrollToEnd());
         }
@@ -275,10 +405,19 @@ namespace Megamind
         {
             yield return null; // wait for layout
             _scrollPending = false;
-            if (scroll) scroll.verticalNormalizedPosition = 0f;
+            if (scroll && _stickToBottom)
+            {
+                _layoutSettling = true;
+                scroll.verticalNormalizedPosition = 0f;
+                _layoutSettling = false;
+            }
         }
 
-        private void OnDisable() => _scrollPending = false; // a pending ScrollToEnd stopped with the object
+        private void OnDisable()
+        {
+            _scrollPending = false; // a pending ScrollToEnd stopped with the object
+            if (scroll) scroll.onValueChanged.RemoveListener(OnScrolled);
+        }
 
         /// <summary>Outline of a marker's box on its cited thumbnail (the RawImage stretches the whole frame).</summary>
         private static void AddBox(RectTransform thumb, Marker m)
@@ -347,6 +486,9 @@ namespace Megamind
         {
             try { return new System.Uri(url).Authority; } catch { return url; }
         }
+
+        public static string LocalTime(double ts)
+            => System.DateTimeOffset.FromUnixTimeMilliseconds((long)(ts * 1000)).ToLocalTime().ToString("ddd HH:mm");
 
         public static string Ago(double ts)
         {
