@@ -126,6 +126,12 @@ reader degrades to the captions + OCR of every hit. A turn with Claude is ~5–7
 OpenAI-compatible endpoint works by changing those two variables. Plan B if Sail is unavailable:
 self-host a VLM (e.g. Qwen2.5-VL-7B) on vLLM on Modal and point `READER_BASE_URL` at it.
 
+**Claude reads the frames itself** with `READER_PROVIDER=claude` (or `auto` + `ANTHROPIC_API_KEY`): the top
+`READER_MAX_IMAGES=8` hits' frames, downscaled to `READER_THUMB_MAX_PX=512`, go into the `recall_memory` tool result as
+image blocks (~260 input tokens each; a 960 px frame is ~920). A frame is sent at most once per turn and images are
+stripped from session history. Knobs: `READER_IMAGE_SELECT=rank|diverse`, `READER_PRESELECT_MODEL` (Haiku picks
+frames first). Measure changes with `server/tools/sweep_reader_images.py`; results and tradeoffs are in issue #138.
+
 **Memory Theater.** Open `http://localhost:8000/xr` for a 3D/WebXR view of your memories (ask, replay cited
 moments, browse recent cards). On Quest 3 it runs in the browser in passthrough; see the
 [Quest 3 guide](docs/quest3-guide.md#8-memory-theater-xr-in-the-quest-browser).

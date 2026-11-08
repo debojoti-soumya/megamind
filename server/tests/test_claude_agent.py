@@ -572,5 +572,5 @@ async def test_two_recalls_in_one_turn_send_each_frame_once(tmp_path):
     assert sent and sum(b["type"] == "image" for b in first) == len(sent)
     assert not any(b["type"] == "image" for b in second)  # same frames again: referenced, not re-sent
     assert "shown earlier in this turn" in json.dumps(second)
-    assert stats.extra["images"] == len(sent) and stats.extra["image_px"] == len(sent) * 960 * 720
+    assert stats.extra["images"] == len(sent) and stats.extra["image_px"] == len(sent) * 512 * 384  # 960x720 at 512 px
     assert len(stats.extra["llm_call_ms"]) == 3

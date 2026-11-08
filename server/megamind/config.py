@@ -27,8 +27,10 @@ class Settings(BaseSettings):
     reader_hedge_s: float = 3.25  # start the fallback model if the primary hasn't answered by then; 0 = only on failure
     reader_deadline_s: float = 7.0  # wall budget for all attempts of one call (hedge + healthy p95 3.25 s + 0.5 s)
     reader_max_retries: int = 1
-    reader_max_images: int = 12  # per call (Sail cap 20; report 04 says <=12 for latency); more -> chunk + merge
-    reader_thumb_max_px: int = 960  # longest side sent to the reader; 960 = the headset upload, unscaled
+    # per call (Sail cap 20); more -> chunk + merge. Claude reader: frames per recall, ~(w*h)/750 input tokens each.
+    # 8 x 512 px: long_week sweep (#138) within 1 pt of the best config at ~half the tokens/$ of 12 x 960
+    reader_max_images: int = 8
+    reader_thumb_max_px: int = 512  # longest side sent to the reader (headset uploads are 1280x960)
     # Claude reader (READER_PROVIDER=claude): which hits' frames go into the tool result. rank = the top
     # reader_max_images; diverse = rank order minus near-duplicates (dHash within READER_IMAGE_DEDUPE_DISTANCE bits of a
     # picked frame) and past READER_IMAGES_PER_EPISODE frames of one episode, so redundant hits cost no image tokens

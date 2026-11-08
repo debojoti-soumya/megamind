@@ -178,7 +178,7 @@ async def test_chunking_over_image_limit_merges(tmp_path):
             ),
         }
     )
-    out = await s.reader().read("keys?", toks)
+    out = await s.reader(_settings(reader_max_images=12)).read("keys?", toks)
     assert len(s.requests) == 2
     assert out.confidence == "high" and out.cited_ids == ["t15"] and out.calls == 2
     assert out.evidence == "Keys on the counter."
@@ -202,7 +202,7 @@ async def test_two_found_chunks_concatenate_best_first(tmp_path):
             ),
         }
     )
-    out = await s.reader().read("mug?", toks)
+    out = await s.reader(_settings(reader_max_images=12)).read("mug?", toks)
     assert out.confidence == "high"
     assert out.evidence == "Later: mug in sink. Early: mug on desk."
     assert out.cited_ids == ["t20", "t02"]
@@ -575,7 +575,7 @@ async def test_claude_vision_reader_returns_images_best_first(tmp_path):
     out = await reader.read("exit sign", tokens, now=2000.0)
     assert [i for i, _ in out.images] == ["v0", "v2"]  # rank order, capped at 3, unreadable v1 skipped
     with Image.open(io.BytesIO(base64.b64decode(out.images[0][1].split(",", 1)[1]))) as im:
-        assert max(im.size) == 960
+        assert max(im.size) == settings.reader_thumb_max_px == 512
     assert out.confidence == "medium" and out.cited_ids == ["v0", "v1", "v2"] and "EXIT" in out.evidence
     empty = await reader.read("x", [])
     assert empty.confidence == "not_found" and not empty.images
