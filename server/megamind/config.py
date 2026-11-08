@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     filter_min_luma: int = 20
     filter_min_sharpness: float = 15.0
     filter_heartbeat_s: float = 30.0
+    filter_speech_merge_s: float = 10.0  # speech within this of the last kept frame joins that token
     filter_pose_yaw_deg: float = 25.0
     filter_pose_move_m: float = 0.75
     filter_budget_per_min: float = 6.0
@@ -65,7 +66,7 @@ class Settings(BaseSettings):
 
     search_w_bm25: float = 1.0
     search_w_text: float = 1.0
-    search_w_image: float = 0.6
+    search_w_image: float = 1.5
     search_w_image_visual: float = 1.5
     search_calibrate_image: bool = True  # scale image hits by the embedder's match probability
     search_per_episode_cap: int = 3

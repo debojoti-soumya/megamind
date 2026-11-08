@@ -90,7 +90,7 @@ def _iso(ts: float) -> str:
 
 async def test_speech_tokens_return_exact_id(client):
     c, app = client
-    ids = [await _post(c, _jpeg(i), T0 + i * 0.5, transcript=t) for i, (t, _) in enumerate(SPEECH)]
+    ids = [await _post(c, _jpeg(i), T0 + i * 15, transcript=t) for i, (t, _) in enumerate(SPEECH)]
     await app.state.worker.queue.join()
     assert await app.state.store.count() == len(SPEECH)
     for fid, (transcript, q) in zip(ids, SPEECH, strict=True):
@@ -151,3 +151,25 @@ async def test_float16_vectors_keep_identity(tmp_path):
         assert max(abs(a - b) for a, b in zip(back.text_vec, t.text_vec, strict=True)) < 1e-3
         assert (await store.search(t.text_vec, None, "", k=1, mode="semantic"))[0].id == t.id
         assert (await store.search(None, t.image_vec, "", k=1, mode="visual"))[0].id == t.id
+
+
+async def test_continuous_speech_is_merged_and_searchable(client):
+    c, app = client
+    first = await _post(c, _jpeg(900), T0, transcript="okay then we need a stopwatch")
+    r = await c.post(
+        "/v1/frames",
+        files={"image": ("f.jpg", _jpeg(901), "image/jpeg")},
+        data={"meta": json.dumps({"device_id": "dev1", "ts": T0 + 3, "transcript": "the clapperboard is upstairs"})},
+    )
+    assert r.json()["reason"] == "merged"
+    await app.state.worker.queue.join()
+    r = await c.post(
+        "/v1/frames",
+        files={"image": ("f.jpg", _jpeg(902), "image/jpeg")},
+        data={"meta": json.dumps({"device_id": "dev1", "ts": T0 + 6, "transcript": "screwdriver on the second floor"})},
+    )
+    assert r.json()["reason"] == "merged"  # merged after the token was stored: re-embedded in place
+    for q in ("clapperboard upstairs", "screwdriver second floor", "stopwatch"):
+        hits = (await c.get("/v1/memories", params={"q": q, "k": 3})).json()["results"]
+        assert hits[0]["id"] == first, q
+    assert await app.state.store.count() == 1

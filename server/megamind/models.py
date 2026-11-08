@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 Confidence = Literal["high", "medium", "low", "not_found"]
 SearchMode = Literal["semantic", "visual", "hybrid"]
-RejectReason = Literal["duplicate", "too_soon", "dark", "blurry", "budget"]
+RejectReason = Literal["duplicate", "too_soon", "dark", "blurry", "budget", "merged"]
 Trigger = Literal["novel", "pose", "heartbeat", "forced", "speech"]
 Tier = Literal["hot", "cold", "text"]
 

@@ -25,7 +25,7 @@ STOP_WORDS = frozenset(
 class FusionWeights:
     bm25: float = 1.0
     text: float = 1.0
-    image: float = 0.6
+    image: float = 1.5
     image_visual_mode: float = 1.5
     per_episode_cap: int = 3
     # Sigmoid calibration of image-text cosine (SigLIP is trained with p = sigmoid(scale * cos + bias)).

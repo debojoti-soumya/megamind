@@ -20,13 +20,15 @@ and the C# DTOs in `headset/` must match it.
   ```
   `force` (optional) bypasses blur/gap/novelty/budget, e.g. at push-to-talk start.
   `source` (optional) labels the sensor (`quest`, `feeder`, `phone`).
-  `transcript` (optional) is speech heard around this frame (on-device ASR / subtitles). Frames with a
-  transcript are always kept (`trigger=speech`) and the text is stored and searchable on the token.
+  `transcript` (optional) is speech heard around this frame (on-device ASR / subtitles). The text is always
+  stored and searchable: a frame with a transcript is kept (`trigger=speech`, bypassing blur/novelty/budget)
+  unless the device's last kept frame is under `FILTER_SPEECH_MERGE_S` (10 s) old, in which case the
+  transcript is appended to that token and the frame is dropped with `reason="merged"`.
 Response `202 Accepted`:
 ```json
 { "frame_id": "01J...", "accepted": true, "reason": null }
 ```
-`accepted=false` with `reason` in `{"duplicate","too_soon","dark","blurry","budget"}` means the frame was
+`accepted=false` with `reason` in `{"duplicate","too_soon","dark","blurry","budget","merged"}` means the frame was
 dropped by the filter. Enrichment (caption/embedding) is asynchronous; a token appears
 in search a few seconds later.
 

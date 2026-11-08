@@ -44,7 +44,9 @@ async def post_frame(request: Request, image: UploadFile = File(...), meta: str 
     filt = app.keyframe_filter
     if not filt.has_state(fm.device_id):
         filt.seed(fm.device_id, await app.store.recent_hashes(fm.device_id, fm.ts - app.settings.filter_dhash_window_s))
-    decision = filt.decide(img, fm)
+    decision = filt.decide(img, fm, can_merge=app.worker.can_merge(fm.device_id))
+    if decision.reason == "merged":
+        await app.worker.attach_transcript(fm.device_id, fm.transcript or "")
     if not decision.accepted:
         return FrameAccepted(frame_id=frame_id, accepted=False, reason=decision.reason)
 

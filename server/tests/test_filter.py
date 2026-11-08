@@ -88,3 +88,15 @@ def test_speech_frames_always_kept():
     dark = FrameMeta(device_id="d", ts=0.7, transcript="lights are off")
     assert f.decide(Image.new("RGB", (160, 120), (5, 5, 5)), dark).trigger == "speech"
     assert f.counts["speech"] == 2
+
+
+def test_continuous_speech_merges_into_last_kept_frame():
+    f = _filter()
+    a = _noisy(1)
+    assert f.decide(a, _meta(0)).accepted
+    talk = FrameMeta(device_id="d", ts=4.0, transcript="and then we need a stopwatch")
+    assert f.decide(a, talk).accepted  # nothing to merge into yet
+    later = FrameMeta(device_id="d", ts=8.0, transcript="mark a timestamp")
+    assert f.decide(a, later, can_merge=True).reason == "merged"
+    gap = FrameMeta(device_id="d", ts=14.5, transcript="yes mark it")
+    assert f.decide(a, gap, can_merge=True).trigger == "speech"

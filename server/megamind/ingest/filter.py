@@ -115,15 +115,25 @@ class KeyframeFilter:
         st.tokens = max(0.0, st.tokens - 1.0)
         return FilterDecision(True, None, h, trigger, sharp)
 
-    def decide(self, img: Image.Image, meta: FrameMeta) -> FilterDecision:
-        d = self._decide(img, meta)
+    def decide(self, img: Image.Image, meta: FrameMeta, can_merge: bool = False) -> FilterDecision:
+        """can_merge: the caller can attach this frame's transcript to the device's last kept token."""
+        d = self._decide(img, meta, can_merge)
         self.counts[d.trigger if d.accepted else d.reason] += 1
         return d
 
-    def _decide(self, img: Image.Image, meta: FrameMeta) -> FilterDecision:
+    def _decide(self, img: Image.Image, meta: FrameMeta, can_merge: bool) -> FilterDecision:
         s = self.s
         h = dhash(img)
         keep_anyway = meta.force or bool(meta.transcript)
+        last = self._state[meta.device_id].last_kept_ts if meta.device_id in self._state else None
+        if (
+            meta.transcript
+            and not meta.force
+            and can_merge
+            and last is not None
+            and 0 <= meta.ts - last < s.filter_speech_merge_s
+        ):
+            return FilterDecision(False, "merged", h)  # continuous talk: text joins the last token, no new frame
         if mean_luma(img) < s.filter_min_luma and not keep_anyway:
             return FilterDecision(False, "dark", h)
         sharp = sharpness(img)
