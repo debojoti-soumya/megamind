@@ -20,3 +20,5 @@ docs/*.aux docs/*.log docs/*.out docs/*.toc docs/*.fls docs/*.fdb_latexmk docs/*
 .idea/
 .vscode/
 
+server/.eval_cache/
+server/.eval_cache_ucc/

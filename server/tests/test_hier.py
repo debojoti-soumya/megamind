@@ -210,3 +210,28 @@ async def test_large_note_backlog_builds_in_background_not_inline():
     await store.add_many([tok("c2", T0 + 1400, "hallway, a coat")])
     await r.retrieve("coat", k=1, now=datetime.fromtimestamp(T0 + 1900, UTC))
     assert f"block:{T0 + 1200:.0f}" in mem.notes  # a small backlog is written inline
+
+
+async def test_gate_margin_skips_the_llm_when_the_hybrid_is_confident():
+    from megamind.retrieval.hier import top_margin
+
+    store = await _store()
+    base = FixedRetriever([await store.get("a1"), await store.get("b1")])  # scores 1.0, 0.5 -> margin 0.5
+    assert top_margin(await base.retrieve("keys")) == pytest.approx(0.5)
+    llm = FakeLLM(stage2={"ids": ["b1"]})
+    now = datetime.fromtimestamp(T0 + 1250, UTC)
+    gated = HierRetriever(store, base, HierMemory(store, llm, tz="UTC"), llm, config=HierConfig(gate_margin=0.4))
+    res = await gated.retrieve("keys", k=1, now=now)
+    assert [x.token.id for x in res.ranked] == ["a1"] and gated.stats == {"llm": 0, "gated": 1, "errors": 0}
+    assert not any("Rank the token ids" in c for c in llm.calls)
+    open_ = HierRetriever(store, base, HierMemory(store, llm, tz="UTC"), llm, config=HierConfig(gate_margin=0.6))
+    await open_.retrieve("keys", k=1, now=now)
+    assert open_.stats["gated"] == 0
+
+
+async def test_llm_failure_is_counted():
+    store = await _store()
+    base = FixedRetriever([await store.get("a1")])
+    r = HierRetriever(store, base, HierMemory(store, FakeLLM(fail=True), tz="UTC"))
+    await r.retrieve("keys", k=1, now=datetime.fromtimestamp(T0 + 1250, UTC))
+    assert r.stats["errors"] == 1

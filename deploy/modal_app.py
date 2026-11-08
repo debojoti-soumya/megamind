@@ -29,7 +29,6 @@ COMMON_ENV = {
     "LANCEDB_PATH": f"{DATA}/lancedb",
     "THUMB_DIR": f"{DATA}/thumbs",  # chunks / replay / montages default to siblings of this dir, i.e. on the Volume
     "AUDIO_DIR": f"{DATA}/audio",
-    "RETRIEVER_BACKEND": "hybrid",
     "IMAGE_EMBED_PROVIDER": "none",  # SigLIP needs CPU torch (~1 GB image, slow cold start); opt-in by editing here
 }
 PROFILE_ENV = {
@@ -42,6 +41,12 @@ PROFILE_ENV = {
         "STT_PROVIDER": "openai",
         "TTS_PROVIDER": "openai",
         "SUMMARIZER_PROVIDER": "mock",
+        # recall: LLM block notes + pick/rank over the hybrid's candidates (bake-off #152); falls back to the
+        # hybrid on any LLM error and when OPENAI_API_KEY is absent. Notes live on the Volume, so a cold start
+        # reuses them; missing ones are written at query time (<=3 inline, a larger backlog in the background).
+        "RETRIEVER_BACKEND": "hier",
+        "HIER_CACHE_PATH": f"{DATA}/hier_notes.json",
+        "HIER_REFRESH_S": "300",  # background note refresh while the container is up
     },
     # no paid calls at all, even if a key leaks into the environment
     "mock": {
@@ -54,6 +59,7 @@ PROFILE_ENV = {
         "SUMMARIZER_PROVIDER": "mock",
         "MONTAGE_PLANNER": "offline",
         "ANTHROPIC_API_KEY": "",
+        "RETRIEVER_BACKEND": "hybrid",  # hier / ucc would call OpenAI / UCC
     },
 }
 
