@@ -1,7 +1,7 @@
 // Tiny normalized-string matcher for short spoken commands ("open menu", "pause recording", "bigger text", ...).
 // Runs on the POST /v1/stt transcript before any chat request (or, on older servers, on the chat stream's transcript).
-// Exact phrase first, then fuzzy: every word of a multi-word phrase present in the utterance ("could you open the menu
-// please"), or a small edit distance ("paws recording" -> pause recording). Single-word phrases match exactly only, so
+// Exact phrase first, then fuzzy: every word of a multi-word phrase present in the utterance with only courtesy words
+// around it ("please open the menu for me"; "did I start recording" stays a question), or a small edit distance ("paws recording" -> pause recording). Single-word phrases match exactly only, so
 // a stray "pause" in a question never fires. No wake word, no dependencies.
 using System.Text;
 
@@ -44,6 +44,9 @@ namespace Megamind
             ("help", VoiceCommand.OpenControls), ("show help", VoiceCommand.OpenControls),
         };
 
+        // Extra words allowed around a multi-word phrase in the fuzzy containment match (not dropped by Normalize).
+        static readonly string[] Courtesy = { "for", "me", "just", "go", "ahead", "and", "to", "i", "want", "lets", "let", "s", "this", "panel", "it" };
+
         static readonly string[] Fillers = { "please", "hey", "ok", "okay", "megamind", "can", "you", "could", "would", "the", "a", "my", "now", "up" };
 
         /// <summary>Human-readable list for the panel's empty-state hint and the docs.</summary>
@@ -75,8 +78,11 @@ namespace Megamind
             foreach (var (p, cmd) in Phrases)
             {
                 if (p.IndexOf(' ') < 0 || p.Length <= bestLen) continue;
+                var pw = p.Split(' ');
                 bool all = true;
-                foreach (var w in p.Split(' ')) if (System.Array.IndexOf(words, w) < 0) { all = false; break; }
+                foreach (var w in pw) if (System.Array.IndexOf(words, w) < 0) { all = false; break; }
+                // every other word must be courtesy ("for me", "just"): "did I start recording" is a question
+                foreach (var w in words) if (System.Array.IndexOf(pw, w) < 0 && System.Array.IndexOf(Courtesy, w) < 0) { all = false; break; }
                 if (all) { best = cmd; bestLen = p.Length; phrase = p; }
             }
             if (best != VoiceCommand.None) return best;
