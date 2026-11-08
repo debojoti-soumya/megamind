@@ -7,6 +7,10 @@ __pycache__/
 .ruff_cache/
 server/.env
 server/data/
+# benchmark datasets / reports (downloaded at runtime; COCO, Flickr and EgoLife licences forbid committing them)
+bench_data/
+egolife_data/
+*.bench.json
 
 # latex
 docs/*.aux docs/*.log docs/*.out docs/*.toc docs/*.fls docs/*.fdb_latexmk docs/*.synctex.gz

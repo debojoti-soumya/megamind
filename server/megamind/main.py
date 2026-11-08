@@ -23,6 +23,8 @@ from megamind.ingest.privacy import build_face_blur
 from megamind.ingest.router import router as ingest_router
 from megamind.ingest.transcribe import build_audio_stt
 from megamind.ingest.worker import EnrichmentWorker
+from megamind.live import install as install_live
+from megamind.live import wrap_retriever as wrap_live_retriever
 from megamind.models import HealthResponse
 from megamind.replay import install as install_replay
 from megamind.retrieval import build_retriever
@@ -90,6 +92,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         st.reader = build_reader(settings)
         st.retriever, st.ucc_indexer = build_retriever(settings, st.store, st.text_embedder, st.image_embedder)
+        st.retriever = wrap_live_retriever(st, settings, st.retriever)  # NOW items for "right now" questions
         st.recall = RecallMemory(
             st.store, st.text_embedder, st.image_embedder, st.reader, retriever=st.retriever, tz=settings.wearer_tz
         )
@@ -127,6 +130,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # the browser panel may be served from a different origin (e.g. file:// or another laptop)
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     install_replay(app, settings)  # moment replay: frame tap + GET /v1/replay.mp4
+    install_live(app, settings)  # live short-term memory: GET /v1/live/{id}.jpg (+ retriever wrap in lifespan)
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health():
@@ -148,7 +152,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     settings,
                     settings.embed_provider,
                     st.text_embedder,
-                    f"{settings.embed_provider}:{settings.embed_model}",
+                    f"{settings.embed_provider}:{getattr(st.text_embedder, 'model', settings.embed_model)}",
                 ),
                 "stt": active_provider(settings, settings.stt_provider, st.stt, settings.stt_provider),
                 "tts": active_provider(settings, settings.tts_provider, st.tts, settings.tts_provider),

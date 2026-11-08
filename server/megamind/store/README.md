@@ -65,7 +65,7 @@ requires a purge or a fresh `LANCEDB_PATH`.
 | `rrf.py` | reciprocal-rank fusion; `fuse_hits` drops non-positive scores so unrelated queries return nothing; `weighted_rrf` + `image_conf` for calibrated image fusion (below) |
 | `episodes.py` | `EpisodeTracker`: online `episode_id` assignment (gap > 120 s or image cosine < 0.80 → new episode; detours may rejoin one of the last 4) |
 | `consolidate.py` | `Consolidator`: writes one `kind="episode"` summary token per closed episode; `python -m megamind.store.consolidate [--loop]` |
-| `embeddings.py` | `build_text_embedder` / `build_image_embedder`: OpenAI text-embedding-3-small, open_clip SigLIP (CPU), mocks |
+| `embeddings.py` | `build_text_embedder` / `build_image_embedder`: OpenAI text-embedding-3-small, local bge-small (sentence-transformers, CPU, query instruction via `embed_query`), open_clip SigLIP (CPU), mocks |
 | `purge.py` | retention CLI, see below |
 | `bench.py` (planned) | 10k-token latency benchmark of every primitive |
 

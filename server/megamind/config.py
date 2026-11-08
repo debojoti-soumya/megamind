@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     embed_provider: str = "mock"
     embed_model: str = "text-embedding-3-small"
     embed_dim: int = 1024  # text-embedding-3-* Matryoshka truncation; frozen per LanceDB table
+    local_embed_model: str = "BAAI/bge-small-en-v1.5"  # EMBED_PROVIDER=local (sentence-transformers); its own dim
     image_embed_provider: str = "none"  # none | mock | openclip (needs the local-embeddings extra)
     image_embed_model: str = "ViT-B-16-SigLIP"  # 768-d; ViT-B-32 is 512-d
     image_embed_pretrained: str = "webli"

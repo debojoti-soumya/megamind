@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import sys
 from datetime import UTC, datetime
 
 from httpx import ASGITransport, AsyncClient
@@ -195,5 +196,6 @@ async def test_health_says_not_installed_for_local_embeddings_without_torch(tmp_
 
     real = importlib.util.find_spec
     monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name == "torch" else real(name, *a))
+    monkeypatch.setitem(sys.modules, "torch", None)  # EMBED_PROVIDER=local is real now: make its import fail too
     models = await _health(tmp_path, embed_provider="local")
     assert models["embed"] == "mock (local configured, not installed)"
