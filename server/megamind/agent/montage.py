@@ -9,11 +9,12 @@ with HTTP Range.
   `ANTHROPIC_API_KEY` is set and `MONTAGE_PLANNER` is not `offline`; otherwise, or when the call fails, the
   deterministic offline plan (evenly spaced informative moments, de-duplicated).
 - Clip sources: the #58 replay ring buffer when it still holds frames around the moment (`source="replay"`,
-  real frame rate), else a timelapse of the stored keyframe thumbnails from that moment on, each held
-  `MONTAGE_TIMELAPSE_STEP_S` (`source="timelapse"`, ~1 fps; keyframes are seconds apart).
+  real frame rate; skipped when `PRIVACY_BLUR_FACES` is on, since buffered frames are not blurred), else a
+  timelapse of the stored keyframe thumbnails from that moment on, each held `MONTAGE_TIMELAPSE_STEP_S`
+  (`source="timelapse"`, ~1 fps; keyframes are seconds apart).
 - Rendering reuses #58: `render_mp4` (with `extra_vf` for captions/fades) per clip, `ReplayCache` for the
-  per-key lock, global ffmpeg semaphore and pruning, and `ranged_file_response` for Range. The cache key is
-  a hash of the plan, so the same plan is rendered once.
+  per-key lock, ffmpeg semaphore (montage's own, `MONTAGE_MAX_CONCURRENT_RENDERS`) and pruning, and
+  `ranged_file_response` for Range. The cache key is a hash of the plan, so the same plan is rendered once.
 
 Wiring (`install`) is additive: the router plus a middleware that clears the montage cache after a
 successful `DELETE /v1/memories`. Settings: `MONTAGE_*` env vars (see `.env.example`).
@@ -27,6 +28,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +56,7 @@ _FONTS = (
 _ID_RE = re.compile(r"[0-9a-f]{20}")
 TIMELAPSE_LOOKAHEAD_S = 120.0  # keyframes after the moment that may join its timelapse
 TIMELAPSE_LOOKBACK_S = 30.0  # transcript moments: keyframes this long before the words count too
+RANGE_SCAN_LIMIT = 5000  # tokens read at once for a range-only montage; longer ranges are sampled per bucket
 
 
 class MontageSettings(BaseSettings):
@@ -283,7 +286,7 @@ def _font(cfg: MontageSettings) -> str | None:
 
 def overlay_vf(clip: ClipSpec, cfg: MontageSettings, *, text: bool = True) -> str:
     """Normalise every clip to WxH (so the parts concat without re-encoding), burn in time + title, fade."""
-    w, h = cfg.width, cfg.height
+    w, h = max(2, cfg.width - cfg.width % 2), max(2, cfg.height - cfg.height % 2)  # libx264 needs even sizes
     f = [f"scale={w}:{h}:force_original_aspect_ratio=decrease", f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2", "setsar=1"]
     # render_mp4's concat list holds the last frame ~2x tail_s; trim so the clip (and its fade-out) is exact
     f.append(f"trim=duration={clip.duration:.3f}")
@@ -339,6 +342,11 @@ class MontageCache(ReplayCache):
     def __init__(self, cache_dir: Path, cfg: MontageSettings) -> None:
         super().__init__(cache_dir, cfg.cache_max_files, cfg.max_concurrent_renders)
         self.cfg = cfg
+        self.generation = 0  # bumped by `clear` (DELETE /v1/memories): renders started before it are discarded
+
+    def clear(self) -> None:
+        self.generation += 1
+        super().clear()
 
     def _render(self, frames, p: Path, ffmpeg: str, fps: int, max_width: int) -> None:  # type: ignore[override]
         render_montage(list(frames), p, ffmpeg=ffmpeg, cfg=self.cfg)
@@ -357,10 +365,12 @@ async def _timelapse_frames(store, t: MemoryToken, n: int) -> list[MemoryToken]:
     return [x for x in toks if x.thumb_path and Path(x.thumb_path).is_file()][:n]
 
 
-async def build_clip(st, t: MemoryToken, title: str, duration: float, cfg: MontageSettings, zone: ZoneInfo):
+async def build_clip(
+    st, t: MemoryToken, title: str, duration: float, cfg: MontageSettings, zone: ZoneInfo, *, use_replay=True
+):
     """Clip frames for one moment: buffered replay frames if any, else a timelapse of stored keyframes."""
     dur = min(max(float(duration or cfg.clip_s), 2.5), 6.0)
-    buf = getattr(st, "replay", None)
+    buf = getattr(st, "replay", None) if use_replay else None
     if buf is not None:
         t0 = t.ts - cfg.pre_s
         frames = []
@@ -386,11 +396,21 @@ async def build_clip(st, t: MemoryToken, title: str, duration: float, cfg: Monta
 
 
 async def candidates(st, query: str, t0: float | None, t1: float | None, device_id: str | None, n: int):
+    n = max(1, n)
     if query:
         res = await st.retriever.retrieve(query, k=n, time_from=t0, time_to=t1, device_id=device_id)
         toks = res.memory_tokens()
     else:
-        toks = await st.store.range(t0, t1, limit=5000, device_id=device_id, kinds=("frame", "transcript"))
+        kinds = ("frame", "transcript")
+        toks = await st.store.range(t0, t1, limit=RANGE_SCAN_LIMIT, device_id=device_id, kinds=kinds)
+        if len(toks) >= RANGE_SCAN_LIMIT:  # `range` is oldest-first: sample the whole span, not just its start
+            lo, hi = toks[0].ts, t1 if t1 is not None else time.time()
+            per = max(1, RANGE_SCAN_LIMIT // n)
+            toks = []
+            for i in range(n):
+                a, b = lo + (hi - lo) * i / n, lo + (hi - lo) * (i + 1) / n
+                part = await st.store.range(a, b, limit=per, device_id=device_id, kinds=kinds)
+                toks += [x for x in part if x.ts < b or i == n - 1]
     toks = sorted({t.id: t for t in toks}.values(), key=lambda t: t.ts)
     return evenly(toks, n)
 
@@ -420,6 +440,7 @@ async def create_montage(request: Request, body: MontageRequest):
     if ffmpeg is None:
         raise HTTPException(503, FFMPEG_HINT)
 
+    gen = cache.generation
     cands = await candidates(st, query, t0, t1, body.device_id or None, cfg.max_candidates)
     if not cands:
         raise HTTPException(404, "no memories match that query / time range")
@@ -429,9 +450,11 @@ async def create_montage(request: Request, body: MontageRequest):
 
     labels = _labels(cands)
     zone = _zone(st.settings.wearer_tz)
+    # buffered replay frames are the raw upload; with face blur on only the (blurred) stored thumbnails are used
+    use_replay = not (st.settings.privacy_blur_faces or st.settings.privacy_blur_faces_vlm)
     clips: list[ClipSpec] = []
     for c in plan.clips:
-        spec = await build_clip(st, labels[c.label], _short(c.title, 60), c.duration, cfg, zone)
+        spec = await build_clip(st, labels[c.label], _short(c.title, 60), c.duration, cfg, zone, use_replay=use_replay)
         if spec is not None:
             clips.append(spec)
     if not clips:
@@ -443,6 +466,9 @@ async def create_montage(request: Request, body: MontageRequest):
         await cache.get_or_render(key, clips, ffmpeg=ffmpeg, fps=cfg.fps, max_width=cfg.width)
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as e:
         raise HTTPException(500, f"montage render failed: {e}") from None
+    if cache.generation != gen:  # DELETE /v1/memories ran meanwhile: the reel may show deleted moments
+        cache.path(key).unlink(missing_ok=True)
+        raise HTTPException(409, "memories were deleted while the montage was being made; try again")
     return MontageResponse(
         id=key,
         url=f"/v1/montages/{key}.mp4",

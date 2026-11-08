@@ -303,3 +303,87 @@ async def test_query_montage_with_offline_planner(app_client):
     j = r.json()
     assert j["planner"] == "offline" and 1 <= len(j["clips"]) <= 2
     assert (await c.get(j["url"])).status_code == 200
+
+
+# ---- review fixes: no ffmpeg needed (render stubbed) ----
+
+
+def _fake_render(app, monkeypatch):
+    """Skip ffmpeg: the cache "renders" a placeholder file, so request handling is tested offline."""
+    monkeypatch.setattr("megamind.agent.montage.find_ffmpeg", lambda *_: "ffmpeg")
+    rendered = []
+
+    def _render(frames, p, *_a):
+        rendered.append(list(frames))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+    app.state.montage_cache._render = _render
+    return rendered
+
+
+async def test_range_montage_samples_whole_span_beyond_scan_limit(app_client, monkeypatch):
+    from megamind.agent import montage
+
+    c, app = app_client
+    monkeypatch.setattr(montage, "RANGE_SCAN_LIMIT", 20)
+    for i in range(200):  # 200 tokens, 10 s apart; one scan would only see the oldest 20
+        await app.state.store.add(_tok(i, f"distinct scene {i}"))
+    cands = await montage.candidates(app.state, "", T0 - 1, T0 + 2000, "dev1", 8)
+    assert len(cands) == 8
+    assert cands[0].ts < T0 + 200 and cands[-1].ts > T0 + 1700  # spans the range, not just its start
+
+
+async def test_purge_during_montage_discards_render(app_client, monkeypatch):
+    c, app = app_client
+    await _seed(app)
+    _fake_render(app, monkeypatch)
+
+    class _PurgingPlanner(_StubPlanner):
+        async def plan(self, request, cands, n_clips):
+            assert (await c.delete("/v1/memories")).status_code == 200  # wearer deletes mid-request
+            return await super().plan(request, cands, n_clips)
+
+    app.state.montage_planner = _PurgingPlanner()
+    r = await c.post("/v1/montage", json={"time_from": T0 - 1, "time_to": T0 + 100})
+    assert r.status_code in (404, 409)  # thumbnails already gone (404) or render discarded (409)
+    assert not list(app.state.montage_cache.dir.glob("*.mp4"))
+
+
+async def test_purge_after_candidates_discards_render(app_client, monkeypatch):
+    """Clip frames were read before the purge: the render must not survive in the cache."""
+    c, app = app_client
+    await _seed(app)
+    _fake_render(app, monkeypatch)
+    app.state.montage_planner = _StubPlanner()
+    cache = app.state.montage_cache
+    orig = cache.get_or_render
+
+    async def _get_or_render(key, *a, **kw):
+        cache.clear()  # DELETE /v1/memories lands while ffmpeg runs
+        return await orig(key, *a, **kw)
+
+    cache.get_or_render = _get_or_render
+    r = await c.post("/v1/montage", json={"time_from": T0 - 1, "time_to": T0 + 100})
+    assert r.status_code == 409
+    assert not list(cache.dir.glob("*.mp4"))
+
+
+@pytest.mark.parametrize("blur", [False, True])
+async def test_face_blur_uses_blurred_thumbnails_not_replay_frames(app_client, monkeypatch, blur):
+    c, app = app_client
+    await _seed(app, buffer=True)
+    rendered = _fake_render(app, monkeypatch)
+    app.state.montage_planner = _StubPlanner()
+    monkeypatch.setattr(app.state.settings, "privacy_blur_faces", blur)
+    r = await c.post("/v1/montage", json={"time_from": T0 - 1, "time_to": T0 + 100})
+    assert r.status_code == 200, r.text
+    assert {cl["source"] for cl in r.json()["clips"]} == {"timelapse" if blur else "replay"}
+    assert len(rendered) == 1
+    r2 = await c.get(r.json()["url"])
+    assert r2.status_code == 200 and r2.content[4:8] == b"ftyp"
+
+
+def test_overlay_forces_even_size():
+    c = ClipSpec(_tok(1, "x"), "t", "9:05 AM", ((0.0, b""), (1.0, b"")), 1.0, "replay")
+    assert overlay_vf(c, MontageSettings(width=641, height=361, _env_file=None)).startswith("scale=640:360:")

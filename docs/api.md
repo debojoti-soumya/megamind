@@ -117,14 +117,15 @@ Highlight reel: a captioned mp4 of the best few moments for a query and/or a tim
   (naive = server local time); `time_to < time_from` → 400. `device_id` optional (default: all devices).
   `max_clips` 0-24 (0/null = default), capped by `MONTAGE_MAX_CLIPS` (8). Empty strings count as unset.
 - Candidates: the retriever's top hits for `query` (within the range, if given), else every frame/transcript
-  token in the range; at most `MONTAGE_MAX_CANDIDATES` (40), evenly spaced.
+  token in the range (long ranges are sampled across the whole span); at most `MONTAGE_MAX_CANDIDATES` (40),
+  evenly spaced.
 - Clip choice: Claude (`montage_plan` tool, `CLAUDE_MODEL`) when `ANTHROPIC_API_KEY` is set and
   `MONTAGE_PLANNER` is not `offline`; otherwise (or on any API failure) a deterministic plan of evenly spaced,
   non-empty, de-duplicated moments. `planner` says which one ran.
 - Each clip shows the moment's local time and a short title burned in, with 0.3 s fades. `source="replay"`: the
   frames buffered for `GET /replay.mp4` around the moment (real frame rate). `source="timelapse"`: the stored
   keyframe thumbnails from that moment on, each held ~1 s (a ~1 fps timelapse; used once the moment is older
-  than the replay window).
+  than the replay window, and always when `PRIVACY_BLUR_FACES` is on: buffered frames are not blurred).
 Response:
 ```json
 { "id": "3f2a9c0d1e5b7a8c6d4e", "url": "/v1/montages/3f2a9c0d1e5b7a8c6d4e.mp4", "title": "Your highlights",
@@ -133,7 +134,8 @@ Response:
                "duration_s": 4.0, "source": "timelapse", "thumb_url": "/v1/thumbs/....jpg" } ] }
 ```
 404 when nothing matches or no chosen moment has frames/thumbnails; 503 without ffmpeg (same lookup as
-replay, `REPLAY_FFMPEG`); 404 when `MONTAGE_ENABLED=false`. The same plan always yields the same `id`.
+replay, `REPLAY_FFMPEG`); 404 when `MONTAGE_ENABLED=false`; 409 when `DELETE /memories` ran while it was
+being made (nothing is kept; POST again). The same plan always yields the same `id`.
 
 ## `GET /montages/{id}.mp4`
 The rendered montage (H.264, `MONTAGE_WIDTH`x`MONTAGE_HEIGHT`, default 960x540). `GET` or `HEAD`; supports
