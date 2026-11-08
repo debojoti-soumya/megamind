@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     reader_completion_window: str = ""  # Sail: asap | balanced; sent as X-Sail-Completion-Window when set
     reader_skip_on_ocr: bool = True  # Claude path: skip the VLM when every query keyword is in a top hit's OCR
     recall_prefetch: bool = True  # run recall_memory on the raw question while Claude picks its tool call
+    recall_first: bool = (
+        True  # standalone recall questions: the prefetch is Claude's first tool result (no picking call)
+    )
     reader_extra_body: str = ""  # JSON merged into the request, e.g. {"chat_template_kwargs":{"enable_thinking":false}}
     enrich_provider: str = "auto"  # auto (vlm iff an enrich/reader key is set, else local if installed, else mock)
     enrich_base_url: str = ""  # "" -> reader_base_url (and the reader's extra body / completion window)
