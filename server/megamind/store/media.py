@@ -46,6 +46,8 @@ log = logging.getLogger(__name__)
 _MAX_CHUNK = 120  # frames per chunk: bounds decode-from-keyframe latency and rewrite cost on purge
 _GOP = 30  # keyframe every 30 frames (30 s at 1 fps), so a cold read decodes at most 30 frames
 _CACHE = 256  # decoded cold frames kept in memory
+_FPS_MODE = ["-fps_mode", "passthrough"]
+_VSYNC = ["-vsync", "passthrough"]
 _DECODE_CONCURRENCY = 4
 _TEXT_BATCH = 256  # loose frames dropped to text per locked store rewrite
 _UNSET: Any = object()
@@ -100,6 +102,7 @@ class MediaStore:
         self._cache: OrderedDict[str, bytes] = OrderedDict()
         self._decode_sem = asyncio.Semaphore(_DECODE_CONCURRENCY)
         self._ffmpeg: str | None = _UNSET
+        self._fps_mode_ok = True
         self._encoder: list[str] | None = _UNSET
         self.decodes = 0  # cold decodes that missed the cache (tests, stats)
 
@@ -186,10 +189,20 @@ class MediaStore:
         assert self.ffmpeg
         self.chunk_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".decode-", dir=self.chunk_dir) as td:
-            cmd = [self.ffmpeg, "-v", "error", "-i", str(path), "-fps_mode", "passthrough", "-q:v", "2",
-                   str(Path(td) / "%06d.jpg")]  # fmt: skip
-            subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+            for flag in self._passthrough_flags():
+                cmd = [self.ffmpeg, "-v", "error", "-i", str(path), *flag, "-q:v", "2",
+                       str(Path(td) / "%06d.jpg")]  # fmt: skip
+                proc = subprocess.run(cmd, capture_output=True, timeout=300)
+                if proc.returncode and b"Unrecognized option" in proc.stderr and flag == _FPS_MODE:
+                    self._fps_mode_ok = False  # ffmpeg < 5.1: retry with the older spelling
+                    continue
+                proc.check_returncode()
+                break
             return [p.read_bytes() for p in sorted(Path(td).glob("*.jpg"))]
+
+    def _passthrough_flags(self) -> list[list[str]]:
+        """`-fps_mode` needs ffmpeg >= 5.1; `-vsync` is its older spelling (deprecated, still accepted)."""
+        return [_FPS_MODE, _VSYNC] if self._fps_mode_ok else [_VSYNC]
 
     def _drop_cache(self, chunk_id: str) -> None:
         for k in [k for k in self._cache if k.startswith(f"{chunk_id}#")]:
