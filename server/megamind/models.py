@@ -218,6 +218,7 @@ class CollageResponse(BaseModel):
     width: int = 0
     height: int = 0
     images: list[CollageImage] = Field(default_factory=list)  # chronological, one per moment
+    hero: int = 0  # index into `images` of the lead (best) photo
 
 
 class RecallResult(BaseModel):

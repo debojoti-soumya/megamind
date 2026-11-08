@@ -251,3 +251,29 @@ def test_unverified_picks_keep_captions_naming_the_subject():
     assert [p.token.id for p in _caption_matches(picks, phrase="giraffes")] == ["p0"]
     assert [p.token.id for p in _caption_matches(picks, phrase="a puppy")] == ["p2"]
     assert _caption_matches(picks, phrase="a zebra") == []  # nothing names it: retrieval noise, not zebras
+
+
+def test_layout_hero_leads_and_tiles_fit():
+    from megamind.agent.collage import layout_tiles
+
+    aspects = [1.5, 0.75, 1.33, 1.0, 1.78, 0.8]
+    boxes = layout_tiles(aspects, hero=3, width=1100, row_h=300, gap=10)
+    assert sorted(b[0] for b in boxes) == list(range(len(aspects)))
+    first = boxes[0]
+    assert first[0] == 3 and first[1] == 0 and first[2] == 0
+    assert first[3] > 1100 * 0.55
+    for _i, x, y, w, h in boxes:
+        assert x >= 0 and y >= 0 and x + w <= 1100 and w > 0 and h > 0
+    for a in boxes:
+        for b in boxes:
+            if a is not b:
+                assert a[1] + a[3] <= b[1] or b[1] + b[3] <= a[1] or a[2] + a[4] <= b[2] or b[2] + b[4] <= a[2]
+
+
+def test_choose_hero_prefers_best_match():
+    from megamind.agent.collage import Tile, choose_hero
+
+    tok = MemoryToken(id="h", device_id="dev1", ts=T0, caption="x", thumb_path="", frame_hash="0")
+    tiles = [Tile(tok, "t", _jpeg(i), s) for i, s in enumerate([0.2, 0.9, 0.5])]
+    assert choose_hero(tiles) == 1
+    assert choose_hero([]) == 0
