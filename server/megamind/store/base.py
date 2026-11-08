@@ -146,9 +146,12 @@ class MemoryStore(ABC):
         kinds: Sequence[str] | None = None,
         tier: str | None = None,
         chunk_id: str | None = None,
+        vectors: bool = True,
     ) -> list[MemoryToken]:
         """Every token matching the filters, oldest first (media tiering / stats). Optional: the default is
-        built on `range()`; backends may push the `tier` / `chunk_id` filters down."""
+        built on `range()`; backends may push the `tier` / `chunk_id` filters down. `vectors=False` lets a
+        backend skip loading `text_vec` / `image_vec` (planning scans over many rows); such tokens must never
+        be written back, since a write replaces the whole row."""
         toks = await self.range(time_from, time_to, limit=10**9, device_id=device_id, kinds=kinds)
         return [t for t in toks if (tier is None or t.tier == tier) and (chunk_id is None or t.chunk_id == chunk_id)]
 

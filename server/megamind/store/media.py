@@ -47,6 +47,7 @@ _MAX_CHUNK = 120  # frames per chunk: bounds decode-from-keyframe latency and re
 _GOP = 30  # keyframe every 30 frames (30 s at 1 fps), so a cold read decodes at most 30 frames
 _CACHE = 256  # decoded cold frames kept in memory
 _DECODE_CONCURRENCY = 4
+_TEXT_BATCH = 256  # loose frames dropped to text per locked store rewrite
 _UNSET: Any = object()
 
 
@@ -117,6 +118,12 @@ class MediaStore:
             self._encoder = _pick_encoder(self.ffmpeg)
         return self._encoder
 
+    async def probe_encoder(self) -> list[str] | None:
+        """`encoder`, probed off the event loop (the first probe runs `ffmpeg -encoders`)."""
+        if self._encoder is _UNSET:
+            await asyncio.to_thread(lambda: self.encoder)
+        return self.encoder
+
     def chunk_path(self, chunk_id: str) -> Path:
         return self.chunk_dir / f"{chunk_id}.mp4"
 
@@ -152,7 +159,7 @@ class MediaStore:
             return None
         async with self._decode_sem:
             data = await self._decode_one(path, offset)
-        if data:
+        if data and path.is_file():  # not cached when a purge/aging removed the chunk mid-decode
             self.decodes += 1
             self._cache[key] = data
             while len(self._cache) > _CACHE:
@@ -241,7 +248,7 @@ class MediaStore:
         }  # fmt: skip
         async with self._age_lock:
             await self._to_text(now - cold_s, stats)
-            if self.encoder is None:
+            if await self.probe_encoder() is None:
                 stats["skipped"] = "no AV1 encoder (ffmpeg with libsvtav1 or libaom-av1)"
             else:
                 await self._to_cold(now - hot_s, stats)
@@ -250,8 +257,10 @@ class MediaStore:
         return stats
 
     async def _to_cold(self, cutoff: float, stats: dict) -> None:
+        # planning scan without vectors (can be every hot frame on a first pass); _encode_group re-reads
+        # each <= _MAX_CHUNK part in full before writing it back
         groups: dict[tuple[str, str], list[MemoryToken]] = {}
-        for t in await self.store.list_tokens(time_to=cutoff, kinds=("frame",), tier="hot"):
+        for t in await self.store.list_tokens(time_to=cutoff, kinds=("frame",), tier="hot", vectors=False):
             if t.thumb_path and Path(t.thumb_path).is_file():
                 groups.setdefault((t.device_id, t.episode_id or ""), []).append(t)
         for toks in groups.values():
@@ -297,8 +306,8 @@ class MediaStore:
         stats["chunks"] += 1
 
     async def _to_text(self, cutoff: float, stats: dict) -> None:
-        cold = await self.store.list_tokens(time_to=cutoff, kinds=("frame",), tier="cold")
-        loose = await self.store.list_tokens(time_to=cutoff, kinds=("frame",), tier="hot")
+        cold = await self.store.list_tokens(time_to=cutoff, kinds=("frame",), tier="cold", vectors=False)
+        loose = await self.store.list_tokens(time_to=cutoff, kinds=("frame",), tier="hot", vectors=False)
         loose += [t for t in cold if not t.chunk_id]
         for cid in dict.fromkeys(t.chunk_id for t in cold if t.chunk_id):
             async with self.lock:
@@ -309,8 +318,8 @@ class MediaStore:
                 self.chunk_path(cid).unlink(missing_ok=True)
                 self._drop_cache(cid)
                 stats["to_text"] += len(members)
-        if loose:
-            planned = {t.id: _media_key(t) for t in loose}
+        for i in range(0, len(loose), _TEXT_BATCH):  # re-read in full (with vectors) batch by batch
+            planned = {t.id: _media_key(t) for t in loose[i : i + _TEXT_BATCH]}
             async with self.lock:
                 fresh = [t for t in await self.store.get_many(list(planned)) if _media_key(t) == planned[t.id]]
                 await self.store.rewrite_many([_as_text(t) for t in fresh])
@@ -339,17 +348,20 @@ class MediaStore:
             else:
                 stats["chunks_deleted"] += 1
             path.unlink(missing_ok=True)
+            self._drop_cache(cid)  # again: a decode that finished during the rewrite may have re-cached it
         return stats
 
     async def purge_window(self, device_id: str | None = None, since_ts: float | None = None) -> dict:
         """`purge()` for the tokens a `store.purge(device_id, since_ts=...)` is about to delete."""
-        tokens = await self.store.list_tokens(time_from=since_ts, device_id=device_id, kinds=("frame",), tier="cold")
+        tokens = await self.store.list_tokens(
+            time_from=since_ts, device_id=device_id, kinds=("frame",), tier="cold", vectors=False
+        )  # purge() only needs ids and chunk ids; it re-reads each affected chunk's members in full
         return await self.purge(tokens)
 
     async def _rewrite_chunk(self, old: Path, survivors: list[MemoryToken]) -> bool:
         """Re-encode `survivors` into a new chunk. False (and survivors demoted to text) when impossible."""
         moved: list[MemoryToken] | None = None
-        if self.encoder is not None and old.is_file():
+        if await self.probe_encoder() is not None and old.is_file():
             cid = f"ck_{ULID()}"
             out = self.chunk_path(cid)
             try:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -130,17 +131,15 @@ async def purge_memories(request: Request, device_id: str | None = None, since: 
 async def get_thumb(request: Request, token_id: str):
     """Any tier: hot JPEG, cold frame decoded from its AV1 chunk; 404 for text-tier / image-less tokens."""
     app = request.app.state
-    token = await app.store.get(token_id)
+    p = app.settings.thumb_dir / f"{token_id}.jpg"
+    if p.is_file():  # hot frames, episode thumbnails, frames still in the enrichment queue: no store lookup
+        return FileResponse(p, media_type="image/jpeg")
     media = getattr(app, "media", None)
-    if token is not None and media is not None:
-        data = await media.read(token)
-        if data is None:
-            raise HTTPException(404)
-        return Response(data, media_type="image/jpeg")
-    p = app.settings.thumb_dir / f"{token_id}.jpg"  # frames still in the enrichment queue
-    if not p.is_file():
+    token = await app.store.get(token_id) if media is not None else None
+    data = await media.read(token) if token is not None else None  # cold: decoded from its AV1 chunk
+    if data is None:
         raise HTTPException(404)
-    return FileResponse(p, media_type="image/jpeg")
+    return Response(data, media_type="image/jpeg")
 
 
 @router.post("/admin/age")
@@ -165,7 +164,8 @@ async def stats(request: Request):
     media = app.media
     tiers = await app.store.tier_counts()
     n_frames = sum(tiers.values())
-    disk = media.disk_bytes()
+    disk = await asyncio.to_thread(media.disk_bytes)  # walks thumbs/, chunks/ and the index: off the loop
+    encoder = await media.probe_encoder()
     counts = dict(app.keyframe_filter.counts)
     kept = sum(v for k, v in counts.items() if k not in _REJECT_REASONS)
     seen = sum(counts.values())
@@ -174,13 +174,15 @@ async def stats(request: Request):
     n_rows = await app.store.count()
     index_pf = disk["index"] / n_rows if n_rows and disk["index"] else None
     proj = None
-    if hot_pf is not None and s.filter_max_per_min > 0:
-        # at the frame budget, HOT_RETENTION_H as JPEG, the rest as AV1 (assumed 8x smaller until measured)
+    if (hot_pf is not None or cold_pf is not None) and s.filter_max_per_min > 0:
+        # at the frame budget, HOT_RETENTION_H as JPEG, the rest as AV1; whichever tier is not measured yet is
+        # assumed to be 8x the other (JPEG vs AV1, PR #54's measurement)
         per_day = s.filter_max_per_min * 60 * _WEARING_H_PER_DAY
         hot_days = min(_PROJECTION_DAYS, s.hot_retention_h / 24)
         cold_days = min(_PROJECTION_DAYS, s.cold_retention_days) - hot_days
-        cpf = cold_pf if cold_pf is not None else hot_pf / 8
-        proj = per_day * (hot_days * hot_pf + max(0.0, cold_days) * cpf + _PROJECTION_DAYS * (index_pf or 0.0))
+        hpf = hot_pf if hot_pf is not None else cold_pf * 8
+        cpf = cold_pf if cold_pf is not None else hpf / 8
+        proj = per_day * (hot_days * hpf + max(0.0, cold_days) * cpf + _PROJECTION_DAYS * (index_pf or 0.0))
     worker = app.worker
     return {
         "tokens": n_rows,
@@ -196,7 +198,7 @@ async def stats(request: Request):
         },
         "projected_100d_gb_at_budget": round(proj / 1e9, 2) if proj is not None else None,
         "media": {
-            "encoder": (media.encoder or [None, None])[1],
+            "encoder": (encoder or [None, None])[1],
             "hot_retention_h": s.hot_retention_h,
             "cold_retention_days": s.cold_retention_days,
             "cold_decodes": media.decodes,

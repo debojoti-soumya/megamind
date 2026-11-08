@@ -301,12 +301,16 @@ async def _main() -> None:
     args = ap.parse_args()
     settings = get_settings()
     store = build_store(settings)
+    from megamind.store.media import MediaStore  # representatives may already be cold (AV1) frames
+
     job = Consolidator(
         store,
         build_summarizer(settings),
         build_text_embedder(settings),
         gap_s=settings.episode_gap_s,
         min_tokens=settings.consolidate_min_tokens,
+        image_loader=MediaStore(settings, store).read,
+        thumb_dir=settings.thumb_dir,
     )
     if args.loop:
         await job.run_forever(settings.consolidate_interval_s)

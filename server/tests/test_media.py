@@ -103,6 +103,8 @@ async def test_without_encoder_aging_skips_cold_but_drops_to_text(app_client, mo
     c, app = app_client
     monkeypatch.setattr(media_mod, "_pick_encoder", lambda *_: None)
     ids = await _ingest(c, app, [_frame(i) for i in range(3)])
+    before = await app.state.store.get(ids[0])
+    assert before.text_vec is not None
 
     r = (await c.post("/v1/admin/age", params={"hot_older_than_s": 0})).json()
     assert r["skipped"] and r["to_cold"] == 0 and r["to_text"] == 0
@@ -110,6 +112,8 @@ async def test_without_encoder_aging_skips_cold_but_drops_to_text(app_client, mo
 
     r = (await c.post("/v1/admin/age", params={"hot_older_than_s": 0, "cold_older_than_s": 0})).json()
     assert r["to_text"] == 3
+    after = await app.state.store.get(ids[0])  # the planning scan skips vectors; the rewrite must not drop them
+    assert after.tier == "text" and after.text_vec == before.text_vec and after.image_vec == before.image_vec
     assert list((app.state.settings.thumb_dir).glob("*.jpg")) == []
     assert (await c.get(f"/v1/thumbs/{ids[0]}.jpg")).status_code == 404
     hits = (await c.get("/v1/memories", params={"q": "mock caption"})).json()["results"]
@@ -143,6 +147,8 @@ async def test_hot_cold_text_round_trip(app_client):
 
     r = (await c.post("/v1/admin/age", params={"hot_older_than_s": 0})).json()
     assert r["to_cold"] == 4 and r["chunks"] == 1 and 0 < r["chunk_bytes"] < r["jpeg_bytes"], r
+    cold = await app.state.store.get(ids[1])
+    assert cold.text_vec == stale.text_vec and cold.image_vec == stale.image_vec  # vectors survive the rewrite
     assert list(app.state.settings.thumb_dir.glob("*.jpg")) == []
     st = (await c.get("/v1/stats")).json()
     assert st["tiers"] == {"hot": 0, "cold": 4, "text": 0} and st["bytes_per_frame"]["cold"] > 0
@@ -266,6 +272,39 @@ async def test_to_text_waiting_on_purge_does_not_resurrect(tmp_path):
         await store.purge()
     await task
     assert await store.count() == 0
+
+
+async def test_decode_racing_a_chunk_removal_is_not_cached(tmp_path):
+    """A cold decode that finishes after a purge removed its chunk must not leave the pixels in the LRU."""
+    m = _media(tmp_path, InMemoryStore())
+    m._ffmpeg = "ffmpeg"
+    m.chunk_dir.mkdir(parents=True)
+    path = m.chunk_path("ck_gone")
+    path.write_bytes(b"fake")
+
+    async def decode_while_purged(p, offset):
+        p.unlink()  # the purge rewrites/deletes the chunk while ffmpeg is still decoding
+        return b"pixels"
+
+    m._decode_one = decode_while_purged
+    assert await m._read_cold("ck_gone", 0) == b"pixels"
+    assert m._cache == {}
+
+
+async def test_lancedb_list_tokens_can_skip_vectors(tmp_path):
+    pytest.importorskip("lancedb")
+    from megamind.store.lancedb_store import LanceDBStore
+
+    s = LanceDBStore(tmp_path / "db", text_dim=4, image_dim=4)
+    tok = MemoryToken(
+        id="a", device_id="d", ts=1.0, thumb_path="/x/a.jpg", frame_hash="0", text_vec=[1, 0, 0, 0],
+        image_vec=[0, 1, 0, 0],
+    )  # fmt: skip
+    await s.add(tok)
+    [light] = await s.list_tokens(vectors=False)
+    [full] = await s.list_tokens()
+    assert light.id == "a" and light.text_vec is None and light.image_vec is None and light.tier == "hot"
+    assert full.text_vec == [1, 0, 0, 0] and full.image_vec == [0, 1, 0, 0]
 
 
 async def test_rewrite_does_not_touch_live_episode_window(tmp_path):

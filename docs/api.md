@@ -196,7 +196,8 @@ Storage and ingest counters.
 ```
 `tiers` counts `kind="frame"` tokens. `bytes_per_frame` values are `null` until a tier has frames. The projection
 assumes the frame budget (`FILTER_MAX_PER_MIN`) for 16 h/day, `HOT_RETENTION_H` as JPEG and the rest as AV1
-(8x smaller than JPEG until cold frames exist to measure); `null` before any frame is stored.
+(a tier not measured yet is assumed 8x larger / smaller than the other, JPEG vs AV1); `null` while no frame has
+pixels.
 
 ## Memory token (stored record)
 ```

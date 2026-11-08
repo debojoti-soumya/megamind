@@ -360,6 +360,7 @@ class LanceDBStore(MemoryStore):
         kinds: Sequence[str] | None = None,
         tier: str | None = None,
         chunk_id: str | None = None,
+        vectors: bool = True,
     ) -> list[MemoryToken]:
         extra = []
         if tier is not None:
@@ -367,7 +368,8 @@ class LanceDBStore(MemoryStore):
         if chunk_id is not None:
             extra.append(f"chunk_id = {_sql_str(chunk_id)}")
         where = self._where(time_from=time_from, time_to=time_to, device_id=device_id, kinds=kinds, extra=extra)
-        rows = await asyncio.to_thread(self._scan, where, _INDEXED_COLUMNS, None)
+        cols = _INDEXED_COLUMNS if vectors else _SCALAR_COLUMNS
+        rows = await asyncio.to_thread(self._scan, where, cols, None)
         toks = [self._token(r) for r in rows]
         toks.sort(key=lambda t: (t.ts, t.id))
         return toks
