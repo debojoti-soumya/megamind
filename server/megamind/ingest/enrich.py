@@ -48,6 +48,11 @@ class TextEmbedder(ABC):
     @abstractmethod
     async def embed(self, text: str) -> list[float]: ...
 
+    async def embed_query(self, text: str) -> list[float]:
+        """Vector for a search query. Asymmetric models (e.g. bge's query instruction) override this;
+        the default is the document embedding, so existing embedders need no change."""
+        return await self.embed(text)
+
 
 class ImageEmbedder(ABC):
     dim: int
